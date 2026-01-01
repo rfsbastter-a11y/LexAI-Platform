@@ -22,32 +22,79 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Search, Plus, Filter, Download, MoreVertical, RefreshCw, CheckCircle2, AlertTriangle, FileText, Gavel, Scale, Bot } from "lucide-react";
-import { MOCK_CASES, DATAJUD_TIMELINE_MOCK } from "@/lib/mock-data";
+import { Search, Plus, Filter, Download, MoreVertical, RefreshCw, CheckCircle2, FileText, Scale, Bot, Loader2, Sparkles } from "lucide-react";
+import { useCases, useCaseMovements, useDatajudSearch } from "@/hooks/use-cases";
+import { useGeneratePiece } from "@/hooks/use-ai";
+import { Textarea } from "@/components/ui/textarea";
+import { useLocation } from "wouter";
 
 export default function CasesPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [importStep, setImportStep] = useState<"input" | "loading" | "review" | "success">("input");
   const [selectedCase, setSelectedCase] = useState<any>(null);
+  const [importNumber, setImportNumber] = useState("");
+  const [datajudResult, setDatajudResult] = useState<any>(null);
+  const [generatePieceOpen, setGeneratePieceOpen] = useState(false);
+  const [selectedMovement, setSelectedMovement] = useState<any>(null);
+  const [pieceType, setPieceType] = useState("Manifestação");
+  const [additionalInstructions, setAdditionalInstructions] = useState("");
+  const [generatedPiece, setGeneratedPiece] = useState<any>(null);
 
-  const handleImport = () => {
+  const { data: cases, isLoading } = useCases();
+  const { data: movements, isLoading: movementsLoading } = useCaseMovements(selectedCase?.id);
+  const datajudSearch = useDatajudSearch();
+  const generatePiece = useGeneratePiece();
+  const [, navigate] = useLocation();
+
+  const handleImport = async () => {
     setImportStep("loading");
-    // Simulate API call to DataJud
-    setTimeout(() => {
+    try {
+      const result = await datajudSearch.mutateAsync({ caseNumber: importNumber });
+      setDatajudResult(result);
       setImportStep("review");
-    }, 2000);
+    } catch (error) {
+      console.error("Error searching DataJud:", error);
+      setImportStep("input");
+    }
   };
 
   const confirmImport = () => {
     setImportStep("success");
-    // In a real app, this would add the case to the list
     setTimeout(() => {
       setImportStep("input");
       setIsImporting(false);
+      setDatajudResult(null);
+      setImportNumber("");
     }, 1500);
   };
+
+  const handleGeneratePiece = async () => {
+    if (!selectedCase || !selectedMovement) return;
+    
+    try {
+      const result = await generatePiece.mutateAsync({
+        pieceType,
+        caseContext: {
+          caseNumber: selectedCase.caseNumber,
+          court: selectedCase.court,
+          caseClass: selectedCase.caseClass || "Procedimento Comum",
+          subject: selectedCase.subject || "Não especificado",
+        },
+        intimationText: selectedMovement.description,
+        additionalInstructions,
+      });
+      setGeneratedPiece(result);
+    } catch (error) {
+      console.error("Error generating piece:", error);
+    }
+  };
+
+  const filteredCases = cases?.filter((c: any) =>
+    c.caseNumber.includes(searchTerm) ||
+    c.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    c.court.toLowerCase().includes(searchTerm.toLowerCase())
+  ) || [];
 
   return (
     <DashboardLayout>
@@ -76,7 +123,12 @@ export default function CasesPage() {
                 <div className="grid gap-4 py-4">
                   <div className="grid gap-2">
                     <label htmlFor="process-number" className="text-sm font-medium">Número do Processo / CPF / CNPJ</label>
-                    <Input id="process-number" placeholder="0000000-00.0000.0.00.0000" />
+                    <Input 
+                      id="process-number" 
+                      placeholder="0000000-00.0000.0.00.0000"
+                      value={importNumber}
+                      onChange={(e) => setImportNumber(e.target.value)}
+                    />
                   </div>
                   <div className="bg-blue-50 p-3 rounded-md flex gap-2 text-sm text-blue-700">
                     <Scale className="w-5 h-5 flex-shrink-0" />
@@ -97,7 +149,7 @@ export default function CasesPage() {
                 </div>
               )}
 
-              {importStep === "review" && (
+              {importStep === "review" && datajudResult && (
                 <div className="py-4 space-y-4">
                   <div className="flex items-center gap-2 text-green-600 bg-green-50 p-2 rounded border border-green-100">
                     <CheckCircle2 className="w-5 h-5" />
@@ -106,24 +158,26 @@ export default function CasesPage() {
                   
                   <Card className="border-primary/20">
                     <CardHeader className="pb-2">
-                      <CardTitle className="text-base">5001234-56.2025.8.13.0024</CardTitle>
-                      <CardDescription>TJMG • 12ª Vara Cível de Belo Horizonte</CardDescription>
+                      <CardTitle className="text-base">{datajudResult.numeroProcesso}</CardTitle>
+                      <CardDescription>{datajudResult.orgaoJulgador?.nome || "Tribunal não identificado"}</CardDescription>
                     </CardHeader>
                     <CardContent className="text-sm space-y-2">
                       <div className="grid grid-cols-2 gap-2">
                         <div>
                           <span className="text-muted-foreground text-xs block">Classe</span>
-                          <span className="font-medium">Procedimento Comum Cível</span>
+                          <span className="font-medium">{datajudResult.classe?.nome || "Não informada"}</span>
                         </div>
                         <div>
                           <span className="text-muted-foreground text-xs block">Assunto</span>
-                          <span className="font-medium">Indenização por Dano Material</span>
+                          <span className="font-medium">{datajudResult.assuntos?.[0]?.nome || "Não informado"}</span>
                         </div>
                       </div>
-                      <div className="pt-2 border-t">
-                        <span className="text-muted-foreground text-xs block mb-1">Última Movimentação (28/12/2025)</span>
-                        <p className="text-foreground/80">Expedição de intimação para manifestação sobre laudo pericial.</p>
-                      </div>
+                      {datajudResult.movimentos?.[0] && (
+                        <div className="pt-2 border-t">
+                          <span className="text-muted-foreground text-xs block mb-1">Última Movimentação</span>
+                          <p className="text-foreground/80">{datajudResult.movimentos[0].nome}</p>
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 </div>
@@ -141,7 +195,10 @@ export default function CasesPage() {
 
               <DialogFooter>
                 {importStep === "input" && (
-                  <Button onClick={handleImport}>Consultar DataJud</Button>
+                  <Button onClick={handleImport} disabled={!importNumber.trim() || datajudSearch.isPending}>
+                    {datajudSearch.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                    Consultar DataJud
+                  </Button>
                 )}
                 {importStep === "review" && (
                   <>
@@ -176,134 +233,299 @@ export default function CasesPage() {
       </div>
 
       <div className="rounded-md border bg-card shadow-sm">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Número / Título</TableHead>
-              <TableHead>Tribunal / Vara</TableHead>
-              <TableHead>Cliente</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Última Atualização</TableHead>
-              <TableHead className="text-right">Ações</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {MOCK_CASES.map((item) => (
-              <TableRow key={item.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedCase(item)}>
-                <TableCell className="font-medium">
-                  <div className="flex flex-col">
-                    <span>{item.number}</span>
-                    <span className="text-xs text-muted-foreground font-normal truncate max-w-[200px]">{item.title}</span>
-                  </div>
-                </TableCell>
-                <TableCell>{item.court}</TableCell>
-                <TableCell>{item.client}</TableCell>
-                <TableCell>
-                  <Badge variant={item.status === "Ativo" ? "default" : "secondary"}>
-                    {item.status}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-muted-foreground text-sm">
-                  {new Date(item.lastUpdate).toLocaleDateString()}
-                </TableCell>
-                <TableCell className="text-right">
-                  <Button variant="ghost" size="icon">
-                    <MoreVertical className="w-4 h-4" />
-                  </Button>
-                </TableCell>
+        {isLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Número / Título</TableHead>
+                <TableHead>Tribunal / Vara</TableHead>
+                <TableHead>Tipo</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Última Atualização</TableHead>
+                <TableHead className="text-right">Ações</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {filteredCases.map((item: any) => (
+                <TableRow key={item.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedCase(item)}>
+                  <TableCell className="font-medium">
+                    <div className="flex flex-col">
+                      <span className="font-mono text-sm">{item.caseNumber}</span>
+                      <span className="text-xs text-muted-foreground font-normal truncate max-w-[200px]">{item.title}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-sm">{item.court}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className="capitalize">{item.caseType}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={item.status === "ativo" ? "default" : "secondary"} className="capitalize">
+                      {item.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-sm">
+                    {new Date(item.createdAt).toLocaleDateString('pt-BR')}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button variant="ghost" size="icon">
+                      <MoreVertical className="w-4 h-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
       </div>
 
-      {/* Case Detail Sheet/Panel */}
+      {/* Case Detail Dialog */}
       {selectedCase && (
         <Dialog open={!!selectedCase} onOpenChange={(open) => !open && setSelectedCase(null)}>
           <DialogContent className="max-w-4xl h-[80vh] flex flex-col p-0 gap-0">
             <DialogHeader className="p-6 border-b">
               <div className="flex items-center gap-2 mb-2">
-                <Badge variant="outline">{selectedCase.type}</Badge>
-                <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-200 border-none">DataJud Sync</Badge>
+                <Badge variant="outline" className="capitalize">{selectedCase.caseType}</Badge>
+                {selectedCase.datajudLastSync && (
+                  <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-200 border-none">DataJud Sync</Badge>
+                )}
               </div>
               <DialogTitle className="text-xl">{selectedCase.title}</DialogTitle>
               <DialogDescription className="font-mono text-sm mt-1">
-                {selectedCase.number} • {selectedCase.court}
+                {selectedCase.caseNumber} • {selectedCase.court}
               </DialogDescription>
             </DialogHeader>
             
             <div className="flex-1 overflow-hidden flex">
               <div className="w-64 bg-muted/30 border-r p-4 space-y-6 hidden md:block">
-                 <div className="space-y-2">
-                   <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">Cliente</h4>
-                   <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs">IH</div>
-                      <span className="text-sm font-medium">{selectedCase.client}</span>
-                   </div>
-                 </div>
-                 <div className="space-y-2">
-                   <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">Tags</h4>
-                   <div className="flex flex-wrap gap-1">
-                     {selectedCase.tags.map((tag: string) => (
-                       <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
-                     ))}
-                   </div>
-                 </div>
+                <div className="space-y-2">
+                  <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">Risco</h4>
+                  <Badge variant={selectedCase.riskLevel === "alto" ? "destructive" : "secondary"} className="capitalize">
+                    {selectedCase.riskLevel || "Não avaliado"}
+                  </Badge>
+                </div>
+                <div className="space-y-2">
+                  <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">Valor Estimado</h4>
+                  <p className="text-sm font-medium">
+                    {selectedCase.estimatedValue 
+                      ? `R$ ${Number(selectedCase.estimatedValue).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+                      : "Não informado"
+                    }
+                  </p>
+                </div>
+                {selectedCase.tags && selectedCase.tags.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">Tags</h4>
+                    <div className="flex flex-wrap gap-1">
+                      {selectedCase.tags.map((tag: string) => (
+                        <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto">
-                 <Tabs defaultValue="timeline" className="w-full">
-                    <div className="border-b px-6 sticky top-0 bg-background z-10">
-                      <TabsList className="h-12 bg-transparent space-x-6">
-                        <TabsTrigger value="timeline" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-0">Movimentações (DataJud)</TabsTrigger>
-                        <TabsTrigger value="docs" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-0">Peças & Documentos</TabsTrigger>
-                        <TabsTrigger value="info" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-0">Dados do Processo</TabsTrigger>
-                      </TabsList>
-                    </div>
+                <Tabs defaultValue="timeline" className="w-full">
+                  <div className="border-b px-6 sticky top-0 bg-background z-10">
+                    <TabsList className="h-12 bg-transparent space-x-6">
+                      <TabsTrigger value="timeline" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-0">
+                        Movimentações
+                      </TabsTrigger>
+                      <TabsTrigger value="docs" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-0">
+                        Documentos
+                      </TabsTrigger>
+                      <TabsTrigger value="info" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-0">
+                        Dados
+                      </TabsTrigger>
+                    </TabsList>
+                  </div>
 
-                    <TabsContent value="timeline" className="p-6">
+                  <TabsContent value="timeline" className="p-6">
+                    {movementsLoading ? (
+                      <div className="flex items-center justify-center py-12">
+                        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : movements && movements.length > 0 ? (
                       <div className="relative border-l border-border ml-3 space-y-8 pb-10">
-                        {DATAJUD_TIMELINE_MOCK.map((event, idx) => (
+                        {movements.map((event: any, idx: number) => (
                           <div key={idx} className="relative pl-8">
-                             <div className={`absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full ring-4 ring-background ${event.type === 'Intimação' ? 'bg-red-500' : 'bg-primary'}`} />
-                             <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1 mb-1">
-                                <span className="text-sm font-bold text-foreground">{event.type}</span>
-                                <span className="text-xs text-muted-foreground font-mono">{new Date(event.date).toLocaleDateString()}</span>
-                             </div>
-                             <p className="text-sm text-foreground/80 bg-muted/30 p-3 rounded-md border border-border/50">
-                               {event.description}
-                             </p>
-                             <div className="mt-2 flex gap-2 items-center">
-                               <Badge variant="outline" className="text-[10px] h-5">{event.source}</Badge>
-                               {event.type === 'Intimação' && (
-                                 <Button 
-                                   variant="ghost" 
-                                   size="sm" 
-                                   className="h-6 text-[10px] gap-1 text-blue-600 hover:text-blue-700 hover:bg-blue-50 ml-auto"
-                                   onClick={() => window.location.href = '/studio'}
-                                 >
-                                   <Bot className="w-3 h-3" />
-                                   Gerar Peça com IA
-                                 </Button>
-                               )}
-                             </div>
+                            <div className={`absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full ring-4 ring-background ${event.type === 'Intimação' ? 'bg-red-500' : 'bg-primary'}`} />
+                            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1 mb-1">
+                              <span className="text-sm font-bold text-foreground">{event.type}</span>
+                              <span className="text-xs text-muted-foreground font-mono">
+                                {new Date(event.date).toLocaleDateString('pt-BR')}
+                              </span>
+                            </div>
+                            <p className="text-sm text-foreground/80 bg-muted/30 p-3 rounded-md border border-border/50">
+                              {event.description}
+                            </p>
+                            <div className="mt-2 flex gap-2 items-center">
+                              <Badge variant="outline" className="text-[10px] h-5">{event.source}</Badge>
+                              {event.type === 'Intimação' && (
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm" 
+                                  className="h-6 text-[10px] gap-1 text-blue-600 hover:text-blue-700 hover:bg-blue-50 ml-auto"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedMovement(event);
+                                    setGeneratePieceOpen(true);
+                                  }}
+                                >
+                                  <Sparkles className="w-3 h-3" />
+                                  Gerar Peça com IA
+                                </Button>
+                              )}
+                            </div>
                           </div>
                         ))}
                       </div>
-                    </TabsContent>
-
-                    <TabsContent value="docs" className="p-6">
+                    ) : (
                       <div className="text-center py-10 text-muted-foreground">
                         <FileText className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                        <p>Visualização de documentos em desenvolvimento.</p>
+                        <p>Nenhuma movimentação registrada.</p>
+                        <p className="text-sm mt-2">Importe dados do DataJud para ver o histórico.</p>
                       </div>
-                    </TabsContent>
-                 </Tabs>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="docs" className="p-6">
+                    <div className="text-center py-10 text-muted-foreground">
+                      <FileText className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                      <p>Visualização de documentos em desenvolvimento.</p>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="info" className="p-6">
+                    <div className="grid gap-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <span className="text-muted-foreground text-xs block">Classe Processual</span>
+                          <span className="font-medium">{selectedCase.caseClass || "Não informada"}</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground text-xs block">Assunto</span>
+                          <span className="font-medium">{selectedCase.subject || "Não informado"}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </div>
             </div>
           </DialogContent>
         </Dialog>
       )}
+
+      {/* Generate Piece Dialog */}
+      <Dialog open={generatePieceOpen} onOpenChange={setGeneratePieceOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-blue-600" />
+              Gerar Peça Processual com IA
+            </DialogTitle>
+            <DialogDescription>
+              A LexAI irá gerar um rascunho com base na intimação selecionada. Toda peça requer validação humana.
+            </DialogDescription>
+          </DialogHeader>
+
+          {!generatedPiece ? (
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium block mb-2">Tipo de Peça</label>
+                <select 
+                  className="w-full border rounded-md p-2"
+                  value={pieceType}
+                  onChange={(e) => setPieceType(e.target.value)}
+                >
+                  <option value="Manifestação">Manifestação</option>
+                  <option value="Contestação">Contestação</option>
+                  <option value="Réplica">Réplica</option>
+                  <option value="Petição Simples">Petição Simples</option>
+                  <option value="Embargos de Declaração">Embargos de Declaração</option>
+                  <option value="Recurso">Recurso</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium block mb-2">Intimação de Origem</label>
+                <div className="bg-muted/50 p-3 rounded-md text-sm">
+                  {selectedMovement?.description}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium block mb-2">Instruções Adicionais (opcional)</label>
+                <Textarea 
+                  placeholder="Ex: Focar na questão da prescrição, incluir jurisprudência do STJ..."
+                  value={additionalInstructions}
+                  onChange={(e) => setAdditionalInstructions(e.target.value)}
+                />
+              </div>
+
+              <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
+                <strong>⚠️ Importante:</strong> Este é um rascunho assistido por IA. Toda produção jurídica deve ser revisada e validada por advogado antes do protocolo.
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-green-600 bg-green-50 p-2 rounded border border-green-100">
+                <CheckCircle2 className="w-5 h-5" />
+                <span className="font-medium">Peça Gerada com Sucesso</span>
+              </div>
+
+              <div className="max-h-[400px] overflow-y-auto bg-muted/30 p-4 rounded-md border">
+                <pre className="whitespace-pre-wrap text-sm font-serif">{generatedPiece.content}</pre>
+              </div>
+
+              {generatedPiece.citations?.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-medium mb-2">Fontes Citadas</h4>
+                  <div className="space-y-2">
+                    {generatedPiece.citations.map((cit: any, i: number) => (
+                      <div key={i} className="text-xs bg-blue-50 p-2 rounded border border-blue-100">
+                        <strong>{cit.source}:</strong> {cit.excerpt}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter>
+            {!generatedPiece ? (
+              <>
+                <Button variant="outline" onClick={() => setGeneratePieceOpen(false)}>Cancelar</Button>
+                <Button 
+                  onClick={handleGeneratePiece} 
+                  disabled={generatePiece.isPending}
+                  className="gap-2"
+                >
+                  {generatePiece.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <Sparkles className="w-4 h-4" />
+                  Gerar Peça
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => {
+                  setGeneratedPiece(null);
+                  setGeneratePieceOpen(false);
+                }}>Fechar</Button>
+                <Button onClick={() => navigate('/studio')}>
+                  Abrir no Estúdio
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }

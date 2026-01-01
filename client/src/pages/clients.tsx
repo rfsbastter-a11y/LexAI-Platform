@@ -3,20 +3,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Search, Plus, Upload, FileText, CheckCircle2, Loader2, Building2, User } from "lucide-react";
+import { Search, Plus, Upload, CheckCircle2, Loader2, Building2, User } from "lucide-react";
 import { useState } from "react";
-
-const MOCK_CLIENTS = [
-  { id: 1, name: "Indústrias Horizonte Ltda", type: "PJ", doc: "12.345.678/0001-90", status: "Ativo", since: "2023" },
-  { id: 2, name: "Comércio Varejista Central S.A.", type: "PJ", doc: "98.765.432/0001-10", status: "Ativo", since: "2024" },
-  { id: 3, name: "Roberto Silva", type: "PF", doc: "123.456.789-00", status: "Inativo", since: "2022" },
-];
+import { useClients } from "@/hooks/use-clients";
 
 export default function ClientsPage() {
   const [isAdding, setIsAdding] = useState(false);
   const [addStep, setAddStep] = useState<"upload" | "extracting" | "form">("upload");
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const { data: clients, isLoading } = useClients();
 
   const handleUpload = () => {
     setAddStep("extracting");
@@ -24,6 +21,11 @@ export default function ClientsPage() {
       setAddStep("form");
     }, 2000);
   };
+
+  const filteredClients = clients?.filter((c: any) =>
+    c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    c.document.includes(searchTerm)
+  ) || [];
 
   return (
     <DashboardLayout>
@@ -88,17 +90,17 @@ export default function ClientsPage() {
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Documento (CNPJ)</label>
-                      <Input value="45.123.001/0001-99" defaultValue="45.123.001/0001-99" />
+                      <Input defaultValue="45.123.001/0001-99" />
                     </div>
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Razão Social</label>
                     <Input defaultValue="Nova Tech Soluções Digitais Ltda" />
                   </div>
-                   <div className="space-y-2">
-                      <label className="text-sm font-medium">Endereço (Sede)</label>
-                      <Input defaultValue="Av. Paulista, 1000, Andar 12, São Paulo - SP" />
-                    </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Endereço (Sede)</label>
+                    <Input defaultValue="Av. Paulista, 1000, Andar 12, São Paulo - SP" />
+                  </div>
                 </div>
               </div>
             )}
@@ -123,45 +125,53 @@ export default function ClientsPage() {
           <Input
             placeholder="Buscar clientes..."
             className="pl-9 border-none bg-muted/50 focus:bg-background transition-colors"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
       </div>
 
       <div className="rounded-md border bg-card shadow-sm mt-6">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[50px]"></TableHead>
-              <TableHead>Nome / Razão Social</TableHead>
-              <TableHead>Documento</TableHead>
-              <TableHead>Cliente Desde</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="text-right">Ações</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {MOCK_CLIENTS.map((client) => (
-              <TableRow key={client.id} className="cursor-pointer hover:bg-muted/50">
-                <TableCell>
-                  <div className="w-8 h-8 rounded bg-muted flex items-center justify-center text-muted-foreground">
-                    {client.type === "PJ" ? <Building2 className="w-4 h-4" /> : <User className="w-4 h-4" />}
-                  </div>
-                </TableCell>
-                <TableCell className="font-medium">{client.name}</TableCell>
-                <TableCell className="font-mono text-sm text-muted-foreground">{client.doc}</TableCell>
-                <TableCell>{client.since}</TableCell>
-                <TableCell>
-                  <Badge variant={client.status === "Ativo" ? "default" : "secondary"}>
-                    {client.status}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-right">
-                  <Button variant="ghost" size="sm">Ver Detalhes</Button>
-                </TableCell>
+        {isLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[50px]"></TableHead>
+                <TableHead>Nome / Razão Social</TableHead>
+                <TableHead>Documento</TableHead>
+                <TableHead>Cliente Desde</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Ações</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {filteredClients.map((client: any) => (
+                <TableRow key={client.id} className="cursor-pointer hover:bg-muted/50">
+                  <TableCell>
+                    <div className="w-8 h-8 rounded bg-muted flex items-center justify-center text-muted-foreground">
+                      {client.type === "PJ" ? <Building2 className="w-4 h-4" /> : <User className="w-4 h-4" />}
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-medium">{client.name}</TableCell>
+                  <TableCell className="font-mono text-sm text-muted-foreground">{client.document}</TableCell>
+                  <TableCell>{new Date(client.createdAt).getFullYear()}</TableCell>
+                  <TableCell>
+                    <Badge variant={client.status === "ativo" ? "default" : "secondary"} className="capitalize">
+                      {client.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button variant="ghost" size="sm">Ver Detalhes</Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
       </div>
     </DashboardLayout>
   );

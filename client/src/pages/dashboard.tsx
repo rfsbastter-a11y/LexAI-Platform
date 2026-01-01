@@ -1,10 +1,25 @@
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { DASHBOARD_STATS, MOCK_CASES, RECENT_DOCS } from "@/lib/mock-data";
-import { AlertCircle, ArrowUpRight, Clock, FileText, TrendingUp, CheckCircle2 } from "lucide-react";
+import { useDashboardStats } from "@/hooks/use-dashboard";
+import { useCases } from "@/hooks/use-cases";
+import { AlertCircle, ArrowUpRight, Clock, FileText, TrendingUp, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Link } from "wouter";
+
+const RECENT_DOCS = [
+  { title: "Contestação - Indústrias Horizonte.docx", type: "DOCX", date: "Há 2 horas" },
+  { title: "Procuração - Aditivo.pdf", type: "PDF", date: "Há 5 horas" },
+  { title: "Relatório de Auditoria.xlsx", type: "XLSX", date: "Ontem" },
+];
 
 export default function DashboardPage() {
+  const { data: stats, isLoading: statsLoading } = useDashboardStats();
+  const { data: cases, isLoading: casesLoading } = useCases();
+
+  const urgentCases = cases?.filter((c: any) => 
+    c.tags?.includes("Urgente") || c.tags?.includes("Audiência Marcada")
+  ) || [];
+
   return (
     <DashboardLayout>
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -13,8 +28,12 @@ export default function DashboardPage() {
           <p className="text-muted-foreground mt-1">Visão geral e urgências do dia.</p>
         </div>
         <div className="flex gap-2">
-          <Button>Nova Ação</Button>
-          <Button variant="outline">Relatórios</Button>
+          <Link href="/cases">
+            <Button>Nova Ação</Button>
+          </Link>
+          <Link href="/reports">
+            <Button variant="outline">Relatórios</Button>
+          </Link>
         </div>
       </div>
 
@@ -26,8 +45,14 @@ export default function DashboardPage() {
             <AlertCircle className="h-4 w-4 text-destructive" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{DASHBOARD_STATS.urgentDeadlines}</div>
-            <p className="text-xs text-muted-foreground">Para os próximos 3 dias</p>
+            {statsLoading ? (
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            ) : (
+              <>
+                <div className="text-2xl font-bold">{stats?.urgentDeadlines || 0}</div>
+                <p className="text-xs text-muted-foreground">Para os próximos 3 dias</p>
+              </>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -36,12 +61,18 @@ export default function DashboardPage() {
             <ScaleIcon className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{DASHBOARD_STATS.activeCases}</div>
-            <p className="text-xs text-muted-foreground">
-              <span className="text-emerald-500 flex items-center gap-1">
-                +{DASHBOARD_STATS.newCasesThisMonth} este mês <TrendingUp className="w-3 h-3" />
-              </span>
-            </p>
+            {statsLoading ? (
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            ) : (
+              <>
+                <div className="text-2xl font-bold">{stats?.activeCases || 0}</div>
+                <p className="text-xs text-muted-foreground">
+                  <span className="text-emerald-500 flex items-center gap-1">
+                    +{stats?.newCasesThisMonth || 0} este mês <TrendingUp className="w-3 h-3" />
+                  </span>
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -50,8 +81,14 @@ export default function DashboardPage() {
             <span className="text-xs font-bold text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full">Mensal</span>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{DASHBOARD_STATS.monthlyBilling}</div>
-            <p className="text-xs text-muted-foreground">+12% vs. mês anterior</p>
+            {statsLoading ? (
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            ) : (
+              <>
+                <div className="text-2xl font-bold">{stats?.monthlyBilling || "R$ 0,00"}</div>
+                <p className="text-xs text-muted-foreground">+12% vs. mês anterior</p>
+              </>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -74,32 +111,40 @@ export default function DashboardPage() {
             <CardDescription>Atividades que requerem atenção imediata.</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              {MOCK_CASES.filter(c => c.tags.includes("Urgente") || c.tags.includes("Audiência Marcada")).map((item) => (
-                <div key={item.id} className="flex items-start gap-4 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors">
-                  <div className={`p-2 rounded-full ${item.tags.includes("Urgente") ? "bg-red-100 text-red-600" : "bg-orange-100 text-orange-600"}`}>
-                    <Clock className="w-4 h-4" />
-                  </div>
-                  <div className="flex-1 space-y-1">
-                    <p className="text-sm font-medium leading-none">{item.title}</p>
-                    <p className="text-xs text-muted-foreground">{item.court} • {item.number}</p>
-                    <div className="flex gap-2 mt-2">
-                      {item.tags.map(tag => (
-                        <span key={tag} className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground border border-secondary-foreground/10">
-                          {tag}
-                        </span>
-                      ))}
+            {casesLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : urgentCases.length === 0 ? (
+              <p className="text-muted-foreground text-center py-8">Nenhuma urgência no momento.</p>
+            ) : (
+              <div className="space-y-4">
+                {urgentCases.map((item: any) => (
+                  <div key={item.id} className="flex items-start gap-4 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors cursor-pointer">
+                    <div className={`p-2 rounded-full ${item.tags?.includes("Urgente") ? "bg-red-100 text-red-600" : "bg-orange-100 text-orange-600"}`}>
+                      <Clock className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <p className="text-sm font-medium leading-none">{item.title}</p>
+                      <p className="text-xs text-muted-foreground">{item.court} • {item.caseNumber}</p>
+                      <div className="flex gap-2 mt-2">
+                        {item.tags?.map((tag: string) => (
+                          <span key={tag} className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground border border-secondary-foreground/10">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-sm font-bold text-destructive">
+                        Pendente
+                      </span>
+                      <p className="text-xs text-muted-foreground">Vencimento</p>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <span className="text-sm font-bold text-destructive">
-                      {item.nextDeadline ? new Date(item.nextDeadline).toLocaleDateString() : "Hoje"}
-                    </span>
-                    <p className="text-xs text-muted-foreground">Vencimento</p>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -128,14 +173,23 @@ export default function DashboardPage() {
                 </div>
               ))}
               <div className="pt-4 border-t">
-                <Button variant="outline" className="w-full gap-2">
-                  <BotIcon className="w-4 h-4" />
-                  Ir para LexAI Estúdio
-                </Button>
+                <Link href="/studio">
+                  <Button variant="outline" className="w-full gap-2">
+                    <BotIcon className="w-4 h-4" />
+                    Ir para LexAI Estúdio
+                  </Button>
+                </Link>
               </div>
             </div>
           </CardContent>
         </Card>
+      </div>
+      
+      {/* Demo Notice */}
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-center">
+        <p className="text-amber-800 text-sm">
+          <strong>⚠️ DADOS DE DEMONSTRAÇÃO:</strong> Os dados exibidos são fictícios e servem apenas para fins de demonstração da plataforma.
+        </p>
       </div>
     </DashboardLayout>
   );

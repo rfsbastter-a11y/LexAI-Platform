@@ -1,49 +1,81 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Bot, Send, Sparkles, FileText, Paperclip, ChevronRight, Loader2, Quote } from "lucide-react";
+import { Bot, Send, Sparkles, FileText, Paperclip, Loader2, Quote, AlertTriangle } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
+import { useAiChat } from "@/hooks/use-ai";
+
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+  citations?: Array<{ source: string; excerpt: string; relevance: string }>;
+  timestamp: string;
+}
 
 export default function StudioPage() {
-  const [messages, setMessages] = useState<any[]>([
+  const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content: "Olá, Dra. Roberta. Eu sou a LexAI. Posso ajudar a analisar documentos, redigir peças ou pesquisar jurisprudência. Por onde gostaria de começar hoje?",
-      timestamp: "10:30"
+      content: "Olá! Eu sou a LexAI, sua assistente jurídica. Posso ajudar a analisar documentos, redigir peças ou pesquisar legislação. Por onde gostaria de começar?",
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
   const [inputValue, setInputValue] = useState("");
-  const [isProcessing, setIsProcessing] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const aiChat = useAiChat();
 
-  const handleSend = () => {
-    if (!inputValue.trim()) return;
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
 
-    const newMsg = {
+  const handleSend = async () => {
+    if (!inputValue.trim() || aiChat.isPending) return;
+
+    const userMessage: Message = {
       role: "user",
       content: inputValue,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
     
-    setMessages([...messages, newMsg]);
+    setMessages(prev => [...prev, userMessage]);
+    const currentInput = inputValue;
     setInputValue("");
-    setIsProcessing(true);
 
-    // Mock AI Response
-    setTimeout(() => {
-      setIsProcessing(false);
+    try {
+      const chatHistory = [...messages, userMessage].map(m => ({
+        role: m.role,
+        content: m.content
+      }));
+
+      const response = await aiChat.mutateAsync({ messages: chatHistory });
+
+      const assistantMessage: Message = {
+        role: "assistant",
+        content: response.content,
+        citations: response.citations,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+
+      setMessages(prev => [...prev, assistantMessage]);
+    } catch (error) {
+      console.error("Error in AI chat:", error);
       setMessages(prev => [...prev, {
         role: "assistant",
-        content: "Compreendo. Estou analisando a petição inicial enviada. Identifiquei 3 teses principais de defesa com base na jurisprudência recente do STJ. Gostaria que eu redigisse o esboço da contestação?",
-        citations: [
-          { title: "REsp 1.234.567/MG", source: "STJ", text: "A cobrança de taxa de conveniência em vendas online..." },
-          { title: "Art. 42, Parágrafo Único", source: "CDC", text: "O consumidor cobrado em quantia indevida tem direito à repetição do indébito..." }
-        ],
+        content: "Desculpe, ocorreu um erro ao processar sua solicitação. Por favor, tente novamente.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }]);
-    }, 2000);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
   };
 
   return (
@@ -60,7 +92,7 @@ export default function StudioPage() {
                 <h2 className="font-serif font-semibold">LexAI Assistant</h2>
                 <p className="text-xs text-muted-foreground flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Online • GPT-4o Connected
+                  Online • GPT-4o
                 </p>
               </div>
             </div>
@@ -70,7 +102,7 @@ export default function StudioPage() {
             </Button>
           </div>
 
-          <ScrollArea className="flex-1 p-4">
+          <ScrollArea className="flex-1 p-4" ref={scrollRef}>
             <div className="space-y-6 max-w-3xl mx-auto">
               {messages.map((msg, i) => (
                 <div key={i} className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
@@ -79,16 +111,16 @@ export default function StudioPage() {
                   </div>
                   <div className={`space-y-2 max-w-[80%]`}>
                     <div className={`p-4 rounded-2xl ${msg.role === 'assistant' ? 'bg-secondary text-secondary-foreground rounded-tl-none' : 'bg-primary text-primary-foreground rounded-tr-none'}`}>
-                      <p className="text-sm leading-relaxed">{msg.content}</p>
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                     </div>
-                    {msg.citations && (
+                    {msg.citations && msg.citations.length > 0 && (
                       <div className="space-y-2 mt-2">
-                        {msg.citations.map((cit: any, idx: number) => (
+                        {msg.citations.map((cit, idx) => (
                           <div key={idx} className="text-xs bg-muted/50 p-3 rounded border border-border/50 flex gap-3">
                             <Quote className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                             <div>
-                              <p className="font-bold text-primary">{cit.title} <span className="font-normal text-muted-foreground">• {cit.source}</span></p>
-                              <p className="text-muted-foreground italic mt-1">"{cit.text}"</p>
+                              <p className="font-bold text-primary">{cit.source} <span className="font-normal text-muted-foreground">• {cit.relevance}</span></p>
+                              <p className="text-muted-foreground italic mt-1">"{cit.excerpt}"</p>
                             </div>
                           </div>
                         ))}
@@ -98,16 +130,16 @@ export default function StudioPage() {
                   </div>
                 </div>
               ))}
-              {isProcessing && (
-                 <div className="flex gap-4">
-                    <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex-shrink-0 flex items-center justify-center">
-                       <Bot className="w-5 h-5" />
-                    </div>
-                    <div className="bg-secondary p-4 rounded-2xl rounded-tl-none flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground">Analisando documentos e jurisprudência...</span>
-                    </div>
-                 </div>
+              {aiChat.isPending && (
+                <div className="flex gap-4">
+                  <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex-shrink-0 flex items-center justify-center">
+                    <Bot className="w-5 h-5" />
+                  </div>
+                  <div className="bg-secondary p-4 rounded-2xl rounded-tl-none flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground">Analisando e processando...</span>
+                  </div>
+                </div>
               )}
             </div>
           </ScrollArea>
@@ -117,20 +149,28 @@ export default function StudioPage() {
               <Textarea 
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
                 placeholder="Descreva o caso, peça um resumo ou solicite uma minuta..."
                 className="min-h-[80px] resize-none pr-20 pl-4 py-3 bg-background shadow-sm border-muted-foreground/20 focus:border-primary"
+                disabled={aiChat.isPending}
               />
               <div className="absolute right-2 bottom-2 flex gap-2">
-                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
-                    <Paperclip className="w-4 h-4" />
-                 </Button>
-                 <Button size="icon" className="h-8 w-8 bg-primary hover:bg-primary/90" onClick={handleSend} disabled={!inputValue.trim() || isProcessing}>
-                    <Send className="w-4 h-4" />
-                 </Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
+                  <Paperclip className="w-4 h-4" />
+                </Button>
+                <Button 
+                  size="icon" 
+                  className="h-8 w-8 bg-primary hover:bg-primary/90" 
+                  onClick={handleSend} 
+                  disabled={!inputValue.trim() || aiChat.isPending}
+                >
+                  {aiChat.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                </Button>
               </div>
             </div>
-            <p className="text-[10px] text-center text-muted-foreground mt-2">
-              A LexAI pode cometer erros. Verifique sempre as fontes citadas. Informações confidenciais são protegidas.
+            <p className="text-[10px] text-center text-muted-foreground mt-2 flex items-center justify-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              A LexAI pode cometer erros. Verifique sempre as fontes citadas. Toda produção requer validação humana.
             </p>
           </div>
         </div>
@@ -139,12 +179,27 @@ export default function StudioPage() {
         <div className="w-80 hidden xl:flex flex-col gap-4">
           <Card className="flex-1 bg-muted/10 border-dashed">
             <CardContent className="p-6 flex flex-col items-center justify-center text-center h-full text-muted-foreground">
-               <div className="w-16 h-16 rounded-full bg-muted/50 flex items-center justify-center mb-4">
-                 <FileText className="w-8 h-8 opacity-50" />
-               </div>
-               <h3 className="font-medium text-foreground mb-1">Contexto do Caso</h3>
-               <p className="text-xs mb-4">Arraste arquivos PDF/DOCX aqui para análise cruzada.</p>
-               <Button variant="outline" size="sm" className="w-full">Upload de Arquivos</Button>
+              <div className="w-16 h-16 rounded-full bg-muted/50 flex items-center justify-center mb-4">
+                <FileText className="w-8 h-8 opacity-50" />
+              </div>
+              <h3 className="font-medium text-foreground mb-1">Contexto do Caso</h3>
+              <p className="text-xs mb-4">Arraste arquivos PDF/DOCX aqui para análise cruzada.</p>
+              <Button variant="outline" size="sm" className="w-full">Upload de Arquivos</Button>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-amber-50 border-amber-200">
+            <CardContent className="p-4">
+              <h4 className="font-medium text-amber-800 text-sm mb-2 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4" />
+                Regras da LexAI
+              </h4>
+              <ul className="text-xs text-amber-700 space-y-1">
+                <li>• Não inventa jurisprudência</li>
+                <li>• Não simula dados ou fatos</li>
+                <li>• Toda citação tem fonte</li>
+                <li>• Requer validação humana</li>
+              </ul>
             </CardContent>
           </Card>
         </div>
