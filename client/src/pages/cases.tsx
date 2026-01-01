@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Search, Plus, Filter, Download, MoreVertical, RefreshCw, CheckCircle2, AlertTriangle, FileText, Gavel, Scale } from "lucide-react";
+import { Search, Plus, Filter, Download, MoreVertical, RefreshCw, CheckCircle2, AlertTriangle, FileText, Gavel, Scale, Bot } from "lucide-react";
 import { MOCK_CASES, DATAJUD_TIMELINE_MOCK } from "@/lib/mock-data";
 
 export default function CasesPage() {
@@ -273,8 +273,19 @@ export default function CasesPage() {
                              <p className="text-sm text-foreground/80 bg-muted/30 p-3 rounded-md border border-border/50">
                                {event.description}
                              </p>
-                             <div className="mt-2 flex gap-2">
+                             <div className="mt-2 flex gap-2 items-center">
                                <Badge variant="outline" className="text-[10px] h-5">{event.source}</Badge>
+                               {event.type === 'Intimação' && (
+                                 <Button 
+                                   variant="ghost" 
+                                   size="sm" 
+                                   className="h-6 text-[10px] gap-1 text-blue-600 hover:text-blue-700 hover:bg-blue-50 ml-auto"
+                                   onClick={() => window.location.href = '/studio'}
+                                 >
+                                   <Bot className="w-3 h-3" />
+                                   Gerar Peça com IA
+                                 </Button>
+                               )}
                              </div>
                           </div>
                         ))}
