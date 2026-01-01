@@ -27,12 +27,12 @@ export default function DashboardPage() {
           <h1 className="text-3xl font-bold tracking-tight text-primary">Painel Executivo</h1>
           <p className="text-muted-foreground mt-1">Visão geral e urgências do dia.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 button-group-responsive">
           <Link href="/cases">
-            <Button>Nova Ação</Button>
+            <Button className="btn-responsive" data-testid="btn-nova-acao">Nova Ação</Button>
           </Link>
           <Link href="/reports">
-            <Button variant="outline">Relatórios</Button>
+            <Button variant="outline" className="btn-responsive" data-testid="btn-relatorios">Relatórios</Button>
           </Link>
         </div>
       </div>

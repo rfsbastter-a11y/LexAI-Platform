@@ -160,3 +160,35 @@
     @apply font-serif;
   }
 }
+
+@layer components {
+  /* Responsive button styles */
+  .btn-responsive {
+    @apply transition-all duration-200 ease-in-out;
+    @apply hover:scale-[1.02] active:scale-[0.98];
+    @apply focus:ring-2 focus:ring-ring focus:ring-offset-2;
+  }
+  
+  /* Mobile-friendly touch targets */
+  @media (max-width: 768px) {
+    button, [role="button"] {
+      min-height: 44px;
+      min-width: 44px;
+    }
+  }
+  
+  /* Button group responsive */
+  .button-group-responsive {
+    @apply flex flex-wrap gap-2;
+  }
+  
+  @media (max-width: 640px) {
+    .button-group-responsive {
+      @apply flex-col w-full;
+    }
+    .button-group-responsive > button,
+    .button-group-responsive > a {
+      @apply w-full justify-center;
+    }
+  }
+}

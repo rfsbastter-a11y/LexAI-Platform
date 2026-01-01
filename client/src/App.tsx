@@ -3,6 +3,7 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { FloatingAI } from "@/components/FloatingAI";
 import NotFound from "@/pages/not-found";
 import DashboardPage from "@/pages/dashboard";
 import CasesPage from "@/pages/cases";
@@ -11,7 +12,6 @@ import ClientsPage from "@/pages/clients";
 import ContractsPage from "@/pages/contracts";
 import BillingPage from "@/pages/billing";
 import CalendarPage from "@/pages/calendar";
-
 import ReportsPage from "@/pages/reports";
 
 function Router() {
@@ -36,6 +36,7 @@ function App() {
       <TooltipProvider>
         <Toaster />
         <Router />
+        <FloatingAI />
       </TooltipProvider>
     </QueryClientProvider>
   );

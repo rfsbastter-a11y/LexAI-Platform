@@ -103,12 +103,13 @@ export default function CasesPage() {
           <h1 className="text-3xl font-bold tracking-tight text-primary">Processos</h1>
           <p className="text-muted-foreground mt-1">Gestão processual integrada ao DataJud.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 button-group-responsive">
           <Dialog open={isImporting} onOpenChange={setIsImporting}>
             <DialogTrigger asChild>
-              <Button className="gap-2">
+              <Button className="gap-2 btn-responsive" data-testid="btn-importar-datajud">
                 <Download className="w-4 h-4" />
-                Importar do DataJud
+                <span className="hidden sm:inline">Importar do DataJud</span>
+                <span className="sm:hidden">Importar</span>
               </Button>
             </DialogTrigger>
             <DialogContent className="sm:max-w-[600px]">
@@ -210,9 +211,10 @@ export default function CasesPage() {
             </DialogContent>
           </Dialog>
           
-          <Button variant="outline" className="gap-2">
+          <Button variant="outline" className="gap-2 btn-responsive" data-testid="btn-novo-manual">
             <Plus className="w-4 h-4" />
-            Novo Manual
+            <span className="hidden sm:inline">Novo Manual</span>
+            <span className="sm:hidden">Novo</span>
           </Button>
         </div>
       </div>
@@ -365,18 +367,19 @@ export default function CasesPage() {
                             </p>
                             <div className="mt-2 flex gap-2 items-center">
                               <Badge variant="outline" className="text-[10px] h-5">{event.source}</Badge>
-                              {event.type === 'Intimação' && (
+                              {(event.type === 'Intimação' || event.type === 'Decisão' || event.type === 'Sentença') && (
                                 <Button 
-                                  variant="ghost" 
+                                  variant="default" 
                                   size="sm" 
-                                  className="h-6 text-[10px] gap-1 text-blue-600 hover:text-blue-700 hover:bg-blue-50 ml-auto"
+                                  className="h-8 text-xs gap-2 bg-blue-600 hover:bg-blue-700 text-white ml-auto btn-responsive shadow-sm"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setSelectedMovement(event);
                                     setGeneratePieceOpen(true);
                                   }}
+                                  data-testid={`btn-gerar-peca-${event.id}`}
                                 >
-                                  <Sparkles className="w-3 h-3" />
+                                  <Sparkles className="w-4 h-4" />
                                   Gerar Peça com IA
                                 </Button>
                               )}

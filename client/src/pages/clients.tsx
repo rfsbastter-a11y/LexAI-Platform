@@ -36,9 +36,10 @@ export default function ClientsPage() {
         </div>
         <Dialog open={isAdding} onOpenChange={setIsAdding}>
           <DialogTrigger asChild>
-            <Button className="gap-2">
+            <Button className="gap-2 btn-responsive" data-testid="btn-novo-cliente">
               <Plus className="w-4 h-4" />
-              Novo Cliente
+              <span className="hidden sm:inline">Novo Cliente</span>
+              <span className="sm:hidden">Novo</span>
             </Button>
           </DialogTrigger>
           <DialogContent className="sm:max-w-[600px]">

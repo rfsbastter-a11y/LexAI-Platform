@@ -18,9 +18,10 @@ export default function ContractsPage() {
           <h1 className="text-3xl font-bold tracking-tight text-primary">Contratos</h1>
           <p className="text-muted-foreground mt-1">Gestão de honorários e regras de faturamento.</p>
         </div>
-        <Button className="gap-2">
+        <Button className="gap-2 btn-responsive" data-testid="btn-novo-contrato">
           <Plus className="w-4 h-4" />
-          Novo Contrato
+          <span className="hidden sm:inline">Novo Contrato</span>
+          <span className="sm:hidden">Novo</span>
         </Button>
       </div>
 
