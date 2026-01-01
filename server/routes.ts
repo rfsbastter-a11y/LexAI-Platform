@@ -37,8 +37,9 @@ export async function registerRoutes(
 
   app.get("/api/clients/:id", async (req: Request, res: Response) => {
     try {
+      const tenantId = 1; // TODO: Get from authenticated session
       const id = parseInt(req.params.id);
-      const client = await storage.getClient(id);
+      const client = await storage.getClient(id, tenantId);
       if (!client) {
         return res.status(404).json({ error: "Client not found" });
       }
@@ -122,8 +123,9 @@ export async function registerRoutes(
 
   app.get("/api/cases/:id", async (req: Request, res: Response) => {
     try {
+      const tenantId = 1; // TODO: Get from authenticated session
       const id = parseInt(req.params.id);
-      const caseItem = await storage.getCase(id);
+      const caseItem = await storage.getCase(id, tenantId);
       if (!caseItem) {
         return res.status(404).json({ error: "Case not found" });
       }
@@ -194,8 +196,9 @@ export async function registerRoutes(
 
   app.post("/api/datajud/import/:caseId", async (req: Request, res: Response) => {
     try {
+      const tenantId = 1; // TODO: Get from authenticated session
       const caseId = parseInt(req.params.caseId);
-      const caseItem = await storage.getCase(caseId);
+      const caseItem = await storage.getCase(caseId, tenantId);
       
       if (!caseItem) {
         return res.status(404).json({ error: "Case not found" });

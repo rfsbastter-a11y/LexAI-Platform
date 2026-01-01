@@ -33,20 +33,20 @@ export interface IStorage {
   createUser(data: InsertUser): Promise<User>;
 
   // Clients
-  getClient(id: number): Promise<Client | undefined>;
+  getClient(id: number, tenantId?: number): Promise<Client | undefined>;
   getClientsByTenant(tenantId: number): Promise<Client[]>;
   createClient(data: InsertClient): Promise<Client>;
   updateClient(id: number, data: Partial<InsertClient>): Promise<Client>;
 
   // Contracts
-  getContract(id: number): Promise<Contract | undefined>;
+  getContract(id: number, tenantId?: number): Promise<Contract | undefined>;
   getContractsByTenant(tenantId: number): Promise<Contract[]>;
   getContractsByClient(clientId: number): Promise<Contract[]>;
   createContract(data: InsertContract): Promise<Contract>;
   updateContract(id: number, data: Partial<InsertContract>): Promise<Contract>;
 
   // Cases
-  getCase(id: number): Promise<Case | undefined>;
+  getCase(id: number, tenantId?: number): Promise<Case | undefined>;
   getCaseByNumber(caseNumber: string): Promise<Case | undefined>;
   getCasesByTenant(tenantId: number): Promise<Case[]>;
   getCasesByClient(clientId: number): Promise<Case[]>;
@@ -148,7 +148,11 @@ class DatabaseStorage implements IStorage {
   }
 
   // Clients
-  async getClient(id: number): Promise<Client | undefined> {
+  async getClient(id: number, tenantId?: number): Promise<Client | undefined> {
+    if (tenantId) {
+      const [client] = await db.select().from(clients).where(and(eq(clients.id, id), eq(clients.tenantId, tenantId)));
+      return client;
+    }
     const [client] = await db.select().from(clients).where(eq(clients.id, id));
     return client;
   }
@@ -168,7 +172,11 @@ class DatabaseStorage implements IStorage {
   }
 
   // Contracts
-  async getContract(id: number): Promise<Contract | undefined> {
+  async getContract(id: number, tenantId?: number): Promise<Contract | undefined> {
+    if (tenantId) {
+      const [contract] = await db.select().from(contracts).where(and(eq(contracts.id, id), eq(contracts.tenantId, tenantId)));
+      return contract;
+    }
     const [contract] = await db.select().from(contracts).where(eq(contracts.id, id));
     return contract;
   }
@@ -192,7 +200,11 @@ class DatabaseStorage implements IStorage {
   }
 
   // Cases
-  async getCase(id: number): Promise<Case | undefined> {
+  async getCase(id: number, tenantId?: number): Promise<Case | undefined> {
+    if (tenantId) {
+      const [caseItem] = await db.select().from(cases).where(and(eq(cases.id, id), eq(cases.tenantId, tenantId)));
+      return caseItem;
+    }
     const [caseItem] = await db.select().from(cases).where(eq(cases.id, id));
     return caseItem;
   }
