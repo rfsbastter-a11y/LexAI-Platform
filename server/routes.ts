@@ -172,9 +172,31 @@ export async function registerRoutes(
   });
 
   // ==================== DATAJUD ====================
+  app.get("/api/datajud/tribunais", async (req: Request, res: Response) => {
+    try {
+      const { segmento } = req.query;
+      let tribunais;
+      
+      if (segmento && typeof segmento === "string") {
+        tribunais = datajudService.getTribunaisBySegmento(segmento);
+      } else {
+        tribunais = datajudService.getAllTribunais();
+      }
+      
+      res.json({
+        total: tribunais.length,
+        segmentos: ["estadual", "federal", "trabalho", "eleitoral", "militar", "militar_estadual", "superior"],
+        tribunais
+      });
+    } catch (error) {
+      console.error("Error fetching tribunais:", error);
+      res.status(500).json({ error: "Failed to fetch tribunais" });
+    }
+  });
+
   app.post("/api/datajud/search", async (req: Request, res: Response) => {
     try {
-      const { caseNumber, document } = req.body;
+      const { caseNumber, document, segmentos } = req.body;
       
       if (caseNumber) {
         const result = await datajudService.searchByProcessNumber(caseNumber);
@@ -183,7 +205,7 @@ export async function registerRoutes(
         }
         res.json(result);
       } else if (document) {
-        const results = await datajudService.searchByDocument(document);
+        const results = await datajudService.searchByDocument(document, segmentos);
         res.json(results);
       } else {
         res.status(400).json({ error: "caseNumber or document is required" });
@@ -191,6 +213,27 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error searching DataJud:", error);
       res.status(500).json({ error: "Failed to search DataJud" });
+    }
+  });
+
+  app.post("/api/datajud/search/:tribunal", async (req: Request, res: Response) => {
+    try {
+      const { tribunal } = req.params;
+      const { query } = req.body;
+      
+      if (!query) {
+        return res.status(400).json({ error: "Query is required" });
+      }
+      
+      const results = await datajudService.searchByTribunal(tribunal, query);
+      res.json({
+        tribunal,
+        total: results.length,
+        results
+      });
+    } catch (error) {
+      console.error("Error searching tribunal:", error);
+      res.status(500).json({ error: "Failed to search tribunal" });
     }
   });
 

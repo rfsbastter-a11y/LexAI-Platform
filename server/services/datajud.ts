@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { storage } from "../storage";
 import type { InsertCaseMovement } from "@shared/schema";
+import { TRIBUNAIS_REGISTRY, parseCaseNumber, getTribunalBySigla, getAllTribunais, type TribunalInfo } from "./datajudRegistry";
 
 interface DatajudMovement {
   data: string;
@@ -25,50 +26,22 @@ interface DatajudSearchResult {
     hits?: Array<{
       _source: DatajudProcess;
     }>;
+    total?: { value: number };
   };
 }
 
 const DATAJUD_BASE_URL = "https://api-publica.datajud.cnj.jus.br";
 
-const TRIBUNAL_ENDPOINTS: Record<string, string> = {
-  "TJSP": "api_publica_tjsp",
-  "TJMG": "api_publica_tjmg",
-  "TJRJ": "api_publica_tjrj",
-  "TJRS": "api_publica_tjrs",
-  "TJPR": "api_publica_tjpr",
-  "TRT1": "api_publica_trt1",
-  "TRT2": "api_publica_trt2",
-  "TRT3": "api_publica_trt3",
-  "TRF1": "api_publica_trf1",
-  "TRF3": "api_publica_trf3",
-  "STJ": "api_publica_stj",
-  "STF": "api_publica_stf",
-};
-
-function extractTribunalFromCaseNumber(caseNumber: string): string | null {
-  const match = caseNumber.match(/\d{7}-\d{2}\.\d{4}\.(\d)\.\d{2}\.\d{4}/);
-  if (!match) return null;
-  
-  const justicaCode = match[1];
-  const segmentoMatch = caseNumber.match(/\d{7}-\d{2}\.\d{4}\.\d\.(\d{2})\.\d{4}/);
-  const segmento = segmentoMatch ? segmentoMatch[1] : "";
-
-  if (justicaCode === "8") {
-    const tribunalMap: Record<string, string> = {
-      "26": "TJSP", "13": "TJMG", "19": "TJRJ", "21": "TJRS", "16": "TJPR"
-    };
-    return tribunalMap[segmento] || "TJSP";
-  } else if (justicaCode === "5") {
-    return `TRT${segmento}`;
-  } else if (justicaCode === "4") {
-    return `TRF${segmento}`;
-  }
-  
-  return null;
-}
-
 function formatCaseNumber(caseNumber: string): string {
   return caseNumber.replace(/\D/g, "");
+}
+
+function getApiKey(): string {
+  const apiKey = process.env.DATAJUD_API_KEY;
+  if (!apiKey) {
+    throw new Error("DATAJUD_API_KEY not configured. Please add it to secrets.");
+  }
+  return apiKey;
 }
 
 export class DatajudService {
@@ -84,30 +57,45 @@ export class DatajudService {
     this.lastRequestTime = Date.now();
   }
 
+  getAllTribunais(): TribunalInfo[] {
+    return getAllTribunais();
+  }
+
+  getTribunaisBySegmento(segmento: string): TribunalInfo[] {
+    return TRIBUNAIS_REGISTRY.filter(t => t.segmento === segmento);
+  }
+
   async searchByProcessNumber(caseNumber: string): Promise<DatajudProcess | null> {
     await this.enforceRateLimit();
 
-    const tribunal = extractTribunalFromCaseNumber(caseNumber);
-    if (!tribunal) {
-      console.error("Could not extract tribunal from case number:", caseNumber);
-      return null;
+    const parsed = parseCaseNumber(caseNumber);
+    let tribunal: TribunalInfo | undefined;
+
+    if (parsed?.tribunal) {
+      tribunal = parsed.tribunal;
+    } else {
+      console.log("Could not parse tribunal from case number, will try fallback search:", caseNumber);
     }
 
-    const endpoint = TRIBUNAL_ENDPOINTS[tribunal];
-    if (!endpoint) {
-      console.error("No endpoint configured for tribunal:", tribunal);
-      return null;
+    if (tribunal) {
+      const result = await this.searchInTribunal(caseNumber, tribunal);
+      if (result) return result;
     }
 
+    console.log("Tribunal-specific search failed or not found, trying fallback multi-tribunal search");
+    return this.searchAllTribunals(caseNumber);
+  }
+
+  private async searchInTribunal(caseNumber: string, tribunal: TribunalInfo): Promise<DatajudProcess | null> {
     const formattedNumber = formatCaseNumber(caseNumber);
-    const url = `${DATAJUD_BASE_URL}/${endpoint}/_search`;
+    const url = `${DATAJUD_BASE_URL}/${tribunal.endpoint}/_search`;
 
     try {
       const response = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `APIKey ${process.env.DATAJUD_API_KEY || "cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw=="}`,
+          "Authorization": getApiKey(),
         },
         body: JSON.stringify({
           query: {
@@ -119,7 +107,7 @@ export class DatajudService {
       });
 
       if (!response.ok) {
-        console.error("DataJud API error:", response.status, await response.text());
+        console.error(`DataJud API error for ${tribunal.sigla}:`, response.status);
         return null;
       }
 
@@ -132,25 +120,47 @@ export class DatajudService {
 
       return hits[0]._source;
     } catch (error) {
-      console.error("Error fetching from DataJud:", error);
+      console.error(`Error fetching from DataJud (${tribunal.sigla}):`, error);
       return null;
     }
   }
 
-  async searchByDocument(document: string): Promise<DatajudProcess[]> {
-    await this.enforceRateLimit();
+  private async searchAllTribunals(caseNumber: string): Promise<DatajudProcess | null> {
+    const formattedNumber = formatCaseNumber(caseNumber);
+    const mainTribunals = TRIBUNAIS_REGISTRY.filter(t => 
+      t.segmento === "estadual" || t.segmento === "federal" || t.segmento === "trabalho"
+    );
 
+    for (const tribunal of mainTribunals) {
+      await this.enforceRateLimit();
+      const result = await this.searchInTribunal(caseNumber, tribunal);
+      if (result) {
+        console.log(`Found case in ${tribunal.sigla} via fallback search`);
+        return result;
+      }
+    }
+
+    return null;
+  }
+
+  async searchByDocument(document: string, segmentos?: string[]): Promise<DatajudProcess[]> {
     const cleanDoc = document.replace(/\D/g, "");
     const results: DatajudProcess[] = [];
 
-    for (const [tribunal, endpoint] of Object.entries(TRIBUNAL_ENDPOINTS)) {
+    let tribunais = TRIBUNAIS_REGISTRY;
+    if (segmentos && segmentos.length > 0) {
+      tribunais = TRIBUNAIS_REGISTRY.filter(t => segmentos.includes(t.segmento));
+    }
+
+    for (const tribunal of tribunais) {
+      await this.enforceRateLimit();
       try {
-        const url = `${DATAJUD_BASE_URL}/${endpoint}/_search`;
+        const url = `${DATAJUD_BASE_URL}/${tribunal.endpoint}/_search`;
         const response = await fetch(url, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `APIKey ${process.env.DATAJUD_API_KEY || "cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw=="}`,
+            "Authorization": getApiKey(),
           },
           body: JSON.stringify({
             query: {
@@ -167,14 +177,48 @@ export class DatajudService {
           const hits = data.hits?.hits || [];
           results.push(...hits.map(h => h._source));
         }
-        
-        await this.enforceRateLimit();
       } catch (error) {
-        console.error(`Error searching ${tribunal}:`, error);
+        console.error(`Error searching ${tribunal.sigla}:`, error);
       }
     }
 
     return results;
+  }
+
+  async searchByTribunal(tribunalSigla: string, query: Record<string, any>): Promise<DatajudProcess[]> {
+    await this.enforceRateLimit();
+
+    const tribunal = getTribunalBySigla(tribunalSigla);
+    if (!tribunal) {
+      console.error("Tribunal not found:", tribunalSigla);
+      return [];
+    }
+
+    try {
+      const url = `${DATAJUD_BASE_URL}/${tribunal.endpoint}/_search`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": getApiKey(),
+        },
+        body: JSON.stringify({
+          query,
+          size: 100,
+        }),
+      });
+
+      if (!response.ok) {
+        console.error(`DataJud API error for ${tribunal.sigla}:`, response.status);
+        return [];
+      }
+
+      const data: DatajudSearchResult = await response.json();
+      return (data.hits?.hits || []).map(h => h._source);
+    } catch (error) {
+      console.error(`Error searching ${tribunal.sigla}:`, error);
+      return [];
+    }
   }
 
   async importProcess(caseId: number, processData: DatajudProcess): Promise<void> {
@@ -202,9 +246,10 @@ export class DatajudService {
       subject: processData.assuntos?.[0]?.nome,
     });
 
+    const tribunalInfo = getTribunalBySigla(processData.siglaTribunal || "");
     await storage.createDatajudSyncLog({
       caseId,
-      endpoint: TRIBUNAL_ENDPOINTS[processData.siglaTribunal || ""] || "unknown",
+      endpoint: tribunalInfo?.endpoint || "unknown",
       tribunal: processData.siglaTribunal || "unknown",
       requestPayload: { numeroProcesso: processData.numeroProcesso },
       responsePayloadHash: payloadHash,
