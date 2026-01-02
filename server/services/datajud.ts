@@ -36,12 +36,15 @@ function formatCaseNumber(caseNumber: string): string {
   return caseNumber.replace(/\D/g, "");
 }
 
-function getApiKey(): string {
+function getAuthHeader(): string {
   const apiKey = process.env.DATAJUD_API_KEY;
   if (!apiKey) {
     throw new Error("DATAJUD_API_KEY not configured. Please add it to secrets.");
   }
-  return apiKey;
+  if (apiKey.startsWith("APIKey ")) {
+    return apiKey;
+  }
+  return `APIKey ${apiKey}`;
 }
 
 export class DatajudService {
@@ -95,7 +98,7 @@ export class DatajudService {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": getApiKey(),
+          "Authorization": getAuthHeader(),
         },
         body: JSON.stringify({
           query: {
@@ -150,35 +153,56 @@ export class DatajudService {
     let tribunais = TRIBUNAIS_REGISTRY;
     if (segmentos && segmentos.length > 0) {
       tribunais = TRIBUNAIS_REGISTRY.filter(t => segmentos.includes(t.segmento));
+    } else {
+      tribunais = TRIBUNAIS_REGISTRY.filter(t => 
+        t.segmento === "estadual" || t.segmento === "trabalho" || t.segmento === "federal"
+      );
     }
 
-    for (const tribunal of tribunais) {
-      await this.enforceRateLimit();
-      try {
-        const url = `${DATAJUD_BASE_URL}/${tribunal.endpoint}/_search`;
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": getApiKey(),
-          },
-          body: JSON.stringify({
-            query: {
-              match: {
-                "partes.cpfCnpj": cleanDoc,
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < tribunais.length; i += BATCH_SIZE) {
+      const batch = tribunais.slice(i, i + BATCH_SIZE);
+      
+      const batchResults = await Promise.allSettled(
+        batch.map(async (tribunal) => {
+          try {
+            const url = `${DATAJUD_BASE_URL}/${tribunal.endpoint}/_search`;
+            const response = await fetch(url, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": getAuthHeader(),
               },
-            },
-            size: 10,
-          }),
-        });
+              body: JSON.stringify({
+                query: {
+                  match: {
+                    "partes.cpfCnpj": cleanDoc,
+                  },
+                },
+                size: 10,
+              }),
+            });
 
-        if (response.ok) {
-          const data: DatajudSearchResult = await response.json();
-          const hits = data.hits?.hits || [];
-          results.push(...hits.map(h => h._source));
+            if (response.ok) {
+              const data: DatajudSearchResult = await response.json();
+              return (data.hits?.hits || []).map(h => h._source);
+            }
+            return [];
+          } catch (error) {
+            console.error(`Error searching ${tribunal.sigla}:`, error);
+            return [];
+          }
+        })
+      );
+
+      for (const result of batchResults) {
+        if (result.status === "fulfilled") {
+          results.push(...result.value);
         }
-      } catch (error) {
-        console.error(`Error searching ${tribunal.sigla}:`, error);
+      }
+
+      if (i + BATCH_SIZE < tribunais.length) {
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
     }
 
@@ -200,7 +224,7 @@ export class DatajudService {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": getApiKey(),
+          "Authorization": getAuthHeader(),
         },
         body: JSON.stringify({
           query,
