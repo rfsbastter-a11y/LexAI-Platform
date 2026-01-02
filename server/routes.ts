@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { datajudService } from "./services/datajud";
 import { aiService } from "./services/ai";
+import { emailService } from "./services/email";
 import { insertClientSchema, insertContractSchema, insertCaseSchema, insertDeadlineSchema } from "@shared/schema";
 import { z } from "zod";
 
@@ -502,6 +503,130 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching audit logs:", error);
       res.status(500).json({ error: "Failed to fetch audit logs" });
+    }
+  });
+
+  // ==================== EMAIL ====================
+  app.get("/api/email/status", async (req: Request, res: Response) => {
+    try {
+      const configured = emailService.isConfigured();
+      if (!configured) {
+        return res.json({ configured: false, message: "Email service not configured" });
+      }
+      
+      const verification = await emailService.verifyConnection();
+      res.json({ 
+        configured: true, 
+        connected: verification.success,
+        error: verification.error 
+      });
+    } catch (error) {
+      console.error("Error checking email status:", error);
+      res.status(500).json({ error: "Failed to check email status" });
+    }
+  });
+
+  app.post("/api/email/send", async (req: Request, res: Response) => {
+    try {
+      const tenantId = 1;
+      const { to, subject, html, text, cc, bcc } = req.body;
+      
+      if (!to || !subject) {
+        return res.status(400).json({ error: "to and subject are required" });
+      }
+      
+      const result = await emailService.sendEmail({
+        to,
+        subject,
+        html,
+        text,
+        cc,
+        bcc,
+      });
+      
+      if (result.success) {
+        await storage.createAuditLog({
+          tenantId,
+          action: "email_sent",
+          entityType: "email",
+          entityId: 0,
+          details: { to, subject, messageId: result.messageId },
+        });
+      }
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Error sending email:", error);
+      res.status(500).json({ error: "Failed to send email" });
+    }
+  });
+
+  app.post("/api/email/notify-deadline", async (req: Request, res: Response) => {
+    try {
+      const { to, deadlineId } = req.body;
+      
+      if (!to || !deadlineId) {
+        return res.status(400).json({ error: "to and deadlineId are required" });
+      }
+      
+      const deadline = await storage.getDeadline(deadlineId);
+      if (!deadline) {
+        return res.status(404).json({ error: "Deadline not found" });
+      }
+      
+      if (!deadline.caseId) {
+        return res.status(400).json({ error: "Deadline has no associated case" });
+      }
+      
+      const caseItem = await storage.getCase(deadline.caseId, 1);
+      
+      const daysRemaining = Math.ceil(
+        (new Date(deadline.dueDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+      );
+      
+      const result = await emailService.sendDeadlineNotification(to, {
+        caseNumber: caseItem?.caseNumber || "N/A",
+        caseTitle: caseItem?.title || "Processo",
+        deadlineDate: new Date(deadline.dueDate),
+        description: deadline.description || "Prazo processual",
+        daysRemaining: Math.max(0, daysRemaining),
+      });
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Error sending deadline notification:", error);
+      res.status(500).json({ error: "Failed to send notification" });
+    }
+  });
+
+  app.post("/api/email/notify-movement", async (req: Request, res: Response) => {
+    try {
+      const { to, movementId } = req.body;
+      
+      if (!to || !movementId) {
+        return res.status(400).json({ error: "to and movementId are required" });
+      }
+      
+      const movement = await storage.getCaseMovement(movementId);
+      if (!movement) {
+        return res.status(404).json({ error: "Movement not found" });
+      }
+      
+      const caseItem = await storage.getCase(movement.caseId, 1);
+      
+      const result = await emailService.sendMovementNotification(to, {
+        caseNumber: caseItem?.caseNumber || "N/A",
+        caseTitle: caseItem?.title || "Processo",
+        movementType: movement.type,
+        movementDate: new Date(movement.date),
+        description: movement.description,
+        requiresAction: movement.requiresAction || false,
+      });
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Error sending movement notification:", error);
+      res.status(500).json({ error: "Failed to send notification" });
     }
   });
 

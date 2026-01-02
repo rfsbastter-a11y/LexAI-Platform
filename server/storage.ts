@@ -54,6 +54,7 @@ export interface IStorage {
   updateCase(id: number, data: Partial<InsertCase>): Promise<Case>;
 
   // Case Movements
+  getCaseMovement(id: number): Promise<CaseMovement | undefined>;
   getCaseMovements(caseId: number): Promise<CaseMovement[]>;
   createCaseMovement(data: InsertCaseMovement): Promise<CaseMovement>;
   createCaseMovements(data: InsertCaseMovement[]): Promise<CaseMovement[]>;
@@ -233,6 +234,11 @@ class DatabaseStorage implements IStorage {
   }
 
   // Case Movements
+  async getCaseMovement(id: number): Promise<CaseMovement | undefined> {
+    const [movement] = await db.select().from(caseMovements).where(eq(caseMovements.id, id));
+    return movement;
+  }
+
   async getCaseMovements(caseId: number): Promise<CaseMovement[]> {
     return db.select().from(caseMovements).where(eq(caseMovements.caseId, caseId)).orderBy(desc(caseMovements.date));
   }
