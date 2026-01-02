@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { datajudService } from "./services/datajud";
 import { aiService } from "./services/ai";
 import { emailService } from "./services/email";
+import { imapService } from "./services/imap";
 import { insertClientSchema, insertContractSchema, insertCaseSchema, insertDeadlineSchema } from "@shared/schema";
 import { z } from "zod";
 
@@ -627,6 +628,277 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error sending movement notification:", error);
       res.status(500).json({ error: "Failed to send notification" });
+    }
+  });
+
+  // ==================== EMAIL INBOX (IMAP) ====================
+  app.get("/api/inbox/status", async (req: Request, res: Response) => {
+    try {
+      const configured = imapService.isConfigured();
+      if (!configured) {
+        return res.json({ configured: false, message: "IMAP not configured" });
+      }
+      
+      const test = await imapService.testConnection();
+      res.json({ configured: true, connected: test.success, error: test.error });
+    } catch (error) {
+      console.error("Error checking IMAP status:", error);
+      res.status(500).json({ error: "Failed to check IMAP status" });
+    }
+  });
+
+  app.get("/api/inbox/folders", async (req: Request, res: Response) => {
+    try {
+      const tenantId = 1;
+      const folders = await storage.getEmailFolders(tenantId);
+      res.json(folders);
+    } catch (error) {
+      console.error("Error fetching folders:", error);
+      res.status(500).json({ error: "Failed to fetch folders" });
+    }
+  });
+
+  app.post("/api/inbox/sync-folders", async (req: Request, res: Response) => {
+    try {
+      const tenantId = 1;
+      if (!imapService.isConfigured()) {
+        return res.status(400).json({ error: "IMAP not configured" });
+      }
+      await imapService.syncFolders(tenantId);
+      const folders = await storage.getEmailFolders(tenantId);
+      res.json({ success: true, folders });
+    } catch (error) {
+      console.error("Error syncing folders:", error);
+      res.status(500).json({ error: "Failed to sync folders" });
+    }
+  });
+
+  app.post("/api/inbox/sync", async (req: Request, res: Response) => {
+    try {
+      const tenantId = 1;
+      const { folderId, limit = 50 } = req.body;
+      
+      if (!imapService.isConfigured()) {
+        return res.status(400).json({ error: "IMAP not configured" });
+      }
+
+      if (folderId) {
+        const folder = await storage.getEmailFolder(folderId);
+        if (!folder) {
+          return res.status(404).json({ error: "Folder not found" });
+        }
+        const synced = await imapService.syncEmails(tenantId, folderId, folder.imapPath, limit);
+        res.json({ success: true, synced });
+      } else {
+        const results = await imapService.syncAllFolders(tenantId, limit);
+        res.json({ success: true, results });
+      }
+    } catch (error) {
+      console.error("Error syncing emails:", error);
+      res.status(500).json({ error: "Failed to sync emails" });
+    }
+  });
+
+  app.get("/api/inbox/folders/:folderId/emails", async (req: Request, res: Response) => {
+    try {
+      const folderId = parseInt(req.params.folderId);
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+      
+      const emailsList = await storage.getEmails(folderId, limit, offset);
+      res.json(emailsList);
+    } catch (error) {
+      console.error("Error fetching emails:", error);
+      res.status(500).json({ error: "Failed to fetch emails" });
+    }
+  });
+
+  app.get("/api/inbox/emails/:id", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const email = await storage.getEmail(id);
+      if (!email) {
+        return res.status(404).json({ error: "Email not found" });
+      }
+      
+      if (!email.isRead) {
+        await storage.markEmailAsRead(id, true);
+        const folder = await storage.getEmailFolder(email.folderId);
+        if (folder) {
+          await storage.updateEmailFolderCounts(folder.id);
+        }
+      }
+      
+      const attachments = await storage.getEmailAttachments(id);
+      res.json({ ...email, attachments });
+    } catch (error) {
+      console.error("Error fetching email:", error);
+      res.status(500).json({ error: "Failed to fetch email" });
+    }
+  });
+
+  app.patch("/api/inbox/emails/:id/read", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { isRead } = req.body;
+      
+      const email = await storage.markEmailAsRead(id, isRead);
+      await storage.updateEmailFolderCounts(email.folderId);
+      res.json(email);
+    } catch (error) {
+      console.error("Error updating email:", error);
+      res.status(500).json({ error: "Failed to update email" });
+    }
+  });
+
+  app.patch("/api/inbox/emails/:id/star", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const email = await storage.toggleEmailStar(id);
+      res.json(email);
+    } catch (error) {
+      console.error("Error toggling star:", error);
+      res.status(500).json({ error: "Failed to toggle star" });
+    }
+  });
+
+  app.delete("/api/inbox/emails/:id", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const email = await storage.getEmail(id);
+      if (!email) {
+        return res.status(404).json({ error: "Email not found" });
+      }
+      
+      await storage.deleteEmail(id);
+      await storage.updateEmailFolderCounts(email.folderId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting email:", error);
+      res.status(500).json({ error: "Failed to delete email" });
+    }
+  });
+
+  app.get("/api/inbox/search", async (req: Request, res: Response) => {
+    try {
+      const tenantId = 1;
+      const query = req.query.q as string;
+      if (!query) {
+        return res.status(400).json({ error: "Query parameter 'q' is required" });
+      }
+      
+      const results = await storage.searchEmails(tenantId, query);
+      res.json(results);
+    } catch (error) {
+      console.error("Error searching emails:", error);
+      res.status(500).json({ error: "Failed to search emails" });
+    }
+  });
+
+  // Email Drafts
+  app.get("/api/inbox/drafts", async (req: Request, res: Response) => {
+    try {
+      const tenantId = 1;
+      const drafts = await storage.getEmailDrafts(tenantId);
+      res.json(drafts);
+    } catch (error) {
+      console.error("Error fetching drafts:", error);
+      res.status(500).json({ error: "Failed to fetch drafts" });
+    }
+  });
+
+  app.post("/api/inbox/drafts", async (req: Request, res: Response) => {
+    try {
+      const tenantId = 1;
+      const { toAddresses, ccAddresses, bccAddresses, subject, bodyHtml, inReplyTo, caseId, clientId } = req.body;
+      
+      const draft = await storage.createEmailDraft({
+        tenantId,
+        toAddresses,
+        ccAddresses,
+        bccAddresses,
+        subject,
+        bodyHtml,
+        inReplyTo,
+        caseId,
+        clientId,
+      });
+      
+      res.status(201).json(draft);
+    } catch (error) {
+      console.error("Error creating draft:", error);
+      res.status(500).json({ error: "Failed to create draft" });
+    }
+  });
+
+  app.put("/api/inbox/drafts/:id", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { toAddresses, ccAddresses, bccAddresses, subject, bodyHtml } = req.body;
+      
+      const draft = await storage.updateEmailDraft(id, {
+        toAddresses,
+        ccAddresses,
+        bccAddresses,
+        subject,
+        bodyHtml,
+      });
+      
+      res.json(draft);
+    } catch (error) {
+      console.error("Error updating draft:", error);
+      res.status(500).json({ error: "Failed to update draft" });
+    }
+  });
+
+  app.delete("/api/inbox/drafts/:id", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.deleteEmailDraft(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting draft:", error);
+      res.status(500).json({ error: "Failed to delete draft" });
+    }
+  });
+
+  app.post("/api/inbox/drafts/:id/send", async (req: Request, res: Response) => {
+    try {
+      const tenantId = 1;
+      const id = parseInt(req.params.id);
+      
+      const draft = await storage.getEmailDraft(id);
+      if (!draft) {
+        return res.status(404).json({ error: "Draft not found" });
+      }
+      
+      if (!draft.toAddresses || draft.toAddresses.length === 0) {
+        return res.status(400).json({ error: "No recipients specified" });
+      }
+      
+      const result = await emailService.sendEmail({
+        to: draft.toAddresses.join(", "),
+        cc: draft.ccAddresses?.join(", "),
+        bcc: draft.bccAddresses?.join(", "),
+        subject: draft.subject || "(Sem assunto)",
+        html: draft.bodyHtml || "",
+      });
+      
+      if (result.success) {
+        await storage.deleteEmailDraft(id);
+        await storage.createAuditLog({
+          tenantId,
+          action: "email_sent",
+          entityType: "email",
+          entityId: 0,
+          details: { to: draft.toAddresses, subject: draft.subject, messageId: result.messageId },
+        });
+      }
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Error sending draft:", error);
+      res.status(500).json({ error: "Failed to send email" });
     }
   });
 

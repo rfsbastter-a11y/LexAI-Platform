@@ -13,6 +13,7 @@ import ContractsPage from "@/pages/contracts";
 import BillingPage from "@/pages/billing";
 import CalendarPage from "@/pages/calendar";
 import ReportsPage from "@/pages/reports";
+import EmailPage from "@/pages/email";
 
 function Router() {
   return (
@@ -25,6 +26,7 @@ function Router() {
       <Route path="/billing" component={BillingPage} />
       <Route path="/calendar" component={CalendarPage} />
       <Route path="/reports" component={ReportsPage} />
+      <Route path="/email" component={EmailPage} />
       <Route component={NotFound} />
     </Switch>
   );

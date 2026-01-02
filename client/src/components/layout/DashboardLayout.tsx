@@ -16,7 +16,8 @@ import {
   X,
   LogOut,
   User,
-  Building2
+  Building2,
+  Mail
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -45,6 +46,7 @@ const NAV_ITEMS = [
   { label: "Agenda Jurídica", icon: Calendar, href: "/calendar" },
   { label: "Financeiro", icon: CreditCard, href: "/billing" },
   { label: "Relatórios", icon: BarChart3, href: "/reports" },
+  { label: "E-mail", icon: Mail, href: "/email" },
 ];
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {

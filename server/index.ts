@@ -4,6 +4,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDemoData } from "./seed";
 import { emailService } from "./services/email";
+import { imapService } from "./services/imap";
 
 const app = express();
 const httpServer = createServer(app);
@@ -62,8 +63,9 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // Initialize email service
+  // Initialize email services
   emailService.initialize();
+  imapService.initialize();
 
   // Seed demo data on startup
   try {

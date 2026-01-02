@@ -4,6 +4,7 @@ import {
   tenants, users, clients, contracts, cases, caseMovements,
   deadlines, documents, invoices, auditLogs, datajudSyncLogs,
   aiGenerationLogs, conversations, messages,
+  emailFolders, emails, emailAttachments, emailDrafts,
   type InsertTenant, type Tenant,
   type InsertUser, type User,
   type InsertClient, type Client,
@@ -18,6 +19,10 @@ import {
   type InsertAiGenerationLog, type AiGenerationLog,
   type InsertConversation, type Conversation,
   type InsertMessage, type Message,
+  type InsertEmailFolder, type EmailFolder,
+  type InsertEmail, type Email,
+  type InsertEmailAttachment, type EmailAttachment,
+  type InsertEmailDraft, type EmailDraft,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -443,6 +448,137 @@ class DatabaseStorage implements IStorage {
       monthlyBilling: `R$ ${Number(billingSum?.total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
       newCasesThisMonth: Number(newCasesCount?.count) || 0,
     };
+  }
+
+  // Email Folders
+  async getEmailFolders(tenantId: number): Promise<EmailFolder[]> {
+    return db.select().from(emailFolders).where(eq(emailFolders.tenantId, tenantId)).orderBy(emailFolders.name);
+  }
+
+  async getEmailFolder(id: number): Promise<EmailFolder | undefined> {
+    const [folder] = await db.select().from(emailFolders).where(eq(emailFolders.id, id));
+    return folder;
+  }
+
+  async getOrCreateEmailFolder(data: InsertEmailFolder): Promise<EmailFolder> {
+    const [existing] = await db.select().from(emailFolders).where(
+      and(
+        eq(emailFolders.tenantId, data.tenantId),
+        eq(emailFolders.imapPath, data.imapPath)
+      )
+    );
+    if (existing) return existing;
+    const [folder] = await db.insert(emailFolders).values(data).returning();
+    return folder;
+  }
+
+  async updateEmailFolderCounts(folderId: number): Promise<void> {
+    const [totalResult] = await db.select({ count: sql<number>`count(*)` })
+      .from(emails)
+      .where(eq(emails.folderId, folderId));
+    const [unreadResult] = await db.select({ count: sql<number>`count(*)` })
+      .from(emails)
+      .where(and(eq(emails.folderId, folderId), eq(emails.isRead, false)));
+    
+    await db.update(emailFolders).set({
+      totalCount: Number(totalResult?.count) || 0,
+      unreadCount: Number(unreadResult?.count) || 0,
+    }).where(eq(emailFolders.id, folderId));
+  }
+
+  async updateEmailFolderLastSync(folderId: number): Promise<void> {
+    await db.update(emailFolders).set({ lastSync: new Date() }).where(eq(emailFolders.id, folderId));
+  }
+
+  // Emails
+  async getEmails(folderId: number, limit = 50, offset = 0): Promise<Email[]> {
+    return db.select().from(emails)
+      .where(eq(emails.folderId, folderId))
+      .orderBy(desc(emails.date))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async getEmail(id: number): Promise<Email | undefined> {
+    const [email] = await db.select().from(emails).where(eq(emails.id, id));
+    return email;
+  }
+
+  async getEmailByMessageId(tenantId: number, messageId: string): Promise<Email | undefined> {
+    const [email] = await db.select().from(emails).where(
+      and(eq(emails.tenantId, tenantId), eq(emails.messageId, messageId))
+    );
+    return email;
+  }
+
+  async createEmail(data: InsertEmail): Promise<Email> {
+    const [email] = await db.insert(emails).values(data).returning();
+    return email;
+  }
+
+  async updateEmail(id: number, data: Partial<InsertEmail>): Promise<Email> {
+    const [email] = await db.update(emails).set(data).where(eq(emails.id, id)).returning();
+    return email;
+  }
+
+  async deleteEmail(id: number): Promise<void> {
+    await db.delete(emails).where(eq(emails.id, id));
+  }
+
+  async markEmailAsRead(id: number, isRead: boolean): Promise<Email> {
+    const [email] = await db.update(emails).set({ isRead }).where(eq(emails.id, id)).returning();
+    return email;
+  }
+
+  async toggleEmailStar(id: number): Promise<Email> {
+    const existing = await this.getEmail(id);
+    if (!existing) throw new Error("Email not found");
+    const [email] = await db.update(emails).set({ isStarred: !existing.isStarred }).where(eq(emails.id, id)).returning();
+    return email;
+  }
+
+  async searchEmails(tenantId: number, query: string, limit = 50): Promise<Email[]> {
+    return db.select().from(emails)
+      .where(and(
+        eq(emails.tenantId, tenantId),
+        sql`(${emails.subject} ILIKE ${'%' + query + '%'} OR ${emails.bodyText} ILIKE ${'%' + query + '%'} OR ${emails.fromAddress} ILIKE ${'%' + query + '%'})`
+      ))
+      .orderBy(desc(emails.date))
+      .limit(limit);
+  }
+
+  // Email Attachments
+  async getEmailAttachments(emailId: number): Promise<EmailAttachment[]> {
+    return db.select().from(emailAttachments).where(eq(emailAttachments.emailId, emailId));
+  }
+
+  async createEmailAttachment(data: InsertEmailAttachment): Promise<EmailAttachment> {
+    const [attachment] = await db.insert(emailAttachments).values(data).returning();
+    return attachment;
+  }
+
+  // Email Drafts
+  async getEmailDrafts(tenantId: number): Promise<EmailDraft[]> {
+    return db.select().from(emailDrafts).where(eq(emailDrafts.tenantId, tenantId)).orderBy(desc(emailDrafts.updatedAt));
+  }
+
+  async getEmailDraft(id: number): Promise<EmailDraft | undefined> {
+    const [draft] = await db.select().from(emailDrafts).where(eq(emailDrafts.id, id));
+    return draft;
+  }
+
+  async createEmailDraft(data: InsertEmailDraft): Promise<EmailDraft> {
+    const [draft] = await db.insert(emailDrafts).values(data).returning();
+    return draft;
+  }
+
+  async updateEmailDraft(id: number, data: Partial<InsertEmailDraft>): Promise<EmailDraft> {
+    const [draft] = await db.update(emailDrafts).set({ ...data, updatedAt: new Date() }).where(eq(emailDrafts.id, id)).returning();
+    return draft;
+  }
+
+  async deleteEmailDraft(id: number): Promise<void> {
+    await db.delete(emailDrafts).where(eq(emailDrafts.id, id));
   }
 }
 

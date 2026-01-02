@@ -360,3 +360,112 @@ export const conversationsRelations = relations(conversations, ({ one, many }) =
 export const messagesRelations = relations(messages, ({ one }) => ({
   conversation: one(conversations, { fields: [messages.conversationId], references: [conversations.id] }),
 }));
+
+// ==================== EMAIL FOLDERS ====================
+export const emailFolders = pgTable("email_folders", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  name: text("name").notNull(),
+  imapPath: text("imap_path").notNull(),
+  type: text("type").notNull().default("custom"), // inbox, sent, drafts, trash, spam, custom
+  unreadCount: integer("unread_count").notNull().default(0),
+  totalCount: integer("total_count").notNull().default(0),
+  lastSync: timestamp("last_sync"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertEmailFolderSchema = createInsertSchema(emailFolders).omit({ id: true, createdAt: true });
+export type InsertEmailFolder = z.infer<typeof insertEmailFolderSchema>;
+export type EmailFolder = typeof emailFolders.$inferSelect;
+
+// ==================== EMAILS ====================
+export const emails = pgTable("emails", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  folderId: integer("folder_id").notNull().references(() => emailFolders.id),
+  messageId: text("message_id").notNull(),
+  uid: integer("uid"),
+  subject: text("subject"),
+  fromAddress: text("from_address"),
+  fromName: text("from_name"),
+  toAddresses: jsonb("to_addresses").$type<string[]>(),
+  ccAddresses: jsonb("cc_addresses").$type<string[]>(),
+  bccAddresses: jsonb("bcc_addresses").$type<string[]>(),
+  bodyText: text("body_text"),
+  bodyHtml: text("body_html"),
+  date: timestamp("date").notNull(),
+  isRead: boolean("is_read").notNull().default(false),
+  isStarred: boolean("is_starred").notNull().default(false),
+  hasAttachments: boolean("has_attachments").notNull().default(false),
+  priority: text("priority").default("normal"), // low, normal, high
+  inReplyTo: text("in_reply_to"),
+  references: jsonb("references").$type<string[]>(),
+  caseId: integer("case_id").references(() => cases.id),
+  clientId: integer("client_id").references(() => clients.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertEmailSchema = createInsertSchema(emails).omit({ id: true, createdAt: true });
+export type InsertEmail = z.infer<typeof insertEmailSchema>;
+export type Email = typeof emails.$inferSelect;
+
+// ==================== EMAIL ATTACHMENTS ====================
+export const emailAttachments = pgTable("email_attachments", {
+  id: serial("id").primaryKey(),
+  emailId: integer("email_id").notNull().references(() => emails.id, { onDelete: "cascade" }),
+  filename: text("filename").notNull(),
+  contentType: text("content_type"),
+  size: integer("size"),
+  storagePath: text("storage_path"),
+  contentId: text("content_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertEmailAttachmentSchema = createInsertSchema(emailAttachments).omit({ id: true, createdAt: true });
+export type InsertEmailAttachment = z.infer<typeof insertEmailAttachmentSchema>;
+export type EmailAttachment = typeof emailAttachments.$inferSelect;
+
+// ==================== EMAIL DRAFTS ====================
+export const emailDrafts = pgTable("email_drafts", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  toAddresses: jsonb("to_addresses").$type<string[]>(),
+  ccAddresses: jsonb("cc_addresses").$type<string[]>(),
+  bccAddresses: jsonb("bcc_addresses").$type<string[]>(),
+  subject: text("subject"),
+  bodyHtml: text("body_html"),
+  inReplyTo: integer("in_reply_to").references(() => emails.id),
+  caseId: integer("case_id").references(() => cases.id),
+  clientId: integer("client_id").references(() => clients.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertEmailDraftSchema = createInsertSchema(emailDrafts).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEmailDraft = z.infer<typeof insertEmailDraftSchema>;
+export type EmailDraft = typeof emailDrafts.$inferSelect;
+
+// ==================== EMAIL RELATIONS ====================
+export const emailFoldersRelations = relations(emailFolders, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [emailFolders.tenantId], references: [tenants.id] }),
+  emails: many(emails),
+}));
+
+export const emailsRelations = relations(emails, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [emails.tenantId], references: [tenants.id] }),
+  folder: one(emailFolders, { fields: [emails.folderId], references: [emailFolders.id] }),
+  case: one(cases, { fields: [emails.caseId], references: [cases.id] }),
+  client: one(clients, { fields: [emails.clientId], references: [clients.id] }),
+  attachments: many(emailAttachments),
+}));
+
+export const emailAttachmentsRelations = relations(emailAttachments, ({ one }) => ({
+  email: one(emails, { fields: [emailAttachments.emailId], references: [emails.id] }),
+}));
+
+export const emailDraftsRelations = relations(emailDrafts, ({ one }) => ({
+  tenant: one(tenants, { fields: [emailDrafts.tenantId], references: [tenants.id] }),
+  inReplyToEmail: one(emails, { fields: [emailDrafts.inReplyTo], references: [emails.id] }),
+  case: one(cases, { fields: [emailDrafts.caseId], references: [cases.id] }),
+  client: one(clients, { fields: [emailDrafts.clientId], references: [clients.id] }),
+}));
