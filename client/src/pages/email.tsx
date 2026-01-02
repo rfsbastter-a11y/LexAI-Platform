@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import DOMPurify from "dompurify";
 import {
   Mail,
   Inbox,
@@ -566,7 +567,11 @@ export default function EmailPage() {
                       {selectedEmail.bodyHtml ? (
                         <div
                           className="prose prose-sm max-w-none"
-                          dangerouslySetInnerHTML={{ __html: selectedEmail.bodyHtml }}
+                          dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(selectedEmail.bodyHtml, {
+                            ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'u', 'strong', 'em', 'a', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'code', 'span', 'div', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'img'],
+                            ALLOWED_ATTR: ['href', 'src', 'alt', 'class', 'style', 'target', 'rel'],
+                            ALLOW_DATA_ATTR: false,
+                          }) }}
                         />
                       ) : (
                         <pre className="whitespace-pre-wrap text-sm font-sans">{selectedEmail.bodyText}</pre>
