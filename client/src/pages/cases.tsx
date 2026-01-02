@@ -365,24 +365,22 @@ export default function CasesPage() {
                             <p className="text-sm text-foreground/80 bg-muted/30 p-3 rounded-md border border-border/50">
                               {event.description}
                             </p>
-                            <div className="mt-2 flex gap-2 items-center">
+                            <div className="mt-2 flex flex-wrap gap-2 items-center justify-between">
                               <Badge variant="outline" className="text-[10px] h-5">{event.source}</Badge>
-                              {(event.type === 'Intimação' || event.type === 'Decisão' || event.type === 'Sentença') && (
-                                <Button 
-                                  variant="default" 
-                                  size="sm" 
-                                  className="h-8 text-xs gap-2 bg-blue-600 hover:bg-blue-700 text-white ml-auto btn-responsive shadow-sm"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedMovement(event);
-                                    setGeneratePieceOpen(true);
-                                  }}
-                                  data-testid={`btn-gerar-peca-${event.id}`}
-                                >
-                                  <Sparkles className="w-4 h-4" />
-                                  Gerar Peça com IA
-                                </Button>
-                              )}
+                              <Button 
+                                variant="default" 
+                                size="sm" 
+                                className="h-9 text-xs gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white btn-responsive shadow-md"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedMovement(event);
+                                  setGeneratePieceOpen(true);
+                                }}
+                                data-testid={`btn-gerar-peca-${event.id}`}
+                              >
+                                <Sparkles className="w-4 h-4" />
+                                Gerar Peça com IA
+                              </Button>
                             </div>
                           </div>
                         ))}
