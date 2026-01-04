@@ -271,6 +271,96 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/datajud/create-from-search", async (req: Request, res: Response) => {
+    try {
+      const tenantId = 1; // TODO: Get from authenticated session
+      const { datajudData, clientId } = req.body;
+      
+      if (!datajudData || !datajudData.numeroProcesso) {
+        return res.status(400).json({ error: "DataJud data with numeroProcesso is required" });
+      }
+
+      const existingCase = await storage.getCaseByNumber(datajudData.numeroProcesso);
+      if (existingCase && existingCase.tenantId === tenantId) {
+        return res.status(409).json({ error: "Processo já existe no sistema", caseId: existingCase.id });
+      }
+
+      let resolvedClientId = clientId;
+      if (!resolvedClientId) {
+        const clients = await storage.getClientsByTenant(tenantId);
+        if (clients.length === 0) {
+          const newClient = await storage.createClient({
+            tenantId,
+            name: "Cliente Importado DataJud",
+            document: "00000000000",
+            documentType: "cpf",
+            type: "fisica",
+          });
+          resolvedClientId = newClient.id;
+        } else {
+          resolvedClientId = clients[0].id;
+        }
+      }
+
+      const assuntoNome = datajudData.assuntos?.[0]?.nome || "Processo Importado";
+      const classeNome = datajudData.classe?.nome || "";
+      const title = classeNome ? `${classeNome} - ${assuntoNome}` : assuntoNome;
+
+      let caseType = "civil";
+      const tribunal = datajudData.tribunal?.toLowerCase() || "";
+      if (tribunal.includes("trt") || tribunal.includes("tst")) {
+        caseType = "trabalhista";
+      } else if (tribunal.includes("trf") || tribunal.includes("stj") || tribunal.includes("stf")) {
+        caseType = "federal";
+      } else if (tribunal.includes("tre") || tribunal.includes("tse")) {
+        caseType = "eleitoral";
+      }
+
+      const newCase = await storage.createCase({
+        tenantId,
+        clientId: resolvedClientId,
+        caseNumber: datajudData.numeroProcesso,
+        title: title.substring(0, 255),
+        caseType,
+        court: `${datajudData.tribunal} - ${datajudData.orgaoJulgador?.nome || ""}`,
+        caseClass: datajudData.classe?.nome || null,
+        subject: datajudData.assuntos?.[0]?.nome || null,
+        status: "ativo",
+        riskLevel: "medio",
+        tags: ["Importado DataJud"],
+        responsibleUserId: 1,
+        createdBy: 1,
+        datajudId: datajudData.id || null,
+        datajudLastSync: new Date(),
+      });
+
+      if (datajudData.movimentos && datajudData.movimentos.length > 0) {
+        await datajudService.importProcess(newCase.id, datajudData);
+      }
+
+      await storage.createAuditLog({
+        tenantId,
+        action: "datajud_import_new",
+        entityType: "case",
+        entityId: newCase.id,
+        details: { 
+          caseNumber: datajudData.numeroProcesso,
+          tribunal: datajudData.tribunal,
+          movementsImported: datajudData.movimentos?.length || 0 
+        },
+      });
+
+      res.status(201).json({ 
+        success: true, 
+        case: newCase,
+        movementsImported: datajudData.movimentos?.length || 0 
+      });
+    } catch (error) {
+      console.error("Error creating case from DataJud:", error);
+      res.status(500).json({ error: "Failed to create case from DataJud" });
+    }
+  });
+
   // ==================== DEADLINES ====================
   app.get("/api/deadlines", async (req: Request, res: Response) => {
     try {

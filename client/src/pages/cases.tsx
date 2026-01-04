@@ -27,6 +27,8 @@ import { useCases, useCaseMovements, useDatajudSearch } from "@/hooks/use-cases"
 import { useGeneratePiece } from "@/hooks/use-ai";
 import { Textarea } from "@/components/ui/textarea";
 import { useLocation } from "wouter";
+import { useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
 
 export default function CasesPage() {
   const [searchTerm, setSearchTerm] = useState("");
@@ -46,6 +48,9 @@ export default function CasesPage() {
   const datajudSearch = useDatajudSearch();
   const generatePiece = useGeneratePiece();
   const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [isConfirming, setIsConfirming] = useState(false);
 
   const handleImport = async () => {
     setImportStep("loading");
@@ -55,18 +60,53 @@ export default function CasesPage() {
       setImportStep("review");
     } catch (error) {
       console.error("Error searching DataJud:", error);
+      toast({ title: "Processo não encontrado no DataJud", variant: "destructive" });
       setImportStep("input");
     }
   };
 
-  const confirmImport = () => {
-    setImportStep("success");
-    setTimeout(() => {
-      setImportStep("input");
-      setIsImporting(false);
-      setDatajudResult(null);
-      setImportNumber("");
-    }, 1500);
+  const confirmImport = async () => {
+    if (!datajudResult) return;
+    
+    setIsConfirming(true);
+    try {
+      const response = await fetch("/api/datajud/create-from-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ datajudData: datajudResult }),
+      });
+      
+      const result = await response.json();
+      
+      if (!response.ok) {
+        if (response.status === 409) {
+          toast({ title: "Este processo já existe no sistema", variant: "destructive" });
+        } else {
+          toast({ title: result.error || "Erro ao importar processo", variant: "destructive" });
+        }
+        setIsConfirming(false);
+        return;
+      }
+      
+      toast({ 
+        title: "Processo importado com sucesso!", 
+        description: `${result.movementsImported} movimentações importadas.` 
+      });
+      setImportStep("success");
+      queryClient.invalidateQueries({ queryKey: ["/api/cases"] });
+      
+      setTimeout(() => {
+        setImportStep("input");
+        setIsImporting(false);
+        setDatajudResult(null);
+        setImportNumber("");
+        setIsConfirming(false);
+      }, 1500);
+    } catch (error) {
+      console.error("Error importing case:", error);
+      toast({ title: "Erro ao importar processo", variant: "destructive" });
+      setIsConfirming(false);
+    }
   };
 
   const handleGeneratePiece = async () => {
@@ -203,8 +243,11 @@ export default function CasesPage() {
                 )}
                 {importStep === "review" && (
                   <>
-                    <Button variant="outline" onClick={() => setImportStep("input")}>Voltar</Button>
-                    <Button onClick={confirmImport}>Confirmar Importação</Button>
+                    <Button variant="outline" onClick={() => setImportStep("input")} disabled={isConfirming}>Voltar</Button>
+                    <Button onClick={confirmImport} disabled={isConfirming}>
+                      {isConfirming ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                      Confirmar Importação
+                    </Button>
                   </>
                 )}
               </DialogFooter>
