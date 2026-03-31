@@ -1,6 +1,7 @@
 import { db } from "./db";
-import { tenants, users, clients, contracts, cases, caseMovements, deadlines } from "@shared/schema";
+import { tenants, users, clients, contracts, cases, caseMovements, deadlines, whatsappConfig } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import bcrypt from "bcryptjs";
 
 export async function seedDemoData() {
   console.log("Checking for existing demo data...");
@@ -8,7 +9,8 @@ export async function seedDemoData() {
   const existingTenant = await db.select().from(tenants).where(eq(tenants.slug, "demo-escritorio"));
   
   if (existingTenant.length > 0) {
-    console.log("Demo data already exists, skipping seed.");
+    console.log("Demo data already exists, ensuring admin user exists...");
+    await ensureAdminUser(existingTenant[0].id);
     return;
   }
 
@@ -16,7 +18,7 @@ export async function seedDemoData() {
 
   // Create demo tenant
   const [tenant] = await db.insert(tenants).values({
-    name: "Barros & Silva Advogados Associados",
+    name: "Marques & Serra Sociedade de Advogados",
     slug: "demo-escritorio",
     plan: "enterprise",
     isActive: true,
@@ -25,10 +27,12 @@ export async function seedDemoData() {
   console.log("Created tenant:", tenant.name);
 
   // Create demo users
+  const hashedPassword = bcrypt.hashSync("lexai2024", 10);
+
   const [socio] = await db.insert(users).values({
     tenantId: tenant.id,
     email: "roberta@barrosesilva.adv.br",
-    password: "$2b$10$demo", // Demo password hash
+    password: hashedPassword,
     name: "Dra. Roberta Silva",
     role: "socio",
     oabNumber: "MG-123456",
@@ -39,7 +43,7 @@ export async function seedDemoData() {
     {
       tenantId: tenant.id,
       email: "carlos@barrosesilva.adv.br",
-      password: "$2b$10$demo",
+      password: hashedPassword,
       name: "Dr. Carlos Barros",
       role: "socio",
       oabNumber: "MG-654321",
@@ -48,7 +52,7 @@ export async function seedDemoData() {
     {
       tenantId: tenant.id,
       email: "ana@barrosesilva.adv.br",
-      password: "$2b$10$demo",
+      password: hashedPassword,
       name: "Dra. Ana Mendes",
       role: "advogado",
       oabNumber: "MG-111222",
@@ -57,7 +61,7 @@ export async function seedDemoData() {
     {
       tenantId: tenant.id,
       email: "pedro@barrosesilva.adv.br",
-      password: "$2b$10$demo",
+      password: hashedPassword,
       name: "Pedro Santos",
       role: "estagiario",
       isActive: true,
@@ -288,4 +292,73 @@ export async function seedDemoData() {
   console.log("⚠️  AVISO: Estes são dados de DEMONSTRAÇÃO.");
   console.log("    NÃO representam casos ou clientes reais.");
   console.log("    Não devem ser confundidos com informações jurídicas verdadeiras.");
+
+  await ensureAdminUser(tenant.id);
+}
+
+async function ensureAdminUser(tenantId: number) {
+  const adminEmail = "contato@marqueseserra.adv.br";
+  const existing = await db.select().from(users).where(eq(users.email, adminEmail));
+  if (existing.length > 0) {
+    console.log("Admin user already exists.");
+  } else {
+    const hashedPassword = await bcrypt.hash("LexAI@2024", 10);
+    await db.insert(users).values({
+      tenantId,
+      email: adminEmail,
+      password: hashedPassword,
+      name: "Dr. Ronald Serra",
+      role: "socio",
+      oabNumber: "DF-23947",
+      isActive: true,
+    });
+    console.log("Admin user created: " + adminEmail);
+  }
+  await ensureEstagiarioUsers(tenantId);
+}
+
+async function ensureEstagiarioUsers(tenantId: number) {
+  const estagiarios = [
+    { email: "jobs@marqueseserra.adv.br", name: "Jobs", phone: "5561993255095" },
+    { email: "yasmin@marqueseserra.adv.br", name: "Yasmin", phone: "5561982222110" },
+  ];
+  const hashedPassword = await bcrypt.hash("mes2026", 10);
+  for (const u of estagiarios) {
+    const existing = await db.select().from(users).where(eq(users.email, u.email));
+    if (existing.length === 0) {
+      await db.insert(users).values({
+        tenantId,
+        email: u.email,
+        password: hashedPassword,
+        name: u.name,
+        role: "estagiario",
+        phone: u.phone,
+        isActive: true,
+      });
+      console.log("Estagiário user created: " + u.email);
+    }
+  }
+  await ensureWhatsappContacts(tenantId);
+}
+
+async function ensureWhatsappContacts(tenantId: number) {
+  const contacts = [
+    { phoneNumber: "5561983717842", contactName: "Ronald Serra" },
+    { phoneNumber: "5561984919915", contactName: "Pedro Marques" },
+    { phoneNumber: "5561993255095", contactName: "Jobs" },
+    { phoneNumber: "5561982222110", contactName: "Yasmin" },
+  ];
+  for (const c of contacts) {
+    const existing = await db.select().from(whatsappConfig)
+      .where(eq(whatsappConfig.phoneNumber, c.phoneNumber));
+    if (existing.length === 0) {
+      await db.insert(whatsappConfig).values({
+        tenantId,
+        phoneNumber: c.phoneNumber,
+        contactName: c.contactName,
+        isActive: true,
+      });
+      console.log("WhatsApp contact ensured: " + c.contactName);
+    }
+  }
 }

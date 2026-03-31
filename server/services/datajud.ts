@@ -4,10 +4,22 @@ import type { InsertCaseMovement } from "@shared/schema";
 import { TRIBUNAIS_REGISTRY, parseCaseNumber, getTribunalBySigla, getAllTribunais, type TribunalInfo } from "./datajudRegistry";
 
 interface DatajudMovement {
-  data: string;
+  dataHora: string;
   nome: string;
-  codigo?: string;
-  complemento?: string;
+  codigo?: number;
+  complementosTabelados?: Array<{
+    codigo: number;
+    valor: number;
+    nome: string;
+    descricao: string;
+  }>;
+}
+
+interface DatajudParte {
+  nome?: string;
+  tipoParte?: string;
+  polo?: string;
+  cpfCnpj?: string;
 }
 
 interface DatajudProcess {
@@ -19,6 +31,8 @@ interface DatajudProcess {
   movimentos?: DatajudMovement[];
   siglaTribunal?: string;
   grau?: string;
+  partes?: DatajudParte[];
+  valorCausa?: number;
 }
 
 interface DatajudSearchResult {
@@ -245,17 +259,54 @@ export class DatajudService {
     }
   }
 
+  extractPartes(partes: DatajudParte[] = []): { autor: string; reu: string } {
+    const autores: string[] = [];
+    const reus: string[] = [];
+    
+    for (const parte of partes) {
+      if (!parte.nome) continue;
+      const polo = (parte.polo || parte.tipoParte || "").toLowerCase();
+      if (polo.includes("ativo") || polo.includes("autor") || polo.includes("requerente") || polo.includes("reclamante") || polo.includes("exequente")) {
+        autores.push(parte.nome);
+      } else if (polo.includes("passivo") || polo.includes("réu") || polo.includes("reu") || polo.includes("requerido") || polo.includes("reclamado") || polo.includes("executado")) {
+        reus.push(parte.nome);
+      }
+    }
+    
+    return {
+      autor: autores.join(", ") || "Não informado",
+      reu: reus.join(", ") || "Não informado",
+    };
+  }
+
+  extractTeor(mov: DatajudMovement): string {
+    if (!mov.complementosTabelados || mov.complementosTabelados.length === 0) {
+      return "";
+    }
+    return mov.complementosTabelados
+      .map(c => c.descricao || c.nome)
+      .filter(Boolean)
+      .join(". ");
+  }
+
   async importProcess(caseId: number, processData: DatajudProcess): Promise<void> {
-    const movements: InsertCaseMovement[] = (processData.movimentos || []).map(mov => ({
-      caseId,
-      date: new Date(mov.data),
-      type: this.classifyMovementType(mov.nome),
-      description: mov.complemento ? `${mov.nome}: ${mov.complemento}` : mov.nome,
-      source: "DataJud",
-      datajudCode: mov.codigo,
-      datajudPayload: mov as any,
-      requiresAction: this.requiresAction(mov.nome),
-    }));
+    const movements: InsertCaseMovement[] = (processData.movimentos || []).map(mov => {
+      const complementos = mov.complementosTabelados?.map(c => c.nome).join(", ") || "";
+      const description = complementos ? `${mov.nome}: ${complementos}` : mov.nome;
+      const teor = this.extractTeor(mov);
+      
+      return {
+        caseId,
+        date: new Date(mov.dataHora),
+        type: this.classifyMovementType(mov.nome),
+        description,
+        teor: teor || null,
+        source: "DataJud",
+        datajudCode: mov.codigo?.toString(),
+        datajudPayload: mov as any,
+        requiresAction: this.requiresAction(mov.nome),
+      };
+    });
 
     if (movements.length > 0) {
       await storage.createCaseMovements(movements);
@@ -263,11 +314,23 @@ export class DatajudService {
 
     const payloadHash = createHash("sha256").update(JSON.stringify(processData)).digest("hex");
     
+    // Extrair partes (autor/réu)
+    const { autor, reu } = this.extractPartes(processData.partes);
+    
+    // Extrair assuntos
+    const assuntos = (processData.assuntos || []).map(a => a.nome).filter(Boolean);
+    
     await storage.updateCase(caseId, {
       datajudLastSync: new Date(),
       datajudPayloadHash: payloadHash,
-      caseClass: processData.classe?.nome,
+      caseClass: processData.classe?.codigo?.toString(),
+      classeNome: processData.classe?.nome,
       subject: processData.assuntos?.[0]?.nome,
+      autor,
+      reu,
+      vara: processData.orgaoJulgador?.nome,
+      valorCausa: processData.valorCausa?.toString(),
+      assuntos,
     });
 
     const tribunalInfo = getTribunalBySigla(processData.siglaTribunal || "");
@@ -284,7 +347,7 @@ export class DatajudService {
 
   private classifyMovementType(name: string): string {
     const lower = name.toLowerCase();
-    if (lower.includes("intimação") || lower.includes("intimacao")) return "Intimação";
+    if (lower.includes("intimação") || lower.includes("intimacao") || lower.includes("intimado") || lower.includes("intimada")) return "Intimação";
     if (lower.includes("sentença") || lower.includes("sentenca")) return "Sentença";
     if (lower.includes("decisão") || lower.includes("decisao") || lower.includes("despacho")) return "Decisão";
     if (lower.includes("audiência") || lower.includes("audiencia")) return "Audiência";
@@ -296,9 +359,13 @@ export class DatajudService {
     const lower = name.toLowerCase();
     return lower.includes("intimação") || 
            lower.includes("intimacao") || 
+           lower.includes("intimado") ||
+           lower.includes("intimada") ||
            lower.includes("citação") || 
            lower.includes("citacao") ||
-           lower.includes("prazo");
+           lower.includes("prazo") ||
+           lower.includes("oportunizo") ||
+           lower.includes("oportunizando");
   }
 }
 

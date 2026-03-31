@@ -18,3 +18,25 @@ export function useCreateContract() {
     },
   });
 }
+
+export function useUpdateContract() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) => contractsApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["contracts"] });
+    },
+  });
+}
+
+export function useDeleteContract() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (id: number) => contractsApi.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["contracts"] });
+    },
+  });
+}

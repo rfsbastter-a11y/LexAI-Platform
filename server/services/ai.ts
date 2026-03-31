@@ -1,9 +1,18 @@
 import OpenAI from "openai";
+import { GoogleGenAI } from "@google/genai";
 import { storage } from "../storage";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+});
+
+const gemini = new GoogleGenAI({
+  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
+  httpOptions: {
+    apiVersion: "",
+    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+  },
 });
 
 interface AiCitation {
@@ -40,9 +49,10 @@ Você está aqui para ASSISTIR advogados, não substituí-los. Toda produção r
 export class AiService {
   async chat(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    contextDocuments?: Array<{ id: number; title: string; content: string }>
+    contextDocuments?: Array<{ id: number; title: string; content: string }>,
+    options?: { systemPromptOverride?: string; maxTokens?: number; temperature?: number }
   ): Promise<AiResponse> {
-    let systemPrompt = SYSTEM_PROMPT;
+    let systemPrompt = options?.systemPromptOverride || SYSTEM_PROMPT;
 
     if (contextDocuments && contextDocuments.length > 0) {
       systemPrompt += "\n\nDOCUMENTOS EM CONTEXTO:\n";
@@ -57,8 +67,8 @@ export class AiService {
         { role: "system", content: systemPrompt },
         ...messages,
       ],
-      max_tokens: 4096,
-      temperature: 0.3,
+      max_tokens: options?.maxTokens || 16000,
+      temperature: options?.temperature ?? 0.1,
     });
 
     const content = response.choices[0]?.message?.content || "";
@@ -127,8 +137,19 @@ Forneça:
     return this.chat([{ role: "user", content: prompt }]);
   }
 
-  async extractDataFromDocument(documentContent: string, extractionType: "contract" | "procuration" | "petition"): Promise<Record<string, any>> {
+  async extractDataFromDocument(documentContent: string, extractionType: "contract" | "procuration" | "petition" | "client"): Promise<Record<string, any>> {
     const prompts: Record<string, string> = {
+      client: `Extraia os dados de cliente/pessoa deste documento. Retorne APENAS um JSON com estes campos (preencha o que encontrar, string vazia para campos não encontrados):
+{
+  "type": "PF" ou "PJ",
+  "name": "nome completo ou razão social",
+  "document": "CPF ou CNPJ (apenas números)",
+  "email": "email",
+  "phone": "telefone",
+  "address": "endereço completo",
+  "notes": "outras informações relevantes como profissão, estado civil, nacionalidade, RG"
+}
+Se encontrar dados de mais de uma pessoa, priorize a pessoa principal (cliente/contratante/requerente).`,
       contract: `Extraia os seguintes dados do contrato:
 - Partes contratantes (nome, CPF/CNPJ)
 - Objeto do contrato
@@ -171,6 +192,55 @@ Retorne os dados em formato estruturado JSON.`;
     }
   }
 
+  async chatWithGemini(
+    prompt: string,
+    systemPrompt?: string
+  ): Promise<AiResponse & { modelUsed: string }> {
+    const maxRetries = 3;
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const waitMs = Math.pow(2, attempt) * 1000;
+          console.log(`[Gemini] Rate limited, waiting ${waitMs}ms before retry ${attempt + 1}/${maxRetries}`);
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+        }
+
+        const config: Record<string, unknown> = {
+          temperature: 0.1,
+          maxOutputTokens: 65536,
+        };
+        if (systemPrompt) {
+          config.systemInstruction = systemPrompt;
+        }
+
+        const response = await gemini.models.generateContent({
+          model: "gemini-2.5-pro",
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          config,
+        });
+
+        const content = response.text || "";
+        const tokensUsed = response.usageMetadata?.totalTokenCount || 0;
+
+        return {
+          content,
+          citations: this.extractCitations(content),
+          tokensUsed,
+          modelUsed: "gemini-2.5-pro",
+        };
+      } catch (error: any) {
+        lastError = error;
+        if (error?.status !== 429) {
+          throw error;
+        }
+      }
+    }
+
+    throw lastError || new Error("Gemini rate limit exceeded after retries");
+  }
+
   private extractCitations(content: string, contextDocuments?: Array<{ id: number; title: string; content: string }>): AiCitation[] {
     const citations: AiCitation[] = [];
 
@@ -208,6 +278,57 @@ Retorne os dados em formato estruturado JSON.`;
     }
 
     return citations;
+  }
+
+  async analyzeFile(content: string, fileName: string, isImage: boolean, imageBase64?: string): Promise<AiResponse> {
+    const systemPrompt = `Você é a LexAI, assistente jurídica do escritório Marques & Serra Sociedade de Advogados. O usuário enviou o arquivo "${fileName}".
+
+INSTRUÇÕES:
+1. ENTENDA o conteúdo do documento - NÃO transcreva o texto inteiro
+2. Identifique o tipo de documento (contrato, procuração, petição, decisão, certidão, etc.)
+3. Faça um RESUMO EXECUTIVO com os pontos principais (máximo 5-8 itens)
+4. Extraia dados-chave: partes envolvidas, datas importantes, valores, obrigações
+5. Sugira 2-3 ações práticas que podem ser executadas no sistema (cadastrar cliente, gerar peça, criar contrato, etc.)
+6. Responda de forma organizada, breve e prática em português
+7. MEMORIZE estas informações para referência futura na conversa`;
+
+    if (isImage && imageBase64) {
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: `Analise esta imagem do arquivo "${fileName}". Extraia todo o texto visível (OCR) e identifique o tipo de documento jurídico.` },
+              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } }
+            ] as any,
+          },
+        ],
+        max_tokens: 4000,
+      });
+
+      return {
+        content: response.choices[0].message.content || "Não foi possível analisar a imagem.",
+        citations: [],
+        tokensUsed: response.usage?.total_tokens || 0,
+      };
+    }
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Arquivo: ${fileName}\n\nConteúdo:\n${content.substring(0, 8000)}` },
+      ],
+      max_tokens: 4000,
+    });
+
+    return {
+      content: response.choices[0].message.content || "Não foi possível analisar o arquivo.",
+      citations: [],
+      tokensUsed: response.usage?.total_tokens || 0,
+    };
   }
 }
 

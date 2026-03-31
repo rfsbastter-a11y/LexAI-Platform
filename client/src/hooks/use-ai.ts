@@ -23,6 +23,12 @@ export function useSummarizeDocument() {
   });
 }
 
+export function useAnalyzeIntimacao() {
+  return useMutation({
+    mutationFn: aiApi.analyzeIntimacao,
+  });
+}
+
 export function useExtractData() {
   return useMutation({
     mutationFn: ({ content, type }: { content: string; type: "contract" | "procuration" | "petition" }) =>

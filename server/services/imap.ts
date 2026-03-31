@@ -50,7 +50,7 @@ class ImapService {
     this.config = {
       user,
       password,
-      host: "imap.zoho.com",
+      host: "imappro.zoho.com",
       port: 993,
       tls: true,
     };

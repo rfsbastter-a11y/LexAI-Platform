@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { casesApi, datajudApi } from "@/lib/api";
+import { casesApi } from "@/lib/api";
 
 export function useCases() {
   return useQuery({
@@ -35,20 +35,14 @@ export function useCreateCase() {
   });
 }
 
-export function useDatajudSearch() {
-  return useMutation({
-    mutationFn: datajudApi.search,
-  });
-}
-
-export function useDatajudImport() {
+export function useUpdateCase() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: datajudApi.import,
-    onSuccess: (_, caseId) => {
-      queryClient.invalidateQueries({ queryKey: ["cases", caseId, "movements"] });
-      queryClient.invalidateQueries({ queryKey: ["cases", caseId] });
+    mutationFn: ({ id, data }: { id: number; data: any }) => casesApi.update(id, data),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["cases"] });
+      queryClient.invalidateQueries({ queryKey: ["cases", variables.id] });
     },
   });
 }

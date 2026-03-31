@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "XFRaFn1XnrGVVIzFHD-VT"
+uri = "file://public/reuniao_lexai.tar.gz"
+type = "unspecified"
+title = "Código da Reunião — LexAI (4 arquivos)"

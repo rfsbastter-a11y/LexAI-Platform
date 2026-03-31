@@ -177,7 +177,24 @@
     }
   }
   
-  /* Button group responsive */
+  .sidebar-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.15) transparent;
+  }
+  .sidebar-scroll::-webkit-scrollbar {
+    width: 4px;
+  }
+  .sidebar-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .sidebar-scroll::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.15);
+    border-radius: 4px;
+  }
+  .sidebar-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(255,255,255,0.25);
+  }
+
   .button-group-responsive {
     @apply flex flex-wrap gap-2;
   }
@@ -190,5 +207,63 @@
     .button-group-responsive > a {
       @apply w-full justify-center;
     }
+  }
+
+  .piece-preview-content p,
+  .piece-inline-content p {
+    margin-bottom: 0.8em;
+    text-indent: 2em;
+    text-align: justify;
+  }
+  .piece-preview-content > p:first-child,
+  .piece-inline-content > p:first-child {
+    text-indent: 0;
+  }
+  .piece-preview-content p.section-title,
+  .piece-inline-content p.section-title {
+    text-indent: 0;
+    text-align: left;
+    margin-top: 1.4em;
+    margin-bottom: 0.5em;
+    font-weight: bold;
+  }
+  .piece-preview-content p.centered-title,
+  .piece-inline-content p.centered-title {
+    text-indent: 0;
+    text-align: center;
+    margin-top: 1.4em;
+    margin-bottom: 0.5em;
+    font-weight: bold;
+  }
+  .piece-preview-content p.no-indent,
+  .piece-inline-content p.no-indent {
+    text-indent: 0;
+  }
+  .piece-preview-content p.signature-block,
+  .piece-inline-content p.signature-block {
+    text-indent: 0;
+    text-align: center;
+    margin-top: 0.5em;
+  }
+  .piece-preview-content blockquote,
+  .piece-inline-content blockquote {
+    margin-left: 4cm;
+    margin-right: 0;
+    font-size: 11pt;
+    text-align: justify;
+    margin-top: 0.5em;
+    margin-bottom: 0.5em;
+    text-indent: 0;
+  }
+  .piece-preview-content p.empty-lines,
+  .piece-inline-content p.empty-lines {
+    margin-bottom: 0.6em;
+    height: 0.8em;
+  }
+  .piece-preview-content p.page-break,
+  .piece-inline-content p.page-break {
+    page-break-before: always;
+    margin-top: 3em;
+    border-top: 1px dashed #ccc;
   }
 }

@@ -36,7 +36,7 @@ interface EmailResult {
 class EmailService {
   private transporter: Transporter | null = null;
   private fromAddress: string = "";
-  private fromName: string = "LexAI - Marques & Serra Advocacia";
+  private fromName: string = "LexAI - Marques & Serra Sociedade de Advogados";
 
   initialize(): void {
     const user = process.env.ZOHO_MAIL_USER;
@@ -83,6 +83,8 @@ class EmailService {
         bcc: options.bcc ? (Array.isArray(options.bcc) ? options.bcc.join(", ") : options.bcc) : undefined,
         replyTo: options.replyTo || this.fromAddress,
         attachments: options.attachments,
+        encoding: "quoted-printable" as const,
+        textEncoding: "quoted-printable" as const,
       };
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -156,7 +158,7 @@ class EmailService {
       <p>Por favor, tome as providências necessárias para cumprir o prazo dentro do período estabelecido.</p>
     </div>
     <div class="footer">
-      <p>Marques & Serra Advocacia</p>
+      <p>Marques & Serra Sociedade de Advogados</p>
       <p>Este e-mail foi enviado automaticamente pelo LexAI.</p>
     </div>
   </div>
@@ -179,7 +181,7 @@ Vencimento: ${formattedDate}
 Este é um lembrete automático do sistema LexAI.
 
 ---
-Marques & Serra Advocacia
+Marques & Serra Sociedade de Advogados
     `;
 
     return this.sendEmail({
@@ -255,7 +257,7 @@ Marques & Serra Advocacia
       ${movementInfo.requiresAction ? '<p style="color: #dc2626;"><strong>⚠️ Esta movimentação requer sua atenção e ação.</strong></p>' : ''}
     </div>
     <div class="footer">
-      <p>Marques & Serra Advocacia</p>
+      <p>Marques & Serra Sociedade de Advogados</p>
       <p>Este e-mail foi enviado automaticamente pelo LexAI.</p>
     </div>
   </div>
@@ -278,7 +280,7 @@ ${movementInfo.description}
 ${movementInfo.requiresAction ? "⚠️ Esta movimentação requer sua atenção e ação." : ""}
 
 ---
-Marques & Serra Advocacia
+Marques & Serra Sociedade de Advogados
     `;
 
     return this.sendEmail({

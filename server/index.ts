@@ -3,8 +3,49 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDemoData } from "./seed";
+import { setupAuth } from "./auth";
 import { emailService } from "./services/email";
-import { imapService } from "./services/imap";
+import { zohoMailService } from "./services/zohoMail";
+import { startDatajudSyncService } from "./services/datajudSync";
+import { startDailyCron } from "./services/dailyCron";
+import { startSyncSchedule } from "./services/dbSync";
+
+process.on("uncaughtException", (err) => {
+  const msg = err.message || "";
+  const isBaileysError = msg.includes("authenticate data") ||
+    msg.includes("Unsupported state") ||
+    msg.includes("Connection Failure") ||
+    msg.includes("Connection Closed") ||
+    msg.includes("connection errored") ||
+    msg.includes("Stream Errored") ||
+    msg.includes("Timed Out") ||
+    err.stack?.includes("baileys") ||
+    err.stack?.includes("noise-handler") ||
+    err.stack?.includes("WebSocketClient");
+  if (isBaileysError) {
+    console.error("[WhatsApp] Baileys error caught - app continues running:", msg);
+  } else {
+    console.error("[UNCAUGHT EXCEPTION]", msg, err.stack);
+  }
+});
+
+process.on("unhandledRejection", (reason: any) => {
+  const msg = reason?.message || String(reason);
+  const stack = reason?.stack || "";
+  const isBaileysError = msg.includes("Connection Failure") ||
+    msg.includes("Connection Closed") ||
+    msg.includes("connection errored") ||
+    msg.includes("Stream Errored") ||
+    msg.includes("Timed Out") ||
+    stack.includes("baileys") ||
+    stack.includes("noise-handler") ||
+    stack.includes("WebSocketClient");
+  if (isBaileysError) {
+    console.error("[WhatsApp] Baileys rejection caught - app continues running:", msg);
+  } else {
+    console.error("[UNHANDLED REJECTION]", msg);
+  }
+});
 
 const app = express();
 const httpServer = createServer(app);
@@ -17,13 +58,14 @@ declare module "http" {
 
 app.use(
   express.json({
+    limit: '50mb',
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: '50mb' }));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -65,7 +107,7 @@ app.use((req, res, next) => {
 (async () => {
   // Initialize email services
   emailService.initialize();
-  imapService.initialize();
+  zohoMailService.initialize();
 
   // Seed demo data on startup
   try {
@@ -74,14 +116,59 @@ app.use((req, res, next) => {
     console.error("Error seeding demo data:", error);
   }
 
+  setupAuth(app);
+
   await registerRoutes(httpServer, app);
+
+  const { runDataMigrationIfNeeded } = await import("./services/dataMigration");
+  runDataMigrationIfNeeded().catch(e => console.error("[Migration] Error:", e));
+
+  startDatajudSyncService(1);
+  startDailyCron(1);
+  startSyncSchedule();
+
+  setTimeout(async () => {
+    try {
+      const { whatsappService } = await import("./services/whatsapp");
+      const hasCreds = await whatsappService.hasCredentials(1);
+      if (hasCreds) {
+        console.log("[WhatsApp] PostgreSQL credentials found. Auto-connecting...");
+        await whatsappService.initialize(1, false);
+        console.log("[WhatsApp] Auto-connect initiated successfully.");
+      } else {
+        console.log("[WhatsApp] No saved credentials. Connect manually via Settings.");
+      }
+    } catch (err: any) {
+      console.error("[WhatsApp] Auto-connect failed (non-fatal):", err?.message || err);
+    }
+  }, 5000);
+
+  setInterval(async () => {
+    try {
+      const { whatsappService } = await import("./services/whatsapp");
+      const status = whatsappService.getStatus();
+      if (status.status === "disconnected") {
+        const hasCreds = await whatsappService.hasCredentials(1);
+        if (hasCreds) {
+          console.log("[WhatsApp] Health check: disconnected with credentials. Reconnecting...");
+          await whatsappService.initialize(1, false);
+        }
+      }
+    } catch (err: any) {
+      console.error("[WhatsApp] Health check error (non-fatal):", err?.message || err);
+    }
+  }, 5 * 60 * 1000);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
 
-    res.status(status).json({ message });
-    throw err;
+    if (!res.headersSent) {
+      res.status(status).json({ message });
+    }
+    if (status >= 500) {
+      console.error("[Express Error]", message);
+    }
   });
 
   // importantly only setup vite in development and after
