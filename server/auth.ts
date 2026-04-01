@@ -74,6 +74,10 @@ async function deleteUserTokens(userId: number) {
   await pool.query(`DELETE FROM auth_tokens WHERE user_id = $1`, [userId]);
 }
 
+function isDevAutoAuthEnabled() {
+  return process.env.NODE_ENV === "development" && process.env.DEV_AUTO_LOGIN === "true";
+}
+
 export function setupAuth(app: Express) {
   const PgStore = connectPgSimple(session);
 
@@ -177,7 +181,7 @@ export function setupAuth(app: Express) {
   app.get("/api/auth/me", (req: Request, res: Response) => {
     const user = req.tokenUser || req.session.user;
     if (!user) {
-      if (process.env.NODE_ENV === "development") {
+      if (isDevAutoAuthEnabled()) {
         const devUser = {
           id: 5,
           tenantId: 1,
@@ -247,7 +251,7 @@ export function setupAuth(app: Express) {
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const user = req.tokenUser || req.session.user;
   if (!user) {
-    if (process.env.NODE_ENV === "development") {
+    if (isDevAutoAuthEnabled()) {
       req.session.user = {
         id: 5,
         tenantId: 1,
