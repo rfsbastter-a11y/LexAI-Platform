@@ -229,7 +229,7 @@ export function useInterpreter({ meetingType }: UseInterpreterProps = {}) {
       for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
       const base64 = btoa(binary);
 
-      const transcribeRes = await fetch('/api/ai/whisper-transcribe', {
+      const transcribeRes = await fetchWithRetry('/api/ai/whisper-transcribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         credentials: 'include',
@@ -252,11 +252,12 @@ export function useInterpreter({ meetingType }: UseInterpreterProps = {}) {
       }
     } catch (err) {
       console.error('[useInterpreter] transcribe error:', err);
+      setError("Erro inesperado ao transcrever — tente novamente.");
     } finally {
       setCurrentPtText("");
       setIsProcessing(false);
     }
-  }, [callInterpret]);
+  }, [callInterpret, fetchWithRetry]);
 
   // ── MODES 2 & 3: continuous SpeechRecognition (real-time feedback) ──────
   const startSpeechCapture = useCallback(() => {

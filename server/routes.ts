@@ -3241,7 +3241,7 @@ Return JSON only with these three fields.`;
 
   app.post("/api/ai/tts", requireAuth, async (req: Request, res: Response) => {
     try {
-      const { text, voice = "nova" } = req.body;
+      const { text, voice = "onyx" } = req.body;
       if (!text) return res.status(400).json({ error: "text is required" });
 
       const OpenAI = (await import("openai")).default;
@@ -3251,7 +3251,7 @@ Return JSON only with these three fields.`;
 
       const speech = await client.audio.speech.create({
         model: "tts-1",
-        voice: voice as "nova",
+        voice: voice as "onyx",
         input: text,
       });
 
