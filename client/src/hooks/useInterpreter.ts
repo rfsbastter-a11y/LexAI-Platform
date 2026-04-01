@@ -98,7 +98,7 @@ export function useInterpreter({ meetingType }: UseInterpreterProps = {}) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         credentials: 'include',
-        body: JSON.stringify({ text, voice: 'nova' }),
+        body: JSON.stringify({ text, voice: 'onyx' }),
       });
       if (!res.ok) return;
       const blob = await res.blob();
@@ -111,6 +111,20 @@ export function useInterpreter({ meetingType }: UseInterpreterProps = {}) {
     }
   }, []);
 
+  const fetchWithRetry = useCallback(async (url: string, options: RequestInit, maxRetries = 2): Promise<Response> => {
+    let lastResponse: Response | null = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const res = await fetch(url, options);
+      lastResponse = res;
+      if (res.status === 429 && attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+      return res;
+    }
+    return lastResponse!;
+  }, []);
+
   const callInterpret = useCallback(async (text: string) => {
     // Snapshot mode and meetingType BEFORE any async work so mode-switches mid-flight
     // don't cause cross-mode result misattribution or unintended TTS.
@@ -119,13 +133,20 @@ export function useInterpreter({ meetingType }: UseInterpreterProps = {}) {
     if (!text.trim() || !requestMode) return;
     setIsProcessing(true);
     try {
-      const res = await fetch('/api/ai/interpret', {
+      const res = await fetchWithRetry('/api/ai/interpret', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         credentials: 'include',
         body: JSON.stringify({ text, mode: requestMode, meetingType: requestMeetingType }),
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        const msg = res.status === 429
+          ? "Limite de requisições atingido — tente novamente em instantes."
+          : `Erro ao traduzir (${res.status}) — tente novamente.`;
+        setError(msg);
+        return;
+      }
+      setError(null);
       const data = await res.json();
       const result: InterpreterResult = {
         ptText: text,
@@ -141,10 +162,11 @@ export function useInterpreter({ meetingType }: UseInterpreterProps = {}) {
       }
     } catch (err) {
       console.error('[useInterpreter] interpret error:', err);
+      setError("Erro inesperado — tente novamente.");
     } finally {
       setIsProcessing(false);
     }
-  }, [playTTS]);
+  }, [playTTS, fetchWithRetry]);
 
   // ── MODE 1 (Neural): push-to-talk via MediaRecorder → Whisper ──────────
   const startNeuralCapture = useCallback(async () => {
@@ -215,6 +237,10 @@ export function useInterpreter({ meetingType }: UseInterpreterProps = {}) {
       });
 
       if (!transcribeRes.ok) {
+        const msg = transcribeRes.status === 429
+          ? "Limite de requisições atingido — aguarde e tente novamente."
+          : `Erro ao transcrever áudio (${transcribeRes.status}) — tente novamente.`;
+        setError(msg);
         setCurrentPtText("");
         setIsProcessing(false);
         return;

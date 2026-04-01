@@ -1127,17 +1127,31 @@ export default function MeetingsPage() {
 
                   {/* Neural mode — virtual cable instructions */}
                   {interpreterMode === "neural" && !interpreterIsCapturing && !interpreterLatestResult && (
-                    <div className="text-xs text-slate-500 space-y-1.5 bg-slate-800/30 rounded-lg p-3">
-                      <p className="font-medium text-slate-400 text-[11px]">Para a IA falar no seu meeting, instale um cabo de áudio virtual:</p>
-                      <p>• <strong className="text-slate-300">Windows:</strong>{" "}
-                        <a href="https://vb-audio.com/Cable/" target="_blank" rel="noopener noreferrer" className="text-primary underline">VB-Cable</a>
-                        <span className="text-slate-600"> (gratuito) — instale como administrador e reinicie o PC</span>
+                    <div className="text-xs text-slate-500 space-y-2.5 bg-slate-800/30 rounded-lg p-3">
+                      <p className="font-medium text-slate-300 text-[11px] uppercase tracking-wide">⚙️ Configuração necessária</p>
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        Para os participantes ouvirem somente a voz em inglês, instale um microfone virtual que roteia o áudio da IA para o Google Meet:
                       </p>
-                      <p>• <strong className="text-slate-300">Mac:</strong>{" "}
-                        <a href="https://existential.audio/blackhole/" target="_blank" rel="noopener noreferrer" className="text-primary underline">BlackHole</a>
-                        <span className="text-slate-600"> (gratuito)</span>
-                      </p>
-                      <p className="text-[10px] text-slate-600 mt-1">Depois: no meeting selecione o cabo virtual como microfone e no navegador como saída de áudio.</p>
+
+                      <div className="space-y-1">
+                        <p className="text-[10px] font-medium text-slate-300">Download (gratuito):</p>
+                        <p className="text-[10px]">• <strong className="text-slate-300">Windows:</strong>{" "}
+                          <a href="https://vb-audio.com/Cable/" target="_blank" rel="noopener noreferrer" className="text-primary underline">VB-Cable</a>
+                          <span className="text-slate-600"> — instale como administrador e reinicie</span>
+                        </p>
+                        <p className="text-[10px]">• <strong className="text-slate-300">Mac:</strong>{" "}
+                          <a href="https://existential.audio/blackhole/" target="_blank" rel="noopener noreferrer" className="text-primary underline">BlackHole</a>
+                          <span className="text-slate-600"> — siga o instalador</span>
+                        </p>
+                      </div>
+
+                      <div className="space-y-1 border-t border-slate-700/50 pt-2">
+                        <p className="text-[10px] font-medium text-slate-300">Configurar no Google Meet:</p>
+                        <p className="text-[10px] text-slate-500">1. Abra Configurações → Áudio no Meet</p>
+                        <p className="text-[10px] text-slate-500">2. Microfone → selecione <em className="text-slate-400">"CABLE Output"</em> (Win) ou <em className="text-slate-400">"BlackHole"</em> (Mac)</p>
+                        <p className="text-[10px] text-slate-500">3. Desative o microfone físico no Meet</p>
+                        <p className="text-[10px] text-slate-500">4. Use o Modo Neural normalmente — participantes ouvirão somente o inglês</p>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1169,7 +1183,7 @@ export default function MeetingsPage() {
                   )}
                   {interpreterIsCapturing && (
                     <p className="text-[10px] text-center text-slate-500">
-                      {interpreterMode === "neural" ? "🔴 Traduzindo ao vivo — IA falará em inglês" : interpreterMode === "phonetic" ? "🟡 Ouça, depois leia a fonética" : "🟢 Leia a versão polida em inglês"}
+                      {interpreterMode === "neural" ? "🔴 Gravando... pare para traduzir" : interpreterMode === "phonetic" ? "🟡 Ouça, depois leia a fonética" : "🟢 Leia a versão polida em inglês"}
                     </p>
                   )}
                   {interpreterError && <p className="text-xs text-red-400 text-center">{interpreterError}</p>}
