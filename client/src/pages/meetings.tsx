@@ -14,7 +14,7 @@ import {
   Users, Monitor, AlertTriangle, History, FileText, ChevronRight,
   Trash2, Search, MessageSquare, Loader2, CheckCircle, Target, ArrowLeft,
   UserPlus, Brain, Maximize2, Minimize2, PictureInPicture2, Move,
-  Globe, Headphones, Volume2
+  Globe, Headphones, Volume2, RotateCcw
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -520,6 +520,40 @@ export default function MeetingsPage() {
       setView("detail");
     } catch {
       toast({ title: "Erro", description: "Falha ao carregar reunião", variant: "destructive" });
+    }
+  };
+
+  const rejoinMeeting = async (meetingId: number) => {
+    try {
+      const res = await fetch(`/api/meetings/${meetingId}/reopen`, {
+        method: "PUT",
+        headers: { ...getAuthHeaders() },
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to reopen meeting");
+      const data = await res.json();
+      setActiveMeetingId(data.id);
+      setActiveMeeting(data);
+      setLiveParticipants(data.participants || []);
+      if (data.utterances && data.utterances.length > 0) {
+        setLocalUtterances(data.utterances.map((u: any) => ({
+          speakerName: u.speakerName || "Participante",
+          text: u.text,
+          time: u.createdAt ? format(new Date(u.createdAt), "HH:mm") : "",
+        })));
+      } else {
+        setLocalUtterances([]);
+      }
+      setLatestInsight("");
+      setChatMessages([]);
+      setChatInput("");
+      setFullscreenPanel(null);
+      setShowPip(true);
+      setView("active");
+      queryClient.invalidateQueries({ queryKey: ["/api/meetings"] });
+      toast({ title: "Reunião retomada", description: "Você pode continuar a reunião." });
+    } catch {
+      toast({ title: "Erro", description: "Falha ao retomar reunião", variant: "destructive" });
     }
   };
 
@@ -1234,12 +1268,24 @@ export default function MeetingsPage() {
     const m = activeMeeting;
     return (
       <div className="max-w-3xl mx-auto space-y-6">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => { setView("list"); resetSetup(); }} data-testid="button-back-after-summary">
-            <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
-          </Button>
-          <h2 className="text-xl font-bold text-foreground">Resumo Executivo</h2>
-          <Badge className="bg-green-600/20 text-green-400">Concluída</Badge>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={() => { setView("list"); resetSetup(); }} data-testid="button-back-after-summary">
+              <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
+            </Button>
+            <h2 className="text-xl font-bold text-foreground">Resumo Executivo</h2>
+            <Badge className="bg-green-600/20 text-green-400">Concluída</Badge>
+          </div>
+          {activeMeeting && (
+            <Button
+              onClick={() => rejoinMeeting(activeMeeting.id)}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground"
+              data-testid="button-rejoin-from-summary"
+            >
+              <RotateCcw className="h-4 w-4 mr-2" />
+              Retomar Reunião
+            </Button>
+          )}
         </div>
 
         <Card>
@@ -1368,14 +1414,26 @@ export default function MeetingsPage() {
     const m = activeMeeting;
     return (
       <div className="max-w-3xl mx-auto space-y-6">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => setView("list")} data-testid="button-back-detail">
-            <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
-          </Button>
-          <h2 className="text-xl font-bold text-foreground">{m.title}</h2>
-          <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : "bg-yellow-600/20 text-yellow-400"}>
-            {m.status === "completed" ? "Concluída" : m.status === "active" ? "Ativa" : "Setup"}
-          </Badge>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={() => setView("list")} data-testid="button-back-detail">
+              <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
+            </Button>
+            <h2 className="text-xl font-bold text-foreground">{m.title}</h2>
+            <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : m.status === "active" ? "bg-blue-600/20 text-blue-400" : "bg-yellow-600/20 text-yellow-400"}>
+              {m.status === "completed" ? "Concluída" : m.status === "active" ? "Ativa" : "Setup"}
+            </Badge>
+          </div>
+          {(m.status === "completed" || m.status === "active") && (
+            <Button
+              onClick={() => rejoinMeeting(m.id)}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground"
+              data-testid="button-rejoin-from-detail"
+            >
+              <RotateCcw className="h-4 w-4 mr-2" />
+              Retomar Reunião
+            </Button>
+          )}
         </div>
 
         <Card>
@@ -1513,6 +1571,18 @@ export default function MeetingsPage() {
                     <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : m.status === "active" ? "bg-blue-600/20 text-blue-400" : "bg-gray-600/20 text-gray-400"}>
                       {m.status === "completed" ? "Concluída" : m.status === "active" ? "Ativa" : "Setup"}
                     </Badge>
+                    {(m.status === "active" || m.status === "completed") && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={e => { e.stopPropagation(); rejoinMeeting(m.id); }}
+                        className="border-primary/50 text-primary hover:bg-primary/10 h-8 text-xs"
+                        data-testid={`button-rejoin-meeting-${m.id}`}
+                      >
+                        <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                        Retomar
+                      </Button>
+                    )}
                     <Button variant="ghost" size="icon" onClick={e => { e.stopPropagation(); deleteMeeting(m.id); }} className="text-red-400 hover:text-red-300 h-8 w-8" data-testid={`button-delete-meeting-${m.id}`}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
