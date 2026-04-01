@@ -3194,13 +3194,14 @@ ${contextSummary}`
 
       if (mode === "phonetic") {
         systemPrompt = `You are a phonetic transliteration expert specialized in helping Brazilian Portuguese speakers pronounce English. Given a Portuguese sentence:
-1. Translate it to English (translationLiteral field).
-2. Generate a phonetic guide using Brazilian Portuguese phoneme approximations so a native PT speaker can read English aloud. Rules:
+1. Translate it to English literally (translationLiteral field).
+2. Provide a polished, professional English version suitable for speaking in a business meeting (translationPolished field). Make it flow naturally and sound confident.
+3. Generate a phonetic guide using Brazilian Portuguese phoneme approximations so a native PT speaker can read English aloud (phonetic field). Rules:
    - Use PT phonemes: "w" → "u" (we → ui), "th" → "d" or "z" (this → dis, the → di), "sh" → "ch" (sure → chur), "-tion" → "xen" (jurisdiction → djuris-DIC-xen), "j" → "dj" (just → djast), silent letters omitted, "r" at start like PT "r".
    - Separate syllables with hyphens within each word.
    - Write stressed/tonic syllables in UPPERCASE.
    - Words separated by spaces.
-Return JSON only with fields: translationLiteral, phonetic.`;
+Return JSON only with fields: translationLiteral, translationPolished, phonetic.`;
         userPrompt = `Portuguese: "${text}"\nReturn JSON only.`;
       } else if (mode === "teleprompter") {
         systemPrompt = `You are a bilingual legal English coach. ${toneNote} Given a Portuguese sentence, return three things:
@@ -3221,7 +3222,7 @@ Return JSON only with these three fields.`;
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        max_tokens: 600,
+        max_tokens: 800,
       });
 
       const raw = completion.choices[0]?.message?.content || "{}";

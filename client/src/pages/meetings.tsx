@@ -1043,7 +1043,7 @@ export default function MeetingsPage() {
                       <em>Dica: use caixas de som (não fone) para capturar o áudio do participante.</em>
                     </p>
                     <button
-                      onClick={() => interpreterIsListeningEN ? interpreterStopListeningEN() : interpreterStartListeningEN()}
+                      onClick={() => interpreterIsListeningEN ? interpreterStopListeningEN() : (interpreterSetShowListeningPanel(true), interpreterStartListeningEN())}
                       className={`w-full flex items-center justify-center gap-1.5 text-xs py-1.5 rounded-md border transition-colors ${interpreterIsListeningEN ? "bg-blue-500/20 border-blue-500/40 text-blue-300" : "bg-muted/30 border-muted text-muted-foreground hover:text-foreground"}`}
                       data-testid="toggle-listening-en"
                     >
@@ -1094,33 +1094,56 @@ export default function MeetingsPage() {
 
                   {/* Result — Neural mode */}
                   {interpreterLatestResult && interpreterMode === "neural" && (
-                    <div className="rounded-lg bg-primary/10 border border-primary/20 p-3 space-y-1.5">
-                      <div className="text-[10px] text-primary font-medium uppercase tracking-wide flex items-center gap-1">
-                        <Volume2 className="h-3 w-3" /> IA falou em inglês
+                    <div className="rounded-lg bg-primary/10 border border-primary/20 p-3 space-y-2">
+                      <div>
+                        <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wide mb-1">🇧🇷 Você disse em PT:</div>
+                        <div className="text-sm text-foreground font-semibold leading-snug">{interpreterLatestResult.ptText}</div>
                       </div>
-                      <div className="text-sm text-foreground font-medium leading-snug">{interpreterLatestResult.translationLiteral}</div>
-                      <div className="text-[10px] text-slate-500 italic border-t border-slate-700/50 pt-1.5">PT: {interpreterLatestResult.ptText}</div>
+                      <div className="border-t border-slate-700/50 pt-1.5">
+                        <div className="text-[10px] text-primary font-medium uppercase tracking-wide flex items-center gap-1 mb-1">
+                          <Volume2 className="h-3 w-3" /> 🇺🇸 IA falou em inglês:
+                        </div>
+                        <div className="text-xs text-slate-300 leading-snug">{interpreterLatestResult.translationLiteral}</div>
+                      </div>
                     </div>
                   )}
 
                   {/* Result — Phonetic mode */}
                   {interpreterLatestResult && interpreterMode === "phonetic" && (
                     <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-3 space-y-2">
-                      <div className="text-[10px] text-yellow-400 font-medium uppercase tracking-wide">🗣 Leia em voz alta</div>
-                      <div className="text-xs text-slate-400">{interpreterLatestResult.translationLiteral}</div>
-                      <div className="text-lg font-bold text-yellow-200 leading-relaxed tracking-wide">{interpreterLatestResult.phonetic}</div>
-                      <div className="text-[10px] text-slate-500 italic border-t border-slate-700/50 pt-1.5">PT: {interpreterLatestResult.ptText}</div>
+                      <div>
+                        <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wide mb-1">🇧🇷 Você disse (PT):</div>
+                        <div className="text-xs text-slate-300 leading-snug">{interpreterLatestResult.ptText}</div>
+                      </div>
+                      <div className="border-t border-slate-700/50 pt-1.5">
+                        <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wide mb-1">🇺🇸 Tradução EN:</div>
+                        <div className="text-xs text-slate-300 leading-snug">{interpreterLatestResult.translationLiteral}</div>
+                      </div>
+                      <div className="border-t border-slate-700/50 pt-1.5">
+                        <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wide mb-1">✨ Versão polida:</div>
+                        <div className="text-xs text-slate-300 leading-snug">{interpreterLatestResult.translationPolished}</div>
+                      </div>
+                      <div className="border-t border-yellow-500/20 pt-1.5">
+                        <div className="text-[10px] text-yellow-400 font-medium uppercase tracking-wide mb-1">🗣 Fonética (leia assim):</div>
+                        <div className="text-lg font-bold text-yellow-200 leading-relaxed tracking-wide">{interpreterLatestResult.phonetic}</div>
+                      </div>
                     </div>
                   )}
 
                   {/* Result — Teleprompter mode */}
                   {interpreterLatestResult && interpreterMode === "teleprompter" && (
                     <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-3 space-y-2">
-                      <div className="text-[10px] text-emerald-400 font-medium uppercase tracking-wide">📺 Diga em inglês</div>
-                      <div className="text-base font-bold text-foreground leading-relaxed">{interpreterLatestResult.translationPolished}</div>
-                      <div className="text-xs text-slate-400 border-t border-slate-700/50 pt-1.5">{interpreterLatestResult.translationLiteral}</div>
-                      <div className="text-[11px] text-emerald-300/70 italic flex items-start gap-1">
-                        <span className="opacity-60">↩</span> {interpreterLatestResult.ptBack}
+                      <div>
+                        <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wide mb-1">🇧🇷 Você disse (PT):</div>
+                        <div className="text-xs text-slate-400 leading-snug">{interpreterLatestResult.ptText}</div>
+                      </div>
+                      <div className="border-t border-slate-700/50 pt-1.5">
+                        <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wide mb-1">🇺🇸 Tradução literal:</div>
+                        <div className="text-xs text-slate-400 leading-snug">{interpreterLatestResult.translationLiteral}</div>
+                      </div>
+                      <div className="border-t border-emerald-500/20 pt-1.5">
+                        <div className="text-[10px] text-emerald-400 font-medium uppercase tracking-wide mb-1">✨ Diga em inglês:</div>
+                        <div className="text-base font-bold text-emerald-200 leading-relaxed">{interpreterLatestResult.translationPolished}</div>
                       </div>
                     </div>
                   )}

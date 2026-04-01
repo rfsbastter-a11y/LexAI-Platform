@@ -374,7 +374,7 @@ export function useInterpreter({ meetingType }: UseInterpreterProps = {}) {
       setCurrentEnText("");
       if (translateRes.ok) {
         const data = await translateRes.json();
-        setLatestEnResult({ enText: text.trim(), ptTranslation: data.translation || "" });
+        setLatestEnResult({ enText: text.trim(), ptTranslation: data.translation || "(tradução indisponível)" });
       }
     } catch { setCurrentEnText(""); }
   }, []);
