@@ -523,6 +523,45 @@ export default function MeetingsPage() {
     }
   };
 
+  const rejoinMeeting = async (meetingId: number) => {
+    try {
+      const res = await fetch(`/api/meetings/${meetingId}`, {
+        headers: { ...getAuthHeaders() },
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed");
+      const data = await res.json();
+
+      if (data.status === "completed") {
+        const reopenRes = await fetch(`/api/meetings/${meetingId}/reopen`, {
+          method: "PUT",
+          headers: { ...getAuthHeaders() },
+          credentials: "include",
+        });
+        if (!reopenRes.ok) throw new Error("Failed to reopen");
+        const reopened = await reopenRes.json();
+        data.status = reopened.status;
+        data.endedAt = reopened.endedAt;
+      }
+
+      setActiveMeetingId(data.id);
+      setActiveMeeting(data);
+      setLiveParticipants(data.participants || []);
+      setLocalUtterances(
+        (data.utterances || []).map((u: { speakerName?: string; text: string; createdAt?: string }) => ({
+          speakerName: u.speakerName || "Participante",
+          text: u.text,
+          time: u.createdAt ? format(new Date(u.createdAt), "HH:mm") : "",
+        }))
+      );
+      setView("active");
+      queryClient.invalidateQueries({ queryKey: ["/api/meetings"] });
+      toast({ title: "Reunião retomada", description: `Você retornou à reunião "${data.title}"` });
+    } catch {
+      toast({ title: "Erro", description: "Falha ao retornar à reunião", variant: "destructive" });
+    }
+  };
+
   const deleteMeeting = async (meetingId: number) => {
     try {
       await fetch(`/api/meetings/${meetingId}`, {
@@ -1240,6 +1279,16 @@ export default function MeetingsPage() {
           </Button>
           <h2 className="text-xl font-bold text-foreground">Resumo Executivo</h2>
           <Badge className="bg-green-600/20 text-green-400">Concluída</Badge>
+          {activeMeeting && (
+            <Button
+              onClick={() => rejoinMeeting(activeMeeting.id)}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground ml-auto"
+              data-testid="button-rejoin-from-summary"
+            >
+              <Play className="h-4 w-4 mr-2" />
+              Retornar à Reunião
+            </Button>
+          )}
         </div>
 
         <Card>
@@ -1373,9 +1422,19 @@ export default function MeetingsPage() {
             <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
           </Button>
           <h2 className="text-xl font-bold text-foreground">{m.title}</h2>
-          <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : "bg-yellow-600/20 text-yellow-400"}>
+          <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : m.status === "active" ? "bg-blue-600/20 text-blue-400" : "bg-yellow-600/20 text-yellow-400"}>
             {m.status === "completed" ? "Concluída" : m.status === "active" ? "Ativa" : "Setup"}
           </Badge>
+          {(m.status === "active" || m.status === "completed") && (
+            <Button
+              onClick={() => rejoinMeeting(m.id)}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground ml-auto"
+              data-testid="button-rejoin-from-detail"
+            >
+              <Play className="h-4 w-4 mr-2" />
+              Retornar à Reunião
+            </Button>
+          )}
         </div>
 
         <Card>
@@ -1513,6 +1572,18 @@ export default function MeetingsPage() {
                     <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : m.status === "active" ? "bg-blue-600/20 text-blue-400" : "bg-gray-600/20 text-gray-400"}>
                       {m.status === "completed" ? "Concluída" : m.status === "active" ? "Ativa" : "Setup"}
                     </Badge>
+                    {(m.status === "active" || m.status === "completed") && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={e => { e.stopPropagation(); rejoinMeeting(m.id); }}
+                        className="border-primary/50 text-primary hover:bg-primary/10 h-8 text-xs"
+                        data-testid={`button-rejoin-meeting-${m.id}`}
+                      >
+                        <Play className="h-3 w-3 mr-1" />
+                        Retornar
+                      </Button>
+                    )}
                     <Button variant="ghost" size="icon" onClick={e => { e.stopPropagation(); deleteMeeting(m.id); }} className="text-red-400 hover:text-red-300 h-8 w-8" data-testid={`button-delete-meeting-${m.id}`}>
                       <Trash2 className="h-4 w-4" />
                     </Button>

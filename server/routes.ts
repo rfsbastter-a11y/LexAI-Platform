@@ -8649,6 +8649,23 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
+  app.put("/api/meetings/:id/reopen", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const tenantId = getTenantId(req);
+      const existing = await storage.getMeeting(id, tenantId);
+      if (!existing) return res.status(404).json({ error: "Meeting not found" });
+      const meeting = await storage.updateMeeting(id, {
+        status: "active",
+        endedAt: null,
+      });
+      res.json(meeting);
+    } catch (error) {
+      console.error("Error reopening meeting:", error);
+      res.status(500).json({ error: "Failed to reopen meeting" });
+    }
+  });
+
   app.delete("/api/meetings/:id", async (req: Request, res: Response) => {
     try {
       const id = parseInt(req.params.id);
