@@ -14,7 +14,7 @@ import {
   Users, Monitor, AlertTriangle, History, FileText, ChevronRight,
   Trash2, Search, MessageSquare, Loader2, CheckCircle, Target, ArrowLeft,
   UserPlus, Brain, Maximize2, Minimize2, PictureInPicture2, Move,
-  Globe, Headphones, Volume2
+  Globe, Headphones, Volume2, RotateCcw
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -456,6 +456,42 @@ export default function MeetingsPage() {
       toast({ title: "Erro", description: "Falha ao encerrar reunião", variant: "destructive" });
     } finally {
       setIsEndingMeeting(false);
+    }
+  };
+
+  const resumeMeeting = async (meetingId: number) => {
+    try {
+      const res = await fetch(`/api/meetings/${meetingId}/resume`, {
+        method: "PUT",
+        headers: { ...getAuthHeaders() },
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to resume meeting");
+      const data = await res.json();
+      setActiveMeetingId(data.id);
+      setActiveMeeting(data);
+      setLiveParticipants(data.participants || []);
+      setLocalUtterances(
+        (data.utterances || []).map((u: { speakerName?: string; text: string; createdAt?: string }) => ({
+          speakerName: u.speakerName || "Participante",
+          text: u.text,
+          time: u.createdAt ? new Date(u.createdAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "",
+        }))
+      );
+      setChatMessages(
+        (data.chatMessages || []).map((m: { role: string; content: string }) => ({
+          role: m.role,
+          content: m.content,
+        }))
+      );
+      if (data.insights && data.insights.length > 0) {
+        setLatestInsight(data.insights[data.insights.length - 1].content);
+      }
+      setView("active");
+      queryClient.invalidateQueries({ queryKey: ["/api/meetings"] });
+      toast({ title: "Reunião retomada", description: "Você retornou à reunião. Inicie a captura de áudio quando estiver pronto." });
+    } catch {
+      toast({ title: "Erro", description: "Falha ao retomar reunião", variant: "destructive" });
     }
   };
 
@@ -1234,12 +1270,23 @@ export default function MeetingsPage() {
     const m = activeMeeting;
     return (
       <div className="max-w-3xl mx-auto space-y-6">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => { setView("list"); resetSetup(); }} data-testid="button-back-after-summary">
-            <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
-          </Button>
-          <h2 className="text-xl font-bold text-foreground">Resumo Executivo</h2>
-          <Badge className="bg-green-600/20 text-green-400">Concluída</Badge>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={() => { setView("list"); resetSetup(); }} data-testid="button-back-after-summary">
+              <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
+            </Button>
+            <h2 className="text-xl font-bold text-foreground">Resumo Executivo</h2>
+            <Badge className="bg-green-600/20 text-green-400">Concluída</Badge>
+          </div>
+          {activeMeeting && (
+            <Button
+              onClick={() => resumeMeeting(activeMeeting.id)}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+              data-testid="button-resume-meeting-summary"
+            >
+              <RotateCcw className="h-4 w-4 mr-2" /> Retornar à Reunião
+            </Button>
+          )}
         </div>
 
         <Card>
@@ -1368,14 +1415,25 @@ export default function MeetingsPage() {
     const m = activeMeeting;
     return (
       <div className="max-w-3xl mx-auto space-y-6">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => setView("list")} data-testid="button-back-detail">
-            <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
-          </Button>
-          <h2 className="text-xl font-bold text-foreground">{m.title}</h2>
-          <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : "bg-yellow-600/20 text-yellow-400"}>
-            {m.status === "completed" ? "Concluída" : m.status === "active" ? "Ativa" : "Setup"}
-          </Badge>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={() => setView("list")} data-testid="button-back-detail">
+              <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
+            </Button>
+            <h2 className="text-xl font-bold text-foreground">{m.title}</h2>
+            <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : m.status === "active" ? "bg-blue-600/20 text-blue-400" : "bg-yellow-600/20 text-yellow-400"}>
+              {m.status === "completed" ? "Concluída" : m.status === "active" ? "Ativa" : "Setup"}
+            </Badge>
+          </div>
+          {(m.status === "completed" || m.status === "active") && (
+            <Button
+              onClick={() => resumeMeeting(m.id)}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+              data-testid="button-resume-meeting"
+            >
+              <RotateCcw className="h-4 w-4 mr-2" /> Retornar à Reunião
+            </Button>
+          )}
         </div>
 
         <Card>
@@ -1495,7 +1553,7 @@ export default function MeetingsPage() {
       ) : (
         <div className="grid gap-3">
           {filteredMeetings.map(m => (
-            <Card key={m.id} className="hover:border-primary/30 transition-colors cursor-pointer" onClick={() => viewMeetingDetail(m.id)} data-testid={`card-meeting-${m.id}`}>
+            <Card key={m.id} className="hover:border-primary/30 transition-colors cursor-pointer" onClick={() => m.status === "active" ? resumeMeeting(m.id) : viewMeetingDetail(m.id)} data-testid={`card-meeting-${m.id}`}>
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
