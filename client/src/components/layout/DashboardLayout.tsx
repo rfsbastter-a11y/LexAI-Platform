@@ -114,7 +114,7 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const userRole = user?.role ?? "";
   const [location] = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -322,9 +322,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               <DropdownMenuContent className="w-56" align="end" forceMount>
                 <DropdownMenuLabel className="font-normal">
                   <div className="flex flex-col space-y-1">
-                    <p className="text-sm font-medium leading-none">Dr. Ronald Serra</p>
+                    <p className="text-sm font-medium leading-none">{user?.name || "Usuário"}</p>
                     <p className="text-xs leading-none text-muted-foreground">
-                      ronald@marqueseserra.adv.br
+                      {user?.email || "sem-email"}
                     </p>
                   </div>
                 </DropdownMenuLabel>
@@ -338,7 +338,10 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                   <span>Configurações</span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive focus:text-destructive">
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive cursor-pointer"
+                  onClick={logout}
+                >
                   <LogOut className="mr-2 h-4 w-4" />
                   <span>Sair</span>
                 </DropdownMenuItem>
