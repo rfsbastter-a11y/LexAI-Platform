@@ -113,7 +113,7 @@ export function useInterpreter({ meetingType }: UseInterpreterProps = {}) {
 
   const fetchWithRetry = useCallback(async (url: string, options: RequestInit, maxRetries = 2): Promise<Response> => {
     let lastResponse: Response | null = null;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    for (let attempt = 0; attempt < 1 + maxRetries; attempt++) {
       const res = await fetch(url, options);
       lastResponse = res;
       if (res.status === 429 && attempt < maxRetries) {
