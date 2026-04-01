@@ -14,7 +14,7 @@ import {
   Users, Monitor, AlertTriangle, History, FileText, ChevronRight,
   Trash2, Search, MessageSquare, Loader2, CheckCircle, Target, ArrowLeft,
   UserPlus, Brain, Maximize2, Minimize2, PictureInPicture2, Move,
-  Globe, Headphones, Volume2
+  Globe, Headphones, Volume2, RotateCcw
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -505,6 +505,48 @@ export default function MeetingsPage() {
       setChatMessages(prev => [...prev, { role: "assistant", content: "Erro ao processar. Tente novamente." }]);
     } finally {
       setIsSendingChat(false);
+    }
+  };
+
+  const resumeMeeting = async (meetingId: number) => {
+    try {
+      const res = await fetch(`/api/meetings/${meetingId}/resume`, {
+        method: "PUT",
+        headers: { ...getAuthHeaders() },
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to resume meeting");
+      const data = await res.json();
+      setActiveMeetingId(data.id);
+      setActiveMeeting(data);
+      setLiveParticipants(data.participants || []);
+
+      if (data.utterances && data.utterances.length > 0) {
+        const restored = data.utterances.map((u: { speakerName: string | null; text: string; createdAt: string }) => ({
+          speakerName: u.speakerName || "Participante",
+          text: u.text,
+          time: u.createdAt ? new Date(u.createdAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "",
+        }));
+        setLocalUtterances(restored);
+      }
+
+      if (data.chatMessages && data.chatMessages.length > 0) {
+        setChatMessages(data.chatMessages.map((m: { role: string; content: string }) => ({
+          role: m.role,
+          content: m.content,
+        })));
+      }
+
+      if (data.insights && data.insights.length > 0) {
+        const last = data.insights[data.insights.length - 1];
+        setLatestInsight(last.content || "");
+      }
+
+      setView("active");
+      queryClient.invalidateQueries({ queryKey: ["/api/meetings"] });
+      toast({ title: "Reunião retomada", description: `Você retornou à reunião "${data.title}"` });
+    } catch {
+      toast({ title: "Erro", description: "Falha ao retomar reunião", variant: "destructive" });
     }
   };
 
@@ -1373,9 +1415,19 @@ export default function MeetingsPage() {
             <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
           </Button>
           <h2 className="text-xl font-bold text-foreground">{m.title}</h2>
-          <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : "bg-yellow-600/20 text-yellow-400"}>
+          <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : m.status === "active" ? "bg-blue-600/20 text-blue-400" : "bg-yellow-600/20 text-yellow-400"}>
             {m.status === "completed" ? "Concluída" : m.status === "active" ? "Ativa" : "Setup"}
           </Badge>
+          {(m.status === "active" || m.status === "completed") && (
+            <Button
+              onClick={() => resumeMeeting(m.id)}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground ml-auto"
+              data-testid="button-resume-from-detail"
+            >
+              <RotateCcw className="h-4 w-4 mr-2" />
+              {m.status === "active" ? "Retornar à Reunião" : "Reabrir Reunião"}
+            </Button>
+          )}
         </div>
 
         <Card>
@@ -1513,6 +1565,18 @@ export default function MeetingsPage() {
                     <Badge className={m.status === "completed" ? "bg-green-600/20 text-green-400" : m.status === "active" ? "bg-blue-600/20 text-blue-400" : "bg-gray-600/20 text-gray-400"}>
                       {m.status === "completed" ? "Concluída" : m.status === "active" ? "Ativa" : "Setup"}
                     </Badge>
+                    {(m.status === "active" || m.status === "completed") && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={e => { e.stopPropagation(); resumeMeeting(m.id); }}
+                        className="border-primary/50 text-primary hover:bg-primary/10 h-8 text-xs"
+                        data-testid={`button-resume-meeting-${m.id}`}
+                      >
+                        <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                        Retornar
+                      </Button>
+                    )}
                     <Button variant="ghost" size="icon" onClick={e => { e.stopPropagation(); deleteMeeting(m.id); }} className="text-red-400 hover:text-red-300 h-8 w-8" data-testid={`button-delete-meeting-${m.id}`}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
