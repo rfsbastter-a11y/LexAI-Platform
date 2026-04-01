@@ -1,4 +1,4 @@
-import { Moon, Monitor, Sun } from "lucide-react";
+import { Moon, Monitor, Sun, Palette } from "lucide-react";
 import { useTheme } from "next-themes";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -74,6 +74,34 @@ export default function SettingsPage() {
                 </Button>
               );
             })}
+          </CardContent>
+        </Card>
+
+        <Card className="border-primary/30">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Palette className="h-4 w-4 text-primary" />
+              Pré-visualização do tema
+            </CardTitle>
+            <CardDescription>
+              Bloco de teste para conferir contraste e leitura no modo escuro.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+              <p className="text-sm font-semibold text-foreground">Texto principal (alto contraste)</p>
+              <p className="text-sm text-muted-foreground">
+                Texto secundário para observações e descrições.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <span className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground">
+                  Ação principal
+                </span>
+                <span className="rounded-md border border-border bg-background px-2 py-1 text-xs">
+                  Ação secundária
+                </span>
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>

@@ -329,11 +329,19 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem className="cursor-pointer" onClick={() => navigate("/profile")}>
+                <DropdownMenuItem
+                  className="cursor-pointer"
+                  onClick={() => navigate("/profile")}
+                  data-testid="menu-profile"
+                >
                   <User className="mr-2 h-4 w-4" />
                   <span>Meu Perfil</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem className="cursor-pointer" onClick={() => navigate("/settings")}>
+                <DropdownMenuItem
+                  className="cursor-pointer"
+                  onClick={() => navigate("/settings")}
+                  data-testid="menu-settings"
+                >
                   <Settings className="mr-2 h-4 w-4" />
                   <span>Configurações</span>
                 </DropdownMenuItem>

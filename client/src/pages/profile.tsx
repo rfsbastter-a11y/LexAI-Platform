@@ -1,8 +1,10 @@
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
-import { Mail, Shield, User } from "lucide-react";
+import { Link } from "wouter";
+import { ArrowRight, Mail, Shield, User } from "lucide-react";
 
 export default function ProfilePage() {
   const { user } = useAuth();
@@ -44,6 +46,23 @@ export default function ProfilePage() {
                 <Badge variant="secondary">{user?.role || "sem perfil"}</Badge>
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-primary/20 dark:border-primary/40">
+          <CardHeader>
+            <CardTitle>Preferências visuais</CardTitle>
+            <CardDescription>
+              Para alterar tema (claro/escuro/sistema), use a tela de Configurações.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Link href="/settings">
+              <Button variant="outline" className="w-full sm:w-auto">
+                Ir para Configurações
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+            </Link>
           </CardContent>
         </Card>
       </div>
