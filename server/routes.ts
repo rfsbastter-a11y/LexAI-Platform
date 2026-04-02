@@ -9284,6 +9284,16 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         if (unauthorized) return res.status(403).json({ error: `Client ${unauthorized} not found or access denied` });
       }
 
+      // Validate any explicitly-provided debtorIds belong to this tenant (prevent cross-tenant IDOR)
+      const explicitDebtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId).filter(Boolean)));
+      let validDebtorIdSet = new Set<number>();
+      if (explicitDebtorIds.length > 0) {
+        const validDebtors = await db.select({ id: debtorsTable.id }).from(debtorsTable).where(and(inArray(debtorsTable.id, explicitDebtorIds as number[]), eq(debtorsTable.tenantId, tenantId)));
+        validDebtorIdSet = new Set(validDebtors.map(d => d.id));
+        const unauthorized = (explicitDebtorIds as number[]).find(id => !validDebtorIdSet.has(id));
+        if (unauthorized) return res.status(403).json({ error: `Debtor ${unauthorized} not found or access denied` });
+      }
+
       // Pre-load all debtors for involved clients (for fuzzy name matching)
       const debtorCache: Record<number, any[]> = {};
       const normalize = (s: string) => s.trim().toUpperCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
