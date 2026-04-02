@@ -9087,7 +9087,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       ]);
     }
 
-    const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 40, autoFirstPage: true });
+    const doc = new PDFDocument({ size: "A4", layout: "landscape", margins: { top: 0, bottom: 0, left: 0, right: 0 }, autoFirstPage: true });
     const chunks: Buffer[] = [];
     doc.on("data", (chunk: Buffer) => chunks.push(chunk));
 
