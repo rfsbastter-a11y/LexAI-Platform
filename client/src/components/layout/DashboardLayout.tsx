@@ -102,7 +102,8 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "Negociações", icon: Handshake, href: "/negotiations", highlight: true },
       { label: "Acordos", icon: FileSpreadsheet, href: "/acordos", highlight: true },
       { label: "Prospecção", icon: Target, href: "/prospecting", highlight: true },
-      { label: "Reunião", icon: Video, href: "/meetings", highlight: true },
+      { label: "Reunião Copiloto", icon: Video, href: "/meetings", highlight: true },
+      { label: "Reunião Presencial", icon: Video, href: "/meetings-presenciais", highlight: true },
     ],
   },
   {

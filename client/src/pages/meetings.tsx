@@ -48,11 +48,17 @@ interface Meeting {
 
 type ViewMode = "list" | "setup" | "active" | "summary" | "detail";
 type FullscreenPanel = null | "transcript" | "insights" | "chat" | "interpreter";
+type MeetingScope = "virtual" | "presencial";
+const PRESENTIAL_PLATFORM = "presencial";
+interface MeetingsPageProps {
+  scope?: MeetingScope;
+}
 
 const PLATFORMS = [
   { value: "google_meet", label: "Google Meet" },
   { value: "zoom", label: "Zoom" },
   { value: "teams", label: "Microsoft Teams" },
+  { value: PRESENTIAL_PLATFORM, label: "Presencial" },
 ];
 
 const LEGAL_ROLES = [
@@ -76,14 +82,16 @@ function getDiscLetter(profile: string): string {
   return ["D", "I", "S", "C"].includes(first) ? first : "D";
 }
 
-export default function MeetingsPage() {
+export default function MeetingsPage({ scope = "virtual" }: MeetingsPageProps) {
+  const isPresentialScope = scope === "presencial";
+
   const [view, setView] = useState<ViewMode>("list");
   const [activeMeetingId, setActiveMeetingId] = useState<number | null>(null);
   const [activeMeeting, setActiveMeeting] = useState<Meeting | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
 
   const [setupTitle, setSetupTitle] = useState("");
-  const [setupPlatform, setSetupPlatform] = useState("google_meet");
+  const [setupPlatform, setSetupPlatform] = useState(isPresentialScope ? PRESENTIAL_PLATFORM : "google_meet");
   const [setupLegalRole, setSetupLegalRole] = useState("consultoria");
   const [setupParticipants, setSetupParticipants] = useState<string[]>([""]);
   const [setupClientId, setSetupClientId] = useState<string>("");
@@ -229,6 +237,7 @@ export default function MeetingsPage() {
     participants: liveParticipantNames,
     getRecentUtterances,
     activeSpeakerHint: activeSpeakerHint ?? undefined,
+    captureMode: isPresentialScope ? "ambient" : "tab",
   });
 
   const {
@@ -400,7 +409,7 @@ export default function MeetingsPage() {
         credentials: "include",
         body: JSON.stringify({
           title: setupTitle.trim(),
-          platform: setupPlatform,
+          platform: isPresentialScope ? PRESENTIAL_PLATFORM : setupPlatform,
           legalRole: setupLegalRole,
           clientId: setupClientId && setupClientId !== "none" ? parseInt(setupClientId) : null,
           caseId: setupCaseId && setupCaseId !== "none" ? parseInt(setupCaseId) : null,
@@ -576,7 +585,7 @@ export default function MeetingsPage() {
   const resetSetup = () => {
     interpreterStopAll();
     setSetupTitle("");
-    setSetupPlatform("google_meet");
+    setSetupPlatform(isPresentialScope ? PRESENTIAL_PLATFORM : "google_meet");
     setSetupLegalRole("consultoria");
     setSetupParticipants([""]);
     setSetupClientId("");
@@ -593,9 +602,19 @@ export default function MeetingsPage() {
     setShowPip(true);
   };
 
-  const filteredMeetings = meetingsList.filter(m =>
-    m.title.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredMeetings = meetingsList.filter(m => {
+    const matchesSearch = m.title.toLowerCase().includes(searchTerm.toLowerCase());
+    const isPresentialMeeting = m.platform === PRESENTIAL_PLATFORM;
+    return matchesSearch && (isPresentialScope ? isPresentialMeeting : !isPresentialMeeting);
+  });
+  const moduleTitle = isPresentialScope ? "Copiloto de Reuniões Presenciais" : "Copiloto de Reuniões";
+  const emptyStateDescription = isPresentialScope
+    ? "Crie sua primeira reunião presencial para começar a usar o copiloto."
+    : "Crie sua primeira reunião para começar a usar o copiloto.";
+  const captureButtonLabel = isPresentialScope ? "Capturar Áudio do Ambiente" : "Capturar Áudio da Aba";
+  const captureIdleInstruction = isPresentialScope
+    ? "Clique em 'Capturar Áudio do Ambiente' para iniciar."
+    : "Clique em 'Capturar Áudio da Aba' para iniciar.";
 
   const platformLabel = (val: string) => PLATFORMS.find(p => p.value === val)?.label || val;
   const roleLabel = (val: string) => LEGAL_ROLES.find(r => r.value === val)?.label || val;
@@ -629,7 +648,7 @@ export default function MeetingsPage() {
         <Button variant="ghost" size="sm" onClick={() => { setView("list"); resetSetup(); }} data-testid="button-back-list">
           <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
         </Button>
-        <h2 className="text-xl font-bold text-foreground">Nova Reunião</h2>
+        <h2 className="text-xl font-bold text-foreground">{isPresentialScope ? "Nova Reunião Presencial" : "Nova Reunião"}</h2>
       </div>
 
       {!browserSupported && (
@@ -654,19 +673,26 @@ export default function MeetingsPage() {
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <Label className="text-muted-foreground">Plataforma</Label>
-              <Select value={setupPlatform} onValueChange={setSetupPlatform}>
-                <SelectTrigger className="mt-1" data-testid="select-platform">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PLATFORMS.map(p => (
-                    <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {isPresentialScope ? (
+              <div>
+                <Label className="text-muted-foreground">Tipo da Reunião</Label>
+                <Input value="Presencial" className="mt-1" disabled readOnly data-testid="input-presential-type" />
+              </div>
+            ) : (
+              <div>
+                <Label className="text-muted-foreground">Plataforma</Label>
+                <Select value={setupPlatform} onValueChange={setSetupPlatform}>
+                  <SelectTrigger className="mt-1" data-testid="select-platform">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PLATFORMS.filter(p => p.value !== PRESENTIAL_PLATFORM).map(p => (
+                      <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
               <Label className="text-muted-foreground">Papel Jurídico</Label>
               <Select value={setupLegalRole} onValueChange={setSetupLegalRole}>
@@ -755,7 +781,7 @@ export default function MeetingsPage() {
         <div className="flex items-center gap-2">
           {!isCapturing ? (
             <Button onClick={startCapture} disabled={!browserSupported} className="bg-green-600 hover:bg-green-700 text-primary-foreground" data-testid="button-start-capture">
-              <Monitor className="h-4 w-4 mr-2" /> Capturar Áudio da Aba
+              <Monitor className="h-4 w-4 mr-2" /> {captureButtonLabel}
             </Button>
           ) : (
             <Button onClick={stopCapture} variant="destructive" data-testid="button-stop-capture">
@@ -864,7 +890,7 @@ export default function MeetingsPage() {
                 <div className="flex flex-col items-center justify-center h-full text-slate-500">
                   <Mic className="h-12 w-12 mb-3 opacity-30" />
                   <p className="text-sm">
-                    {isCapturing ? "Ouvindo... fale para ver a transcrição em tempo real." : "Clique em 'Capturar Áudio da Aba' para iniciar."}
+                    {isCapturing ? "Ouvindo... fale para ver a transcrição em tempo real." : captureIdleInstruction}
                   </p>
                 </div>
               ) : (
@@ -1521,7 +1547,7 @@ export default function MeetingsPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
-          <Video className="h-5 w-5 text-primary" /> Copiloto de Reuniões
+          <Video className="h-5 w-5 text-primary" /> {moduleTitle}
         </h2>
         <Button onClick={() => setView("setup")} className="bg-primary hover:bg-primary/90 text-primary-foreground" data-testid="button-new-meeting">
           <Plus className="h-4 w-4 mr-2" /> Nova Reunião
@@ -1544,7 +1570,7 @@ export default function MeetingsPage() {
           <CardContent className="p-12 text-center">
             <Video className="h-12 w-12 text-muted-foreground/50 mx-auto mb-4" />
             <p className="text-muted-foreground mb-2">Nenhuma reunião encontrada</p>
-            <p className="text-muted-foreground/70 text-sm mb-4">Crie sua primeira reunião para começar a usar o copiloto.</p>
+            <p className="text-muted-foreground/70 text-sm mb-4">{emptyStateDescription}</p>
             <Button onClick={() => setView("setup")} className="bg-primary hover:bg-primary/90 text-primary-foreground" data-testid="button-new-meeting-empty">
               <Plus className="h-4 w-4 mr-2" /> Nova Reunião
             </Button>
