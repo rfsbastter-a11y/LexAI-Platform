@@ -1591,22 +1591,12 @@ export const whatsappService = {
       return { sent: 0, failed: 0, summary: "" };
     }
 
-    const contacts = await storage.getWhatsappContacts(tenantId);
-    const activeContacts = contacts.filter(c => c.isActive);
-
+    // Enviar SOMENTE para usuários com role="socio" que têm telefone cadastrado
     const allUsers = await storage.getUsersByTenant(tenantId);
     const socios = allUsers.filter(u => u.role === "socio" && u.isActive && u.phone);
 
-    const normalizedSet = new Set(activeContacts.map(c => normalizeBrazilianPhone(c.phoneNumber)));
-    for (const socio of socios) {
-      const normalized = normalizeBrazilianPhone(socio.phone!);
-      if (normalized && !normalizedSet.has(normalized)) {
-        activeContacts.push({ phoneNumber: normalized, contactName: socio.name, isActive: true } as any);
-        normalizedSet.add(normalized);
-      }
-    }
-
-    if (activeContacts.length === 0) {
+    if (socios.length === 0) {
+      console.log("[Daily Cron] No active sócios with phone numbers configured, skipping");
       return { sent: 0, failed: 0, summary: "" };
     }
 
@@ -1614,8 +1604,11 @@ export const whatsappService = {
     let sent = 0;
     let failed = 0;
 
-    for (const contact of activeContacts) {
-      const success = await this.sendMessage(contact.phoneNumber, summary, tenantId);
+    for (const socio of socios) {
+      const normalized = normalizeBrazilianPhone(socio.phone!);
+      if (!normalized) continue;
+      console.log(`[Daily Cron] Sending to sócio: ${socio.name} (${normalized})`);
+      const success = await this.sendMessage(normalized, summary, tenantId);
       if (success) sent++;
       else failed++;
       await new Promise(r => setTimeout(r, 2000));

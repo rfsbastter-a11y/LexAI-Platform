@@ -311,7 +311,7 @@ export default function CalendarPage() {
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <MessageSquare className="w-3.5 h-3.5" />
           <span>
-            Envio automático: {whatsappSchedule?.sendTime || "07:00"} diariamente para {whatsappContacts.length} contato(s) + todos os sócios
+            Envio automático: {whatsappSchedule?.sendTime || "07:00"} diariamente — somente para os sócios ({socios.filter(s => s.phone).length} com número cadastrado)
           </span>
         </div>
 
