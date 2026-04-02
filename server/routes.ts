@@ -8913,6 +8913,20 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
+  // Delete all agreements for a client (used for "replace" import mode)
+  app.delete("/api/debtor-agreements/by-client/:clientId", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const clientId = parseInt(req.params.clientId);
+      if (!clientId) return res.status(400).json({ error: "clientId required" });
+      const deleted = await storage.deleteDebtorAgreementsByClient(clientId, tenantId);
+      res.json({ deleted });
+    } catch (error) {
+      console.error("Error deleting agreements by client:", error);
+      res.status(500).json({ error: "Failed to delete agreements" });
+    }
+  });
+
   // Toggle fee status (one-click: pendente ↔ recebido)
   app.patch("/api/debtor-agreements/:id/fee-status", requireAuth, async (req: Request, res: Response) => {
     try {
@@ -9275,7 +9289,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const { agreements } = req.body;
       if (!Array.isArray(agreements) || agreements.length === 0) return res.status(400).json({ error: "agreements array required" });
 
-      const { debtors: debtorsTable, clients: clientsTableBatch } = await import("@shared/schema");
+      const { debtors: debtorsTable, clients: clientsTableBatch, debtorAgreements: debtorAgreementsTable } = await import("@shared/schema");
 
       // Verify all referenced clientIds belong to this tenant
       const uniqueClientIds = Array.from(new Set(agreements.map((a: any) => a.clientId).filter(Boolean)));
@@ -9302,6 +9316,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
 
       const created: any[] = [];
       let autoCreatedCount = 0;
+      let skippedCount = 0;
 
       for (const a of agreements) {
         try {
@@ -9335,13 +9350,25 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
           }
 
           if (!debtorId) continue;
+
+          // Deduplication: skip if same debtorId + agreementDate + clientId already exists for this tenant
+          const existing = await db.select({ id: debtorAgreementsTable.id }).from(debtorAgreementsTable).where(
+            and(
+              eq(debtorAgreementsTable.tenantId, tenantId),
+              eq(debtorAgreementsTable.debtorId, debtorId),
+              eq(debtorAgreementsTable.clientId, clientId!),
+              eq(debtorAgreementsTable.agreementDate, a.agreementDate),
+            )
+          ).limit(1);
+          if (existing.length > 0) { skippedCount++; continue; }
+
           const record = await storage.createDebtorAgreement({ ...a, debtorId, tenantId });
           created.push(record);
         } catch (err) {
           console.error("Error creating agreement:", err, a);
         }
       }
-      res.json({ created: created.length, autoCreated: autoCreatedCount, records: created });
+      res.json({ created: created.length, autoCreated: autoCreatedCount, skipped: skippedCount, records: created });
     } catch (error) {
       console.error("Error batch creating agreements:", error);
       res.status(500).json({ error: "Failed to batch create agreements" });

@@ -145,6 +145,7 @@ export default function AcordosPage() {
   const [importPreviewing, setImportPreviewing] = useState(false);
   const [importPreview, setImportPreview] = useState<any[]>([]);
   const [importSaving, setImportSaving] = useState(false);
+  const [importReplace, setImportReplace] = useState(false);
 
   // Queries
   const { data: clients = EMPTY } = useQuery<any[]>({
@@ -281,6 +282,19 @@ export default function AcordosPage() {
       toast({ title: "Acordo removido" });
     },
     onError: () => toast({ title: "Erro ao remover acordo", variant: "destructive" }),
+  });
+
+  const deleteByClientMutation = useMutation({
+    mutationFn: async (clientId: number) => {
+      const res = await fetch(`/api/debtor-agreements/by-client/${clientId}`, { method: "DELETE", headers: getAuthHeaders() });
+      if (!res.ok) throw new Error();
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/debtor-agreements"] });
+      toast({ title: "Todos os acordos do cliente foram removidos." });
+    },
+    onError: () => toast({ title: "Erro ao excluir acordos", variant: "destructive" }),
   });
 
   const toggleFeeStatusMutation = useMutation({
@@ -471,6 +485,12 @@ export default function AcordosPage() {
     if (!importClientId) return toast({ title: "Selecione um cliente para importar", variant: "destructive" });
     setImportSaving(true);
     try {
+      // Se modo "substituir", apaga todos os acordos do cliente antes de importar
+      if (importReplace) {
+        const delRes = await fetch(`/api/debtor-agreements/by-client/${importClientId}`, { method: "DELETE", headers: getAuthHeaders() });
+        if (!delRes.ok) throw new Error("Falha ao limpar acordos existentes");
+      }
+
       const agreements = importPreview.map((r: any) => ({
         debtorId: null,
         debtorName: r.debtorName?.trim() || "",
@@ -500,8 +520,10 @@ export default function AcordosPage() {
       setImportPreview([]);
       setImportText("");
       setImportFile(null);
-      const autoMsg = data.autoCreated > 0 ? ` (${data.autoCreated} devedores novos cadastrados automaticamente)` : "";
-      toast({ title: `${data.created} acordos importados${autoMsg}!` });
+      setImportReplace(false);
+      const autoMsg = data.autoCreated > 0 ? `, ${data.autoCreated} devedores novos cadastrados` : "";
+      const skipMsg = data.skipped > 0 ? `, ${data.skipped} já existiam (ignorados)` : "";
+      toast({ title: `${data.created} acordos importados${autoMsg}${skipMsg}!` });
     } catch {
       toast({ title: "Erro ao salvar acordos importados", variant: "destructive" });
     } finally {
@@ -528,6 +550,17 @@ export default function AcordosPage() {
             <p className="text-muted-foreground mt-1">Gerencie acordos extrajudiciais dos devedores.</p>
           </div>
           <div className="flex gap-2">
+            {selectedClientId !== "all" && agreements.length > 0 && (
+              <Button variant="outline" className="text-red-600 border-red-300 hover:bg-red-50" onClick={() => {
+                const clientName = clients.find((c: any) => String(c.id) === selectedClientId)?.name || "este cliente";
+                if (confirm(`Excluir TODOS os ${agreements.length} acordos de "${clientName}"? Esta ação não pode ser desfeita.`)) {
+                  deleteByClientMutation.mutate(parseInt(selectedClientId));
+                }
+              }} disabled={deleteByClientMutation.isPending} data-testid="button-delete-all-acordos">
+                {deleteByClientMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
+                Excluir todos
+              </Button>
+            )}
             <Button variant="outline" onClick={() => {
               const params = new URLSearchParams(window.location.search);
               const urlClientId = params.get("clientId");
@@ -941,7 +974,7 @@ export default function AcordosPage() {
       </Dialog>
 
       {/* ===== IMPORT MODAL ===== */}
-      <Dialog open={showImport} onOpenChange={open => { if (!open) { setShowImport(false); setImportPreview([]); setImportText(""); setImportFile(null); setImportClientId(""); } }}>
+      <Dialog open={showImport} onOpenChange={open => { if (!open) { setShowImport(false); setImportPreview([]); setImportText(""); setImportFile(null); setImportClientId(""); setImportReplace(false); } }}>
         <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col p-0">
           <div className="px-6 pt-6 pb-0">
             <DialogHeader>
@@ -962,6 +995,23 @@ export default function AcordosPage() {
                   {clientsWithActiveContracts.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="flex items-center gap-3 p-3 rounded-lg border border-amber-200 bg-amber-50">
+              <Checkbox
+                id="import-replace"
+                checked={importReplace}
+                onCheckedChange={(checked) => setImportReplace(!!checked)}
+                data-testid="checkbox-import-replace"
+              />
+              <div>
+                <label htmlFor="import-replace" className="text-sm font-medium text-amber-800 cursor-pointer">
+                  Substituir existentes (limpar antes de importar)
+                </label>
+                <p className="text-xs text-amber-600 mt-0.5">
+                  Apaga todos os acordos do cliente selecionado antes de importar os novos.
+                </p>
+              </div>
             </div>
 
             <Tabs value={importType} onValueChange={(v: any) => { setImportType(v); setImportPreview([]); }}>

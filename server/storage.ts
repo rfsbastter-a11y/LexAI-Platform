@@ -250,6 +250,7 @@ export interface IStorage {
   createDebtorAgreement(data: InsertDebtorAgreement): Promise<DebtorAgreement>;
   updateDebtorAgreement(id: number, tenantId: number, data: Partial<InsertDebtorAgreement>): Promise<DebtorAgreement | undefined>;
   deleteDebtorAgreement(id: number, tenantId: number): Promise<void>;
+  deleteDebtorAgreementsByClient(clientId: number, tenantId: number): Promise<number>;
 
   // Negotiations
   getNegotiation(id: number): Promise<Negotiation | undefined>;
@@ -1461,6 +1462,11 @@ class DatabaseStorage implements IStorage {
 
   async deleteDebtorAgreement(id: number, tenantId: number): Promise<void> {
     await db.delete(debtorAgreements).where(and(eq(debtorAgreements.id, id), eq(debtorAgreements.tenantId, tenantId)));
+  }
+
+  async deleteDebtorAgreementsByClient(clientId: number, tenantId: number): Promise<number> {
+    const deleted = await db.delete(debtorAgreements).where(and(eq(debtorAgreements.clientId, clientId), eq(debtorAgreements.tenantId, tenantId))).returning({ id: debtorAgreements.id });
+    return deleted.length;
   }
 
   // Negotiations
