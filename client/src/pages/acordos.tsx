@@ -389,6 +389,20 @@ export default function AcordosPage() {
     URL.revokeObjectURL(url);
   }
 
+  async function handleDownloadReportPdf() {
+    if (!reportClientId) return toast({ title: "Selecione um cliente", variant: "destructive" });
+    const params = new URLSearchParams({ clientId: reportClientId, month: reportMonth, year: reportYear });
+    const res = await fetch(`/api/debtor-agreements/report/pdf?${params}`, { headers: getAuthHeaders() });
+    if (!res.ok) return toast({ title: "Erro ao gerar PDF", variant: "destructive" });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `honorarios_${String(reportMonth).padStart(2, "0")}_${reportYear}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function handleSendReport() {
     if (!reportClientId) return toast({ title: "Selecione um cliente", variant: "destructive" });
     const checkedRecipients = reportRecipients.filter(r => r.checked);
@@ -922,6 +936,9 @@ export default function AcordosPage() {
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={handleDownloadReport} data-testid="button-download-report">
               <Download className="w-4 h-4 mr-2" /> Baixar Excel
+            </Button>
+            <Button variant="outline" onClick={handleDownloadReportPdf} data-testid="button-download-report-pdf">
+              <FileText className="w-4 h-4 mr-2" /> Baixar PDF
             </Button>
             <Button onClick={handleSendReport} disabled={isSending || !reportClientId} data-testid="button-send-report">
               {isSending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
