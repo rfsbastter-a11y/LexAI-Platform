@@ -87,6 +87,7 @@ export interface IStorage {
   getContract(id: number, tenantId?: number): Promise<Contract | undefined>;
   getContractsByTenant(tenantId: number): Promise<Contract[]>;
   getContractsByClient(clientId: number): Promise<Contract[]>;
+  getClientsWithActiveContracts(tenantId: number): Promise<Client[]>;
   createContract(data: InsertContract): Promise<Contract>;
   updateContract(id: number, data: Partial<InsertContract>): Promise<Contract>;
   deleteContract(id: number): Promise<void>;
@@ -455,6 +456,16 @@ class DatabaseStorage implements IStorage {
 
   async getContractsByClient(clientId: number): Promise<Contract[]> {
     return db.select().from(contracts).where(eq(contracts.clientId, clientId));
+  }
+
+  async getClientsWithActiveContracts(tenantId: number): Promise<Client[]> {
+    const activeClientIds = await db
+      .selectDistinct({ clientId: contracts.clientId })
+      .from(contracts)
+      .where(and(eq(contracts.tenantId, tenantId), eq(contracts.status, "ativo")));
+    const ids = activeClientIds.map(r => r.clientId).filter((id): id is number => id !== null);
+    if (ids.length === 0) return [];
+    return db.select().from(clients).where(and(eq(clients.tenantId, tenantId), inArray(clients.id, ids))).orderBy(clients.name);
   }
 
   async createContract(data: InsertContract): Promise<Contract> {

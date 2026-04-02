@@ -490,6 +490,17 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/clients-with-active-contracts", async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const clients = await storage.getClientsWithActiveContracts(tenantId);
+      res.json(clients);
+    } catch (error) {
+      console.error("Error fetching clients with active contracts:", error);
+      res.status(500).json({ error: "Failed to fetch clients" });
+    }
+  });
+
   app.get("/api/clients/:id", async (req: Request, res: Response) => {
     try {
       const tenantId = getTenantId(req); // TODO: Get from authenticated session

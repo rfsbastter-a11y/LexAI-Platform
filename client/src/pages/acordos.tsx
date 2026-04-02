@@ -155,6 +155,14 @@ export default function AcordosPage() {
     },
   });
 
+  const { data: clientsWithActiveContracts = EMPTY } = useQuery<any[]>({
+    queryKey: ["/api/clients-with-active-contracts"],
+    queryFn: async () => {
+      const res = await fetch("/api/clients-with-active-contracts", { headers: getAuthHeaders() });
+      return res.json();
+    },
+  });
+
   const { data: socios = EMPTY } = useQuery<any[]>({
     queryKey: ["/api/users/socios"],
     queryFn: async () => {
@@ -514,7 +522,13 @@ export default function AcordosPage() {
             <p className="text-muted-foreground mt-1">Gerencie acordos extrajudiciais dos devedores.</p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setShowImport(true)} data-testid="button-import-acordos">
+            <Button variant="outline" onClick={() => {
+              const params = new URLSearchParams(window.location.search);
+              const urlClientId = params.get("clientId");
+              const preselect = (selectedClientId !== "all" ? selectedClientId : "") || urlClientId || "";
+              if (preselect) setImportClientId(preselect);
+              setShowImport(true);
+            }} data-testid="button-import-acordos">
               <Upload className="w-4 h-4 mr-2" /> Importar
             </Button>
             <Button variant="outline" onClick={() => { setReportClientId(selectedClientId !== "all" ? selectedClientId : ""); setShowReport(true); }} data-testid="button-report-acordos">
@@ -918,15 +932,17 @@ export default function AcordosPage() {
       </Dialog>
 
       {/* ===== IMPORT MODAL ===== */}
-      <Dialog open={showImport} onOpenChange={open => { if (!open) { setShowImport(false); setImportPreview([]); setImportText(""); setImportFile(null); } }}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Upload className="w-5 h-5 text-blue-600" />
-              Importar Acordos
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
+      <Dialog open={showImport} onOpenChange={open => { if (!open) { setShowImport(false); setImportPreview([]); setImportText(""); setImportFile(null); setImportClientId(""); } }}>
+        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col p-0">
+          <div className="px-6 pt-6 pb-0">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Upload className="w-5 h-5 text-blue-600" />
+                Importar Acordos
+              </DialogTitle>
+            </DialogHeader>
+          </div>
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
             <div className="space-y-1">
               <Label>Cliente de destino *</Label>
               <Select value={importClientId} onValueChange={setImportClientId}>
@@ -934,7 +950,7 @@ export default function AcordosPage() {
                   <SelectValue placeholder="Selecione o cliente" />
                 </SelectTrigger>
                 <SelectContent>
-                  {clients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  {clientsWithActiveContracts.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -1039,7 +1055,7 @@ export default function AcordosPage() {
               </div>
             )}
           </div>
-          <div className="flex justify-end gap-2 pt-2">
+          <div className="flex justify-end gap-2 px-6 py-4 border-t shrink-0">
             <Button variant="outline" onClick={() => { setShowImport(false); setImportPreview([]); }}>Cancelar</Button>
             {importPreview.length > 0 && (
               <Button onClick={handleImportConfirm} disabled={importSaving || !importClientId} data-testid="button-import-confirm">
