@@ -2863,9 +2863,10 @@ Seja objetivo e use números reais dos dados. Responda em português. Formate co
 
       const response = await aiService.chat(messages, contextDocuments);
       
-      await storage.createAiGenerationLog({
-        tenantId: 1,
-        userId: 1,
+      const _chatUserId = getUserId(req);
+      if (_chatUserId) await storage.createAiGenerationLog({
+        tenantId: getTenantId(req),
+        userId: _chatUserId,
         generationType: "chat",
         prompt: messages[messages.length - 1]?.content || "",
         citations: response.citations as any,
@@ -2981,9 +2982,10 @@ ${contextData}`
 
       const response = await aiService.chat(messages);
 
-      await storage.createAiGenerationLog({
+      const _briefingUserId = getUserId(req);
+      if (_briefingUserId) await storage.createAiGenerationLog({
         tenantId,
-        userId: 1,
+        userId: _briefingUserId,
         generationType: "daily_briefing",
         prompt: "Daily briefing generation",
         citations: response.citations as any,
@@ -3071,9 +3073,10 @@ ${contextSummary}`
 
       const response = await aiService.chat(messages);
 
-      await storage.createAiGenerationLog({
+      const _stratUserId = getUserId(req);
+      if (_stratUserId) await storage.createAiGenerationLog({
         tenantId,
-        userId: 1,
+        userId: _stratUserId,
         generationType: "strategic_analysis",
         prompt: `Strategic analysis for client ${client.name} (ID: ${clientId})`,
         citations: response.citations as any,
@@ -3500,9 +3503,10 @@ Return JSON only with these three fields.`;
         additionalInstructions
       );
 
-      await storage.createAiGenerationLog({
-        tenantId: 1,
-        userId: 1,
+      const _pecaUserId = getUserId(req);
+      if (_pecaUserId) await storage.createAiGenerationLog({
+        tenantId: getTenantId(req),
+        userId: _pecaUserId,
         generationType: "peca",
         prompt: `Gerar ${pieceType} para: ${intimationText}`,
         citations: response.citations as any,
