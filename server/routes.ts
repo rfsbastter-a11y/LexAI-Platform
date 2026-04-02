@@ -9368,7 +9368,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
           console.error("Error creating agreement:", err, a);
         }
       }
-      res.json({ created: created.length, autoCreated: autoCreatedCount, skipped: skippedCount, records: created });
+      res.json({ created: created.length, autoCreated: autoCreatedCount, skipped: skippedCount, deleted: 0, records: created });
     } catch (error) {
       console.error("Error batch creating agreements:", error);
       res.status(500).json({ error: "Failed to batch create agreements" });
