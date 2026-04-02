@@ -8968,6 +8968,8 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
           ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
           : Math.round(installmentValue * feePercent / 100 * 100) / 100;
 
+        if (monthlyFee === 0 && targetMonth && targetYear) continue; // pular inativos
+
         rows.push([
           debtor?.name || "",
           a.agreementDate || "",
@@ -9053,6 +9055,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const monthlyFee = targetMonth && targetYear
         ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
         : Math.round(installmentValue * feePercent / 100 * 100) / 100;
+      if (monthlyFee === 0 && targetMonth && targetYear) continue; // pular inativos
       total += monthlyFee;
       dataRows.push([
         debtor?.name || "",
