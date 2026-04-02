@@ -9075,19 +9075,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     const COL_WIDTHS = [180, 70, 80, 58, 80, 65, 80, 60];
     const ROW_H = 18;
     const FOOTER_RESERVE = 40;
-    const logoPath = path.join(process.cwd(), "client/src/assets/images/logo-ms-new.png");
-    const LOGO_W = 120;
-    const LOGO_H = 50;
-
     // Draw the letterhead on the current (first or continuation) page
     function drawLetterhead(d: typeof doc) {
       const pageW = d.page.width;
       const usableW = pageW - MARGIN_X * 2;
-      if (fs.existsSync(logoPath)) d.image(logoPath, MARGIN_X, 30, { width: LOGO_W, height: LOGO_H });
       d.font("Helvetica-Bold").fontSize(14).fillColor("#1a1a2e")
-        .text("Marques & Serra Advogados", MARGIN_X + LOGO_W + 16, 32, { lineBreak: false });
+        .text("Marques & Serra Advogados", MARGIN_X, 32, { lineBreak: false });
       d.font("Helvetica").fontSize(10).fillColor("#444")
-        .text(`${clientName} – Honorários ${monthYear}`, MARGIN_X + LOGO_W + 16, 50, { lineBreak: false });
+        .text(`${clientName} – Honorários ${monthYear}`, MARGIN_X, 50, { lineBreak: false });
       const sepY = 88;
       d.moveTo(MARGIN_X, sepY).lineTo(pageW - MARGIN_X, sepY).strokeColor("#1a1a2e").lineWidth(1.5).stroke();
       d.font("Helvetica-Bold").fontSize(11).fillColor("#1a1a2e")
