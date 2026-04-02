@@ -9273,34 +9273,63 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const { agreements } = req.body;
       if (!Array.isArray(agreements) || agreements.length === 0) return res.status(400).json({ error: "agreements array required" });
 
-      // Verify all referenced clientIds and debtorIds belong to this tenant
       const { debtors: debtorsTable, clients: clientsTableBatch } = await import("@shared/schema");
-      const uniqueClientIds = Array.from(new Set(agreements.map((a: any) => a.clientId).filter(Boolean)));
-      const uniqueDebtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId).filter(Boolean)));
 
+      // Verify all referenced clientIds belong to this tenant
+      const uniqueClientIds = Array.from(new Set(agreements.map((a: any) => a.clientId).filter(Boolean)));
       if (uniqueClientIds.length > 0) {
         const validClients = await db.select({ id: clientsTableBatch.id }).from(clientsTableBatch).where(and(inArray(clientsTableBatch.id, uniqueClientIds as number[]), eq(clientsTableBatch.tenantId, tenantId)));
         const validClientIds = new Set(validClients.map(c => c.id));
         const unauthorized = (uniqueClientIds as number[]).find(id => !validClientIds.has(id));
         if (unauthorized) return res.status(403).json({ error: `Client ${unauthorized} not found or access denied` });
       }
-      if (uniqueDebtorIds.length > 0) {
-        const validDebtors = await db.select({ id: debtorsTable.id }).from(debtorsTable).where(and(inArray(debtorsTable.id, uniqueDebtorIds as number[]), eq(debtorsTable.tenantId, tenantId)));
-        const validDebtorIds = new Set(validDebtors.map(d => d.id));
-        const unauthorized = (uniqueDebtorIds as number[]).find(id => !validDebtorIds.has(id));
-        if (unauthorized) return res.status(403).json({ error: `Debtor ${unauthorized} not found or access denied` });
-      }
 
-      const created = [];
+      // Pre-load all debtors for involved clients (for fuzzy name matching)
+      const debtorCache: Record<number, any[]> = {};
+      const normalize = (s: string) => s.trim().toUpperCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+
+      const created: any[] = [];
+      let autoCreatedCount = 0;
+
       for (const a of agreements) {
         try {
-          const record = await storage.createDebtorAgreement({ ...a, tenantId });
+          let debtorId: number | null = a.debtorId || null;
+          const clientId: number | null = a.clientId ? parseInt(a.clientId) : null;
+
+          // If no debtorId provided but debtorName + clientId exist → find or auto-create debtor
+          if (!debtorId && a.debtorName && clientId) {
+            if (!debtorCache[clientId]) {
+              debtorCache[clientId] = await db.select().from(debtorsTable).where(and(eq(debtorsTable.tenantId, tenantId), eq(debtorsTable.clientId, clientId)));
+            }
+            const normalizedInput = normalize(a.debtorName);
+            const found = debtorCache[clientId].find((d: any) => {
+              const normalizedDb = normalize(d.name);
+              return normalizedDb === normalizedInput || normalizedDb.includes(normalizedInput) || normalizedInput.includes(normalizedDb);
+            });
+            if (found) {
+              debtorId = found.id;
+            } else {
+              const [newDebtor] = await db.insert(debtorsTable).values({
+                tenantId,
+                clientId,
+                type: "pessoa_fisica",
+                name: a.debtorName.trim(),
+                status: "ativo",
+              }).returning();
+              debtorId = newDebtor.id;
+              debtorCache[clientId].push(newDebtor);
+              autoCreatedCount++;
+            }
+          }
+
+          if (!debtorId) continue;
+          const record = await storage.createDebtorAgreement({ ...a, debtorId, tenantId });
           created.push(record);
         } catch (err) {
           console.error("Error creating agreement:", err, a);
         }
       }
-      res.json({ created: created.length, records: created });
+      res.json({ created: created.length, autoCreated: autoCreatedCount, records: created });
     } catch (error) {
       console.error("Error batch creating agreements:", error);
       res.status(500).json({ error: "Failed to batch create agreements" });

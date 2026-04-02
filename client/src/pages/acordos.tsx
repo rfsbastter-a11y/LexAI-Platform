@@ -471,30 +471,21 @@ export default function AcordosPage() {
     if (!importClientId) return toast({ title: "Selecione um cliente para importar", variant: "destructive" });
     setImportSaving(true);
     try {
-      // Map debtorName to debtorId by looking up debtors of the client
-      const debtorsRes = await fetch(`/api/clients/${importClientId}/debtors`, { headers: getAuthHeaders() });
-      const debtorsList: any[] = await debtorsRes.json();
-
-      const agreements = importPreview.map((r: any) => {
-        const normalizedName = r.debtorName?.trim().toUpperCase() || "";
-        const match = debtorsList.find((d: any) => d.name.toUpperCase().includes(normalizedName) || normalizedName.includes(d.name.toUpperCase()));
-        return {
-          debtorId: match?.id || null,
-          clientId: parseInt(importClientId),
-          agreementDate: r.agreementDate,
-          isSinglePayment: r.isSinglePayment || false,
-          installmentsCount: r.installmentsCount || null,
-          downPaymentValue: r.downPaymentValue || null,
-          downPaymentDate: r.downPaymentDate || null,
-          installmentValue: r.installmentValue || null,
-          dueDay: r.dueDay || null,
-          feePercent: r.feePercent || 10,
-          status: "ativo",
-          notes: r.notes || null,
-        };
-      }).filter((a: any) => a.debtorId);
-
-      const noMatch = importPreview.length - agreements.length;
+      const agreements = importPreview.map((r: any) => ({
+        debtorId: null,
+        debtorName: r.debtorName?.trim() || "",
+        clientId: parseInt(importClientId),
+        agreementDate: r.agreementDate,
+        isSinglePayment: r.isSinglePayment || false,
+        installmentsCount: r.installmentsCount || null,
+        downPaymentValue: r.downPaymentValue || null,
+        downPaymentDate: r.downPaymentDate || null,
+        installmentValue: r.installmentValue || null,
+        dueDay: r.dueDay || null,
+        feePercent: r.feePercent || 10,
+        status: "ativo",
+        notes: r.notes || null,
+      }));
 
       const res = await fetch("/api/debtor-agreements/batch", {
         method: "POST",
@@ -504,12 +495,13 @@ export default function AcordosPage() {
       if (!res.ok) throw new Error();
       const data = await res.json();
       queryClient.invalidateQueries({ queryKey: ["/api/debtor-agreements"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/clients/${importClientId}/debtors`] });
       setShowImport(false);
       setImportPreview([]);
       setImportText("");
       setImportFile(null);
-      const msg = noMatch > 0 ? ` (${noMatch} ignorados por devedor não encontrado)` : "";
-      toast({ title: `${data.created} acordos importados${msg}!` });
+      const autoMsg = data.autoCreated > 0 ? ` (${data.autoCreated} devedores novos cadastrados automaticamente)` : "";
+      toast({ title: `${data.created} acordos importados${autoMsg}!` });
     } catch {
       toast({ title: "Erro ao salvar acordos importados", variant: "destructive" });
     } finally {
