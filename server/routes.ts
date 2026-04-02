@@ -9322,7 +9322,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
               const [newDebtor] = await db.insert(debtorsTable).values({
                 tenantId,
                 clientId,
-                type: "pessoa_fisica",
+                type: "PF",
                 name: a.debtorName.trim(),
                 status: "ativo",
               }).returning();
