@@ -8976,26 +8976,48 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const targetMonth = month ? parseInt(month as string) : null;
       const targetYear = year ? parseInt(year as string) : null;
 
+      // Load monthly payments if month+year specified
+      const paymentsMapXlsx: Record<number, any> = {};
+      if (targetMonth && targetYear) {
+        const pmts = await storage.getAgreementMonthlyPayments(parseInt(clientId as string), targetMonth, targetYear, tenantId);
+        pmts.forEach((p: any) => { paymentsMapXlsx[p.agreementId] = p; });
+      }
+
       for (const a of agreements) {
         const debtor = debtorMap[a.debtorId];
         const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "");
         const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
         const feePercent = parseFloat(a.feePercent || "10");
         const installmentValue = parseFloat(a.installmentValue || "0");
-        const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
-          : Math.round(installmentValue * feePercent / 100 * 100) / 100;
 
-        if (monthlyFee === 0 && targetMonth && targetYear) continue; // pular inativos
+        let monthlyFee: number;
+        let rowNotes = a.notes || "";
+        if (targetMonth && targetYear) {
+          const payment = paymentsMapXlsx[a.id];
+          if (payment !== undefined && payment.paidValue !== null && payment.paidValue !== undefined) {
+            const paidValue = parseFloat(payment.paidValue);
+            if (paidValue === 0) continue; // explicitly 0 → debtor didn't pay → omit row
+            monthlyFee = Math.round(paidValue * feePercent / 100 * 100) / 100;
+            if (payment.notes) rowNotes = payment.notes;
+          } else {
+            // No record or paidValue=null → fallback to theoretical installment value; still use notes if present
+            if (payment !== undefined && payment.notes) rowNotes = payment.notes;
+            if (!isActiveInMonth(a, targetMonth, targetYear)) continue;
+            monthlyFee = Math.round(installmentValue * feePercent / 100 * 100) / 100;
+            if (monthlyFee === 0) continue;
+          }
+        } else {
+          monthlyFee = Math.round(installmentValue * feePercent / 100 * 100) / 100;
+        }
 
         rows.push([
           debtor?.name || "",
-          a.agreementDate || "",
+          formatDateBR(a.agreementDate),
           parseFloat(a.originalDebtValue || "0") || "",
           parseFloat(a.agreedValue || "0") || "",
           installmentsDisplay,
           parseFloat(a.downPaymentValue || "0") || "",
-          a.downPaymentDate || "",
+          formatDateBR(a.downPaymentDate),
           installmentValue || "",
           dueDayDisplay,
           `${feePercent}%`,
@@ -9003,7 +9025,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
           a.feeStatus || "pendente",
           monthlyFee,
           a.status || "ativo",
-          a.notes || "",
+          rowNotes,
         ]);
       }
 
@@ -9049,6 +9071,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     return true;
   }
 
+  // Helper: format ISO date string to DD/MM/AAAA
+  function formatDateBR(dateStr: string | null | undefined): string {
+    if (!dateStr) return "";
+    const d = new Date(dateStr + "T12:00:00");
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString("pt-BR");
+  }
+
   // Shared helper: build a PDF buffer for the monthly agreements report
   async function buildAgreementsPdfBuffer(
     agreements: any[],
@@ -9056,7 +9086,8 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     clientName: string,
     monthYear: string,
     targetMonth: number | null,
-    targetYear: number | null
+    targetYear: number | null,
+    paymentsMap: Record<number, any> = {}
   ): Promise<Buffer> {
     const PDFDocument = (await import("pdfkit")).default;
     const formatBRL = (v: number) => v > 0 ? v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
@@ -9070,14 +9101,29 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
       const feePercent = parseFloat(a.feePercent || "10");
       const installmentValue = parseFloat(a.installmentValue || "0");
-      const monthlyFee = targetMonth && targetYear
-        ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
-        : Math.round(installmentValue * feePercent / 100 * 100) / 100;
-      if (monthlyFee === 0 && targetMonth && targetYear) continue; // pular inativos
+
+      let monthlyFee: number;
+      if (targetMonth && targetYear) {
+        const payment = paymentsMap[a.id];
+        if (payment !== undefined && payment.paidValue !== null && payment.paidValue !== undefined) {
+          // Real payment value was recorded
+          const paidValue = parseFloat(payment.paidValue);
+          if (paidValue === 0) continue; // explicitly 0 → debtor didn't pay → omit row
+          monthlyFee = Math.round(paidValue * feePercent / 100 * 100) / 100;
+        } else {
+          // No record or paidValue=null → fallback to theoretical installment value
+          if (!isActiveInMonth(a, targetMonth, targetYear)) continue;
+          monthlyFee = Math.round(installmentValue * feePercent / 100 * 100) / 100;
+          if (monthlyFee === 0) continue;
+        }
+      } else {
+        monthlyFee = Math.round(installmentValue * feePercent / 100 * 100) / 100;
+      }
+
       total += monthlyFee;
       dataRows.push([
         debtor?.name || "",
-        a.agreementDate || "",
+        formatDateBR(a.agreementDate),
         formatBRL(parseFloat(a.agreedValue || "0")),
         installmentsDisplay,
         formatBRL(installmentValue),
@@ -9212,7 +9258,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const targetMonth = month ? parseInt(month as string) : null;
       const targetYear = year ? parseInt(year as string) : null;
 
-      const pdfBuf = await buildAgreementsPdfBuffer(agreements, debtorMap, clientName, monthYear, targetMonth, targetYear);
+      // Load monthly payments if month+year specified
+      const paymentsMap: Record<number, any> = {};
+      if (targetMonth && targetYear) {
+        const payments = await storage.getAgreementMonthlyPayments(parseInt(clientId as string), targetMonth, targetYear, tenantId);
+        payments.forEach((p: any) => { paymentsMap[p.agreementId] = p; });
+      }
+
+      const pdfBuf = await buildAgreementsPdfBuffer(agreements, debtorMap, clientName, monthYear, targetMonth, targetYear, paymentsMap);
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="honorarios_${monthYear.replace("/", "_")}.pdf"`);
@@ -9256,7 +9309,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const targetMonth = month ? parseInt(month) : null;
       const targetYear = year ? parseInt(year) : null;
 
-      const buf = await buildAgreementsPdfBuffer(agreements, debtorMap, clientName, monthYear, targetMonth, targetYear);
+      // Load monthly payments if month+year specified
+      const paymentsMapSend: Record<number, any> = {};
+      if (targetMonth && targetYear) {
+        const payments = await storage.getAgreementMonthlyPayments(parseInt(clientId), targetMonth, targetYear, tenantId);
+        payments.forEach((p: any) => { paymentsMapSend[p.agreementId] = p; });
+      }
+
+      const buf = await buildAgreementsPdfBuffer(agreements, debtorMap, clientName, monthYear, targetMonth, targetYear, paymentsMapSend);
       const fileName = `honorarios_${monthYear.replace("/", "_")}.pdf`;
 
       const results: string[] = [];
@@ -9279,6 +9339,70 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     } catch (error) {
       console.error("Error sending agreements report:", error);
       res.status(500).json({ error: "Failed to send report" });
+    }
+  });
+
+  // ===== AGREEMENT MONTHLY PAYMENTS =====
+
+  // Validation schema for monthly payment batch items
+  const { z: zv } = await import("zod");
+  const monthlyPaymentItemSchema = zv.object({
+    agreementId: zv.number().int().positive(),
+    month: zv.number().int().min(1).max(12),
+    year: zv.number().int().min(2000).max(2100),
+    paidValue: zv.number().min(0).nullable().optional(),
+    notes: zv.string().nullable().optional(),
+  });
+
+  // GET /api/agreement-monthly-payments?clientId=&month=&year=
+  app.get("/api/agreement-monthly-payments", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { clientId, month, year } = req.query;
+      if (!clientId || !month || !year) return res.status(400).json({ error: "clientId, month and year are required" });
+      const monthNum = parseInt(month as string);
+      const yearNum = parseInt(year as string);
+      if (monthNum < 1 || monthNum > 12) return res.status(400).json({ error: "month must be between 1 and 12" });
+      if (yearNum < 2000 || yearNum > 2100) return res.status(400).json({ error: "year must be between 2000 and 2100" });
+      const payments = await storage.getAgreementMonthlyPayments(parseInt(clientId as string), monthNum, yearNum, tenantId);
+      res.json(payments);
+    } catch (error) {
+      console.error("Error fetching monthly payments:", error);
+      res.status(500).json({ error: "Failed to fetch monthly payments" });
+    }
+  });
+
+  // POST /api/agreement-monthly-payments/batch (upsert multiple)
+  app.post("/api/agreement-monthly-payments/batch", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { payments } = req.body;
+      if (!Array.isArray(payments)) return res.status(400).json({ error: "payments array required" });
+
+      // Validate each item
+      for (const p of payments) {
+        const parsed = monthlyPaymentItemSchema.safeParse(p);
+        if (!parsed.success) return res.status(400).json({ error: "Invalid payment data", details: parsed.error.format() });
+      }
+
+      // Verify all agreementIds belong to this tenant
+      if (payments.length > 0) {
+        const { debtorAgreements: daTable } = await import("@shared/schema");
+        const ids = [...new Set(payments.map((p: any) => p.agreementId).filter(Boolean))] as number[];
+        if (ids.length > 0) {
+          const valid = await db.select({ id: daTable.id }).from(daTable).where(and(inArray(daTable.id, ids), eq(daTable.tenantId, tenantId)));
+          const validSet = new Set(valid.map(v => v.id));
+          const unauthorized = ids.find(id => !validSet.has(id));
+          if (unauthorized) return res.status(403).json({ error: `Agreement ${unauthorized} not found or access denied` });
+        }
+      }
+
+      const enriched = payments.map((p: any) => ({ ...p, tenantId }));
+      const result = await storage.upsertAgreementMonthlyPayments(enriched);
+      res.json({ success: true, count: result.length, payments: result });
+    } catch (error) {
+      console.error("Error upserting monthly payments:", error);
+      res.status(500).json({ error: "Failed to save monthly payments" });
     }
   });
 

@@ -49,6 +49,7 @@ import {
   FileText,
   ClipboardPaste,
   X,
+  DollarSign,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
@@ -137,6 +138,13 @@ export default function AcordosPage() {
   const [extraWhatsapp, setExtraWhatsapp] = useState("");
   const [isSending, setIsSending] = useState(false);
 
+  const [showPayments, setShowPayments] = useState(false);
+  const [paymentsClientId, setPaymentsClientId] = useState<string>("");
+  const [paymentsMonth, setPaymentsMonth] = useState<string>(String(new Date().getMonth() + 1));
+  const [paymentsYear, setPaymentsYear] = useState<string>(String(new Date().getFullYear()));
+  const [paymentsEntries, setPaymentsEntries] = useState<Record<number, { paidValue: string; notes: string }>>({});
+  const [paymentsSaving, setPaymentsSaving] = useState(false);
+
   const [showImport, setShowImport] = useState(false);
   const [importType, setImportType] = useState<"text" | "csv" | "pdf">("text");
   const [importText, setImportText] = useState("");
@@ -216,6 +224,38 @@ export default function AcordosPage() {
       return res.json();
     },
   });
+
+  const { data: modalAgreements = [] } = useQuery<any[]>({
+    queryKey: ["/api/debtor-agreements", paymentsClientId, "modal"],
+    enabled: showPayments && !!paymentsClientId,
+    queryFn: async () => {
+      const res = await fetch(`/api/debtor-agreements?clientId=${paymentsClientId}`, { headers: getAuthHeaders() });
+      return res.json();
+    },
+  });
+
+  const { data: existingPayments = [], refetch: refetchPayments } = useQuery<any[]>({
+    queryKey: ["/api/agreement-monthly-payments", paymentsClientId, paymentsMonth, paymentsYear],
+    enabled: showPayments && !!paymentsClientId,
+    queryFn: async () => {
+      const params = new URLSearchParams({ clientId: paymentsClientId, month: paymentsMonth, year: paymentsYear });
+      const res = await fetch(`/api/agreement-monthly-payments?${params}`, { headers: getAuthHeaders() });
+      return res.json();
+    },
+  });
+
+  // When existing payments load, pre-fill entries from DB (replace all to keep in sync with the selected month/year)
+  useEffect(() => {
+    if (!showPayments) return;
+    const map: Record<number, { paidValue: string; notes: string }> = {};
+    for (const p of existingPayments) {
+      map[p.agreementId] = {
+        paidValue: p.paidValue !== null && p.paidValue !== undefined ? String(parseFloat(p.paidValue)) : "",
+        notes: p.notes || "",
+      };
+    }
+    setPaymentsEntries(map);
+  }, [existingPayments, showPayments]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Handle URL params — pre-select client/debtor and open form when coming from debtor button
   useEffect(() => {
@@ -455,6 +495,51 @@ export default function AcordosPage() {
     }
   }
 
+  async function handleSavePayments() {
+    if (!paymentsClientId) return toast({ title: "Selecione um cliente", variant: "destructive" });
+    const yearNum = parseInt(paymentsYear);
+    if (isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) return toast({ title: "Ano inválido", variant: "destructive" });
+    const clientAgreements = modalAgreements.filter((a: any) => a.status === "ativo");
+    const payments = clientAgreements
+      .filter((a: any) => {
+        const entry = paymentsEntries[a.id];
+        if (entry === undefined) return false;
+        // Only save rows where at least paidValue is filled (a number ≥ 0) or notes are non-empty
+        return entry.paidValue.trim() !== "" || entry.notes.trim() !== "";
+      })
+      .map((a: any) => {
+        const entry = paymentsEntries[a.id];
+        const rawValue = entry.paidValue.trim().replace(",", ".");
+        const paidValue = rawValue !== "" ? parseFloat(rawValue) : null;
+        return {
+          agreementId: a.id,
+          month: parseInt(paymentsMonth),
+          year: parseInt(paymentsYear),
+          paidValue: paidValue,
+          notes: entry.notes.trim() || null,
+        };
+      });
+
+    if (payments.length === 0) return toast({ title: "Nenhum lançamento para salvar", variant: "destructive" });
+
+    setPaymentsSaving(true);
+    try {
+      const res = await fetch("/api/agreement-monthly-payments/batch", {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ payments }),
+      });
+      if (!res.ok) throw new Error();
+      await refetchPayments();
+      toast({ title: `${payments.length} lançamentos salvos com sucesso!` });
+      setShowPayments(false);
+    } catch {
+      toast({ title: "Erro ao salvar lançamentos", variant: "destructive" });
+    } finally {
+      setPaymentsSaving(false);
+    }
+  }
+
   async function handleImportParse() {
     setImportPreviewing(true);
     setImportPreview([]);
@@ -569,6 +654,13 @@ export default function AcordosPage() {
               setShowImport(true);
             }} data-testid="button-import-acordos">
               <Upload className="w-4 h-4 mr-2" /> Importar
+            </Button>
+            <Button variant="outline" onClick={() => {
+              setPaymentsClientId(selectedClientId !== "all" ? selectedClientId : "");
+              setPaymentsEntries({});
+              setShowPayments(true);
+            }} data-testid="button-payments-acordos">
+              <DollarSign className="w-4 h-4 mr-2" /> Pagamentos do Mês
             </Button>
             <Button variant="outline" onClick={() => { setReportClientId(selectedClientId !== "all" ? selectedClientId : ""); setShowReport(true); }} data-testid="button-report-acordos">
               <FileSpreadsheet className="w-4 h-4 mr-2" /> Relatório Mensal
@@ -968,6 +1060,113 @@ export default function AcordosPage() {
             <Button onClick={handleSendReport} disabled={isSending || !reportClientId} data-testid="button-send-report">
               {isSending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
               Enviar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ===== MONTHLY PAYMENTS MODAL ===== */}
+      <Dialog open={showPayments} onOpenChange={open => { if (!open) { setShowPayments(false); setPaymentsEntries({}); } }}>
+        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col p-0">
+          <div className="px-6 pt-6 pb-0">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <DollarSign className="w-5 h-5 text-emerald-600" />
+                Lançar Pagamentos do Mês
+              </DialogTitle>
+            </DialogHeader>
+          </div>
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-1">
+                <Label>Cliente *</Label>
+                <Select value={paymentsClientId} onValueChange={v => { setPaymentsClientId(v); setPaymentsEntries({}); }}>
+                  <SelectTrigger data-testid="select-payments-client">
+                    <SelectValue placeholder="Selecione o cliente" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {clients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>Mês</Label>
+                <Select value={paymentsMonth} onValueChange={v => { setPaymentsMonth(v); setPaymentsEntries({}); }}>
+                  <SelectTrigger data-testid="select-payments-month">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {months.map((m, i) => <SelectItem key={i + 1} value={String(i + 1)}>{m}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>Ano</Label>
+                <Input type="number" value={paymentsYear} onChange={e => { setPaymentsYear(e.target.value); setPaymentsEntries({}); }} data-testid="input-payments-year" />
+              </div>
+            </div>
+
+            {paymentsClientId && (() => {
+              const clientAgreements = modalAgreements.filter((a: any) => a.status === "ativo");
+              if (clientAgreements.length === 0) return <p className="text-sm text-muted-foreground py-4 text-center">Nenhum acordo ativo para este cliente.</p>;
+              return (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-gray-700">Informe o valor efetivamente pago por cada devedor neste mês (deixe em branco para usar valor teórico como fallback; 0 = não pagou):</p>
+                  <div className="border rounded-lg overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Devedor</TableHead>
+                          <TableHead>Parcelas</TableHead>
+                          <TableHead className="w-40">Valor Teórico</TableHead>
+                          <TableHead className="w-44">Valor Pago (R$)</TableHead>
+                          <TableHead>Observações</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {clientAgreements.map((a: any) => {
+                          const entry = paymentsEntries[a.id] || { paidValue: "", notes: "" };
+                          return (
+                            <TableRow key={a.id} data-testid={`row-payment-${a.id}`}>
+                              <TableCell className="font-medium text-sm">{a.debtorName || "—"}</TableCell>
+                              <TableCell className="text-sm">{a.isSinglePayment ? "ÚNICA" : (a.installmentsCount || "—")}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{a.installmentValue ? formatCurrency(a.installmentValue) : "—"}</TableCell>
+                              <TableCell>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="Ex: 350,00"
+                                  value={entry.paidValue}
+                                  onChange={e => setPaymentsEntries(prev => ({ ...prev, [a.id]: { ...prev[a.id] || { notes: "" }, paidValue: e.target.value } }))}
+                                  className="h-8 text-sm"
+                                  data-testid={`input-paid-value-${a.id}`}
+                                />
+                              </TableCell>
+                              <TableCell>
+                                <Input
+                                  placeholder="Observações..."
+                                  value={entry.notes}
+                                  onChange={e => setPaymentsEntries(prev => ({ ...prev, [a.id]: { ...prev[a.id] || { paidValue: "" }, notes: e.target.value } }))}
+                                  className="h-8 text-sm"
+                                  data-testid={`input-payment-notes-${a.id}`}
+                                />
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+          <div className="flex justify-end gap-2 px-6 py-4 border-t shrink-0">
+            <Button variant="outline" onClick={() => { setShowPayments(false); setPaymentsEntries({}); }}>Cancelar</Button>
+            <Button onClick={handleSavePayments} disabled={paymentsSaving || !paymentsClientId} data-testid="button-save-payments">
+              {paymentsSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+              Salvar Lançamentos
             </Button>
           </div>
         </DialogContent>

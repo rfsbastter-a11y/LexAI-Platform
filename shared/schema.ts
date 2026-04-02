@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, serial, integer, bigint, boolean, timestamp, decimal, jsonb, date } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, integer, bigint, boolean, timestamp, decimal, jsonb, date, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -1150,3 +1150,22 @@ export const whatsappAuthState = pgTable("whatsapp_auth_state", {
 });
 
 export type WhatsappAuthState = typeof whatsappAuthState.$inferSelect;
+
+// ==================== AGREEMENT MONTHLY PAYMENTS ====================
+export const agreementMonthlyPayments = pgTable("agreement_monthly_payments", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull(),
+  agreementId: integer("agreement_id").notNull().references(() => debtorAgreements.id, { onDelete: "cascade" }),
+  month: integer("month").notNull(),
+  year: integer("year").notNull(),
+  paidValue: decimal("paid_value", { precision: 12, scale: 2 }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  agreementMonthYearUniq: uniqueIndex("agreement_monthly_payments_agreement_id_month_year_key").on(t.agreementId, t.month, t.year),
+}));
+
+export const insertAgreementMonthlyPaymentSchema = createInsertSchema(agreementMonthlyPayments).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAgreementMonthlyPayment = z.infer<typeof insertAgreementMonthlyPaymentSchema>;
+export type AgreementMonthlyPayment = typeof agreementMonthlyPayments.$inferSelect;
