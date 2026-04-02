@@ -1350,10 +1350,18 @@ export const whatsappService = {
       const lidJid = await resolvePhoneToLidJid(formattedNumber);
       const targetJid = lidJid || `${formattedNumber}@s.whatsapp.net`;
 
-      console.log(`[WhatsApp] Sending document "${fileName}" to ${formattedNumber} via ${targetJid}`);
+      const ext = fileName.split(".").pop()?.toLowerCase() || "";
+      const mimetype = ext === "pdf" ? "application/pdf"
+        : ext === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        : ext === "doc" ? "application/msword"
+        : ext === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        : ext === "xls" ? "application/vnd.ms-excel"
+        : "application/octet-stream";
+
+      console.log(`[WhatsApp] Sending document "${fileName}" (${mimetype}) to ${formattedNumber} via ${targetJid}`);
       const result = await sock.sendMessage(targetJid, {
         document,
-        mimetype: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        mimetype,
         fileName,
         caption,
       });
