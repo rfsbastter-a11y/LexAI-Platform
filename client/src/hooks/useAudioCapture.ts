@@ -39,7 +39,7 @@ interface SpeechRecognitionConstructor {
 }
 
 function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
-  const win = window as Record<string, unknown>;
+  const win = window as unknown as Record<string, unknown>;
   return (win.SpeechRecognition || win.webkitSpeechRecognition) as SpeechRecognitionConstructor | null;
 }
 
@@ -54,6 +54,7 @@ interface UseAudioCaptureProps {
   participants?: string[];
   getRecentUtterances?: () => { speaker: string; text: string }[];
   activeSpeakerHint?: string;
+  captureMode?: 'tab' | 'ambient';
 }
 
 // Each recording window duration in ms.
@@ -69,6 +70,7 @@ export function useAudioCapture({
   participants,
   getRecentUtterances,
   activeSpeakerHint,
+  captureMode = 'tab',
 }: UseAudioCaptureProps = {}) {
   const [isCapturing, setIsCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,12 +99,14 @@ export function useAudioCapture({
   activeSpeakerHintRef.current = activeSpeakerHint;
 
   const isBrowserSupported = useCallback(() => {
-    return !!(
-      navigator.mediaDevices &&
-      navigator.mediaDevices.getDisplayMedia &&
-      typeof MediaRecorder !== 'undefined'
-    );
-  }, []);
+    const hasMediaRecorder = typeof MediaRecorder !== 'undefined';
+    const hasMediaDevices = !!navigator.mediaDevices;
+    if (!hasMediaRecorder || !hasMediaDevices) return false;
+    if (captureMode === 'ambient') {
+      return !!navigator.mediaDevices.getUserMedia;
+    }
+    return !!navigator.mediaDevices.getDisplayMedia;
+  }, [captureMode]);
 
   // ── Transcription ──────────────────────────────────────────────────────
 
@@ -233,19 +237,93 @@ export function useAudioCapture({
     }, CYCLE_INTERVAL_MS);
   }, [sendAudioForTranscription]);
 
+  const startRealtimeRecognition = useCallback(() => {
+    const SpeechRecognitionCtor = getSpeechRecognitionConstructor();
+    if (!SpeechRecognitionCtor) return;
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'pt-BR';
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      if (!isCapturingRef.current) return;
+      let interimText = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        interimText += event.results[i][0].transcript;
+      }
+      if (interimText) {
+        setCurrentTranscript(interimText);
+        onTranscriptRef.current?.(interimText, false);
+      }
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (event.error === 'no-speech' || event.error === 'aborted') return;
+    };
+
+    recognition.onend = () => {
+      if (isCapturingRef.current) {
+        try { recognition.start(); } catch { /* ignore */ }
+      }
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  }, []);
+
   // ── Start ──────────────────────────────────────────────────────────────
 
   const startCapture = useCallback(async () => {
     setError(null);
 
     if (!isBrowserSupported()) {
-      setError(
-        'Seu navegador não suporta captura de áudio de aba. Use Chrome ou Edge desktop.'
+      setError(captureMode === 'ambient'
+        ? 'Seu navegador não suporta captura de áudio do microfone.'
+        : 'Seu navegador não suporta captura de áudio de aba. Use Chrome ou Edge desktop.'
       );
       return;
     }
 
     try {
+      if (captureMode === 'ambient') {
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioTracks = micStream.getAudioTracks();
+
+        if (audioTracks.length === 0) {
+          micStream.getTracks().forEach((t) => t.stop());
+          setError('Nenhuma faixa de áudio do microfone foi detectada.');
+          return;
+        }
+
+        streamRef.current = micStream;
+        setVideoStream(null);
+
+        const handleTrackEnded = () => {
+          if (isCapturingRef.current) stopCapture();
+        };
+        micStream.getAudioTracks().forEach((t) => { t.onended = handleTrackEnded; });
+
+        const audioStream = new MediaStream(audioTracks);
+        audioStreamRef.current = audioStream;
+
+        let mimeType = 'audio/webm;codecs=opus';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'audio/webm';
+          if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
+        }
+        mimeTypeRef.current = mimeType;
+
+        lastTranscriptRef.current = '';
+        isCapturingRef.current = true;
+        setIsCapturing(true);
+
+        startRecorderWindow();
+        startRealtimeRecognition();
+        return;
+      }
+
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: true,
@@ -353,59 +431,22 @@ export function useAudioCapture({
       setIsCapturing(true);
 
       startRecorderWindow();
-
-      // ── Parallel SpeechRecognition for real-time interim display ──────
-      // MediaRecorder sends 15s batches to Gemini for diarization.
-      // SpeechRecognition (mic) shows text instantly as the user speaks,
-      // giving zero-latency feedback while Gemini processes in background.
-      const SpeechRecognitionCtor = getSpeechRecognitionConstructor();
-      if (SpeechRecognitionCtor) {
-        const recognition = new SpeechRecognitionCtor();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = 'pt-BR';
-        recognition.maxAlternatives = 1;
-
-        recognition.onresult = (event: SpeechRecognitionEvent) => {
-          if (!isCapturingRef.current) return;
-          let interimText = '';
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            interimText += event.results[i][0].transcript;
-          }
-          if (interimText) {
-            setCurrentTranscript(interimText);
-            onTranscriptRef.current?.(interimText, false);
-          }
-        };
-
-        recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-          if (event.error === 'no-speech' || event.error === 'aborted') return;
-        };
-
-        recognition.onend = () => {
-          if (isCapturingRef.current) {
-            try { recognition.start(); } catch { /* ignore */ }
-          }
-        };
-
-        recognitionRef.current = recognition;
-        recognition.start();
-      }
+      startRealtimeRecognition();
     } catch (err: unknown) {
       const domErr = err as DOMException;
       if (domErr.name === 'NotAllowedError') {
-        setError(
-          'Compartilhamento de tela cancelado. Selecione uma aba e marque "Compartilhar áudio da aba".'
+        setError(captureMode === 'ambient'
+          ? 'Permissão de microfone negada. Autorize o uso do microfone para continuar.'
+          : 'Compartilhamento de tela cancelado. Selecione uma aba e marque "Compartilhar áudio da aba".'
         );
       } else {
         setError(`Erro ao iniciar captura: ${domErr.message}`);
       }
     }
-  }, [isBrowserSupported, startRecorderWindow]);
+  }, [captureMode, isBrowserSupported, startRecorderWindow, startRealtimeRecognition, stopCapture]);
 
   // ── Stop ───────────────────────────────────────────────────────────────
-
-  const stopCapture = useCallback(() => {
+  function stopCapture() {
     isCapturingRef.current = false;
     setIsCapturing(false);
     setVideoStream(null);
@@ -436,7 +477,7 @@ export function useAudioCapture({
     audioStreamRef.current = null;
     lastTranscriptRef.current = '';
     usingFallbackRef.current = false;
-  }, []);
+  }
 
   return {
     isCapturing,

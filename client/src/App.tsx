@@ -64,7 +64,8 @@ function Router() {
       <Route path="/negotiations" component={NegotiationsPage} />
       <Route path="/acordos" component={AcordosPage} />
       <Route path="/prospecting" component={ProspectingPage} />
-      <Route path="/meetings" component={MeetingsPage} />
+      <Route path="/meetings">{() => <MeetingsPage scope="virtual" />}</Route>
+      <Route path="/meetings-presenciais">{() => <MeetingsPage scope="presencial" />}</Route>
       <Route path="/profile" component={ProfilePage} />
       <Route path="/settings" component={SettingsPage} />
       <Route path="/login" component={LoginPage} />
