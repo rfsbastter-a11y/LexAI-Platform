@@ -78,6 +78,120 @@ async function findBestEntityNameInText(
   return best?.name || null;
 }
 
+// ── Roteador Semântico (Fase 2) ───────────────────────────────────────────────
+// Usa embeddings da OpenAI para classificar intenções não capturadas por regex.
+// Funciona como camada intermediária entre regex e LLM — reduz chamadas ao LLM
+// para intenções de alta confiança (economia de tokens + menor latência).
+
+const INTENT_EXAMPLES: Record<string, string[]> = {
+  gerar_peca_estudio: [
+    "faça as contrarrazões",
+    "elabore uma petição inicial",
+    "preciso de um recurso de apelação",
+    "gere uma contestação para esse caso",
+    "prepare um agravo de instrumento",
+    "redija uma execução de título extrajudicial",
+    "faça o mandado de segurança",
+    "preciso do habeas corpus",
+    "gere uma notificação extrajudicial",
+    "quero uma peça de cumprimento de sentença",
+    "elabore o embargo de declaração",
+  ],
+  gerar_relatorio_executivo: [
+    "me dá o relatório executivo",
+    "como está o escritório",
+    "resumo do escritório",
+    "panorama geral do escritório",
+    "visão geral do escritório",
+    "status geral de tudo",
+    "me mostra o panorama do escritório",
+    "preciso do relatório completo do escritório",
+  ],
+  gerar_contrato: [
+    "faça um contrato de renegociação",
+    "gere um acordo extrajudicial",
+    "preciso de um termo de composição",
+    "elabore um acordo de parcelamento",
+    "crie um contrato de honorários",
+    "gere o termo de renegociação de dívida",
+  ],
+  consultar_sistema: [
+    "quantos clientes temos",
+    "quais são os processos ativos",
+    "me mostra a agenda de hoje",
+    "como está o financeiro do escritório",
+    "me dá os prazos pendentes",
+    "quais processos estão com prazo vencendo",
+    "me fala sobre as negociações",
+    "lista de clientes",
+  ],
+};
+
+// Cache lazy: embeddings pré-computados para os exemplos de cada rota
+let _routeEmbeddingsCache: Array<{ acao: string; embedding: number[] }> | null = null;
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB) + 1e-10);
+}
+
+async function precomputeRouteEmbeddings(): Promise<Array<{ acao: string; embedding: number[] }>> {
+  if (_routeEmbeddingsCache) return _routeEmbeddingsCache;
+  const result: Array<{ acao: string; embedding: number[] }> = [];
+  for (const [acao, examples] of Object.entries(INTENT_EXAMPLES)) {
+    for (const example of examples) {
+      try {
+        const resp = await openai.embeddings.create({ model: "text-embedding-3-small", input: example });
+        result.push({ acao, embedding: resp.data[0].embedding });
+      } catch {
+        // Se falhar um exemplo, continua — não bloqueia o roteador
+      }
+    }
+  }
+  _routeEmbeddingsCache = result;
+  return result;
+}
+
+// Thresholds por ação: quanto mais alto, mais confiança exigida para rotear
+const SEMANTIC_THRESHOLDS: Record<string, number> = {
+  gerar_peca_estudio: 0.76,
+  gerar_relatorio_executivo: 0.78,
+  gerar_contrato: 0.78,
+  consultar_sistema: 0.74,
+};
+
+async function semanticRoute(message: string): Promise<{ acao: string; confidence: number } | null> {
+  try {
+    const [msgResp, routeEmbeds] = await Promise.all([
+      openai.embeddings.create({ model: "text-embedding-3-small", input: message }),
+      precomputeRouteEmbeddings(),
+    ]);
+    const msgVec = msgResp.data[0].embedding;
+
+    let bestAcao = "";
+    let bestScore = 0;
+    for (const { acao, embedding } of routeEmbeds) {
+      const score = cosineSimilarity(msgVec, embedding);
+      if (score > bestScore) { bestScore = score; bestAcao = acao; }
+    }
+
+    const threshold = SEMANTIC_THRESHOLDS[bestAcao] ?? 0.78;
+    if (bestScore >= threshold) {
+      console.log(`[Secretary] Semantic route: ${bestAcao} (${(bestScore * 100).toFixed(1)}% confidence)`);
+      return { acao: bestAcao, confidence: bestScore };
+    }
+    return null;
+  } catch (err) {
+    console.error("[Secretary] Semantic routing error:", err);
+    return null;
+  }
+}
+
 async function inferDeterministicSocioAction(
   tenantId: number,
   message: string,
@@ -85,6 +199,17 @@ async function inferDeterministicSocioAction(
 ): Promise<{ acao: string; args: any; reason: string; requiresConfirmation?: boolean; confirmationQuestion?: string } | null> {
   const raw = (message || "").trim();
   if (!raw) return null;
+
+  // ── Fase 1: Guards de curto-circuito ────────────────────────────────────────
+  // Mensagens curtas de negação NUNCA disparam ações determinísticas.
+  // "Nao" + histórico contendo "Contrarrazões" não deve regenerar a peça.
+  const rawNorm = normalizeForMatch(raw);
+  const isNegation = /^(n[aã]o|nao|nope|neg|negativo|jamais|nunca|calma|para|espera|cancela?|cancela\s+isso|esquece|deixa\s+pra\s+la|nao\s+quero|nao\s+precisa|para\s+tudo)[\s!?.]*$/.test(rawNorm);
+  if (isNegation) return null;
+
+  // Confirmações curtas são roteadas pelo LLM com contexto, não pelo classificador
+  const isShortConfirmation = /^(sim|s(?:im)?|pode|ok|isso|certo|vai|vamos|concordo|pode\s+ser|beleza|perfeito|exato|confirmo|confirma|tudo\s+bem|tbm|tb|show|fechado|claro|com\s+certeza|manda|vai\s+la)[\s!?.]*$/.test(rawNorm);
+  if (isShortConfirmation) return null;
 
   const combined = `${raw}\n${recentHistory || ""}`;
   const m = normalizeForMatch(raw);
@@ -117,10 +242,29 @@ async function inferDeterministicSocioAction(
     };
   }
 
-  const pieceRequestStrong = /(faca|faça|gere|elabore|redija|prepare|crie|produza|preciso|quero).*(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo)/.test(full)
-    || /(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo).*(agora|hoje|ja|já|pra mim)/.test(full);
+  // ── Fase 2: Detecção de PDF ─────────────────────────────────────────────────
+  // "Quero em PDF", "manda em PDF" → verifica contexto e roteia corretamente
+  if (/\bpdf\b/.test(m)) {
+    const recentHasPiece = /(pe[çc]a|contrarraz|contestacao|recurso|peticao|agravo|habeas|mandado|gerada|gerado|word|docx)/.test(normalizeForMatch(recentHistory || ""));
+    if (recentHasPiece) {
+      // Peça recente gerada em Word → informa localização e formato
+      return { acao: "localizar_ultimo_documento", args: {}, reason: "solicitacao_pdf_de_peca" };
+    }
+    // Sem peça recente → relatório executivo em PDF
+    return {
+      acao: "gerar_relatorio_executivo",
+      args: { acao: "gerar_relatorio_executivo", description: "solicitado em PDF" },
+      reason: "solicitacao_relatorio_pdf",
+    };
+  }
+
+  // ── Fase 3: Padrões de peça jurídica (apenas mensagem atual, não histórico) ─
+  // CRÍTICO: usar `m` (só a mensagem atual), não `full` (que inclui histórico).
+  // Usar `full` fazia "Nao" + histórico com "Contrarrazões" disparar geração de peça.
+  const pieceRequestStrong = /(faca|faça|gere|elabore|redija|prepare|crie|produza|preciso\s+de|quero\s+uma|quero\s+um).*(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento\s+de\s+senten[çc]a|monit[oó]ria|habeas|mandado|embargo)/.test(m)
+    || /(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento\s+de\s+senten[çc]a|monit[oó]ria|habeas|mandado|embargo).*(agora|hoje|ja|já|pra\s+mim)/.test(m);
   // Weak match: só menciona tipo de peça sem verbo de ação claro — pode ser ambíguo
-  const pieceRequestWeak = !pieceRequestStrong && /(peticao|pe[çc]a\s+jurid|contrarraz|contestacao|recurso\s+de|agravo|execu[çc][ãa]o|habeas\s+corpus|mandado\s+de\s+seguranca)/.test(full);
+  const pieceRequestWeak = !pieceRequestStrong && /(peticao|pe[çc]a\s+jurid|contrarraz|contestacao|recurso\s+de|agravo|execu[çc][ãa]o|habeas\s+corpus|mandado\s+de\s+seguranca)/.test(m);
   if (pieceRequestStrong) {
     const templateType = inferTemplateTypeFromLegalRequestText(full);
     return {
@@ -140,8 +284,9 @@ async function inferDeterministicSocioAction(
     };
   }
 
-  const contractRequest = /(faca|faça|gere|elabore|redija|prepare|crie).*(contrato|termo de acordo|termo de composicao|acordo extrajudicial|renegociacao)/.test(full)
-    || /(contrato|termo de acordo|acordo extrajudicial).*(agora|hoje|ja|já)/.test(full);
+  // Idem para contratos: usar `m` para evitar falsos positivos do histórico
+  const contractRequest = /(faca|faça|gere|elabore|redija|prepare|crie).*(contrato|termo\s+de\s+acordo|termo\s+de\s+composicao|acordo\s+extrajudicial|renegociacao)/.test(m)
+    || /(contrato|termo\s+de\s+acordo|acordo\s+extrajudicial).*(agora|hoje|ja|já)/.test(m);
   if (contractRequest) {
     return {
       acao: "gerar_contrato",
@@ -151,7 +296,8 @@ async function inferDeterministicSocioAction(
   }
 
   // Extração automática de prazo: "o prazo vence dia 15/04", "o recurso deve ser protocolado até 20/04"
-  const deadlineDetect = /(prazo|vence|vencimento|at[eé]\s+o\s+dia|data\s+limite|protocolar\s+at[eé]|entregar\s+at[eé]|peticionar\s+at[eé]).{0,80}(\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?|amanh[aã]|segunda|ter[çc]a|quarta|quinta|sexta)/.test(full);
+  // Usar `m` para detectar prazos apenas na mensagem atual, não no histórico
+  const deadlineDetect = /(prazo|vence|vencimento|at[eé]\s+o\s+dia|data\s+limite|protocolar\s+at[eé]|entregar\s+at[eé]|peticionar\s+at[eé]).{0,80}(\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?|amanh[aã]|segunda|ter[çc]a|quarta|quinta|sexta)/.test(m);
   if (deadlineDetect) {
     return {
       acao: "registrar_prazo",
@@ -206,6 +352,36 @@ async function inferDeterministicSocioAction(
       args: { acao: "gerar_relatorio_executivo", description: "relatório executivo solicitado por sócio" },
       reason: "relatorio_executivo_default",
     };
+  }
+
+  // ── Fase 4: Roteamento Semântico ──────────────────────────────────────────
+  // Última camada antes de entregar ao LLM. Usa embeddings para capturar
+  // intenções não cobertas por regex (frases incomuns, variações de idioma, etc.)
+  const semanticResult = await semanticRoute(raw);
+  if (semanticResult) {
+    switch (semanticResult.acao) {
+      case "gerar_peca_estudio": {
+        const templateType = inferTemplateTypeFromLegalRequestText(full);
+        return {
+          acao: "gerar_peca_estudio",
+          args: { acao: "gerar_peca_estudio", templateType, description: raw },
+          reason: `semantic_peca_${Math.round(semanticResult.confidence * 100)}pct`,
+        };
+      }
+      case "gerar_relatorio_executivo":
+        return {
+          acao: "gerar_relatorio_executivo",
+          args: { acao: "gerar_relatorio_executivo", description: raw },
+          reason: `semantic_relatorio_${Math.round(semanticResult.confidence * 100)}pct`,
+        };
+      case "gerar_contrato":
+        return {
+          acao: "gerar_contrato",
+          args: { acao: "gerar_contrato", description: raw },
+          reason: `semantic_contrato_${Math.round(semanticResult.confidence * 100)}pct`,
+        };
+      // consultar_sistema é melhor deixar para o LLM (precisa de parâmetros específicos)
+    }
   }
 
   return null;
@@ -1391,7 +1567,8 @@ async function buildSystemPrompt(tenantId: number, customPrompt: string, clientC
 
   let greetingInstructions = "";
   if (isSocio && isFirstMessage) {
-    const firstName = socioName ? socioName.split(" ")[0] : "";
+    // Strip "Dr."/"Dra." prefix before building the title to avoid "Dr. Dr."
+    const firstName = socioName ? socioName.replace(/^(dr\.?|dra\.?)\s*/i, "").split(" ")[0] : "";
     const drTitle = firstName ? `Dr. ${firstName}` : "Doutor";
     greetingInstructions = `
 SAUDAÇÃO OBRIGATÓRIA (primeira mensagem de um SÓCIO/ADVOGADO do escritório):
@@ -1475,6 +1652,30 @@ CAPACIDADES COMPLETAS (USE LIVREMENTE):
 7. MEMÓRIA: Quando perceber informações relevantes sobre preferências ou contexto do cliente, inclua [NOTA:informação relevante] para que seja salva
 8. PESQUISA WEB: Você tem acesso à ferramenta pesquisar_web que será chamada automaticamente. Sempre que houver dúvidas jurídicas, perguntas sobre legislação, jurisprudência, artigos de lei, ou qualquer informação que precise ser precisa e atualizada, a pesquisa será acionada. Confie nos resultados da pesquisa para embasar suas respostas.
 9. ⚠️ GERAR PEÇA JURÍDICA (STUDIO) — REGRA MÁXIMA PRIORIDADE: Qualquer pedido de geração de peça jurídica (petição, recurso, contestação, contrarrazões, execução, cumprimento de sentença, agravo, monitória, habeas corpus, mandado de segurança, embargo, notificação extrajudicial, ou QUALQUER outra peça processual) EXIGE chamar executar_acao com acao="gerar_peca_estudio" NA MESMA RESPOSTA. NUNCA escreva o conteúdo da peça no chat. NUNCA diga "Um momento, vou preparar" sem chamar a ferramenta imediatamente. NUNCA mostre texto jurídico, cabeçalhos, qualificação de partes ou rascunhos no chat.
+
+🎯 ROTEAMENTO DE INTENÇÃO — TABELA DE DECISÃO (SÓCIO):
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ MENSAGEM                         → AÇÃO OBRIGATÓRIA                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ "onde está?", "cadê?", "não     → NÃO chame gerar_relatorio_executivo.         │
+│  chegou", "me manda de novo"      Explique: Word enviado nesta conversa +       │
+│  após geração recente             disponível no Estúdio LexAI.                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ Qualquer peça jurídica           → executar_acao(gerar_peca_estudio). SEM        │
+│ (petição, recurso, agravo, etc.) → exceção. Nunca gere texto no chat.           │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ "relatório", "resumo executivo", → executar_acao(gerar_relatorio_executivo)     │
+│ "como está o escritório"           → será enviado como PDF.                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ "status do processo X",          → consultar_sistema. NÃO gere relatório        │
+│ "como está o caso Y"               executivo para consultas específicas.        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ Prazo com data ("vence dia 15")  → executar_acao(registrar_prazo)               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ Múltiplos pedidos numa mensagem  → execute em sequência, confirme cada um       │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ Intenção ambígua (< 70% certeza) → pergunte antes de agir                       │
+└─────────────────────────────────────────────────────────────────────────────────┘
    EXEMPLOS OBRIGATÓRIOS:
    - "faça as contrarrazões" → executar_acao(acao="gerar_peca_estudio", templateType="contrarrazoes", ...)
    - "preciso de um recurso de apelação" → executar_acao(acao="gerar_peca_estudio", templateType="recurso_apelacao", ...)
@@ -4258,10 +4459,11 @@ O contato se identificou como: ${contactName}
         const greetingPatterns = /^(oi|olá|ola|bom dia|boa tarde|boa noite|e aí|eai|alô|hello|hey|oi oi|olá!|oi!)[\s!?.]*$/i;
         const isShortGreeting = greetingPatterns.test(message.trim());
         if (isShortGreeting) {
-          const pendingAction = await storage.getRecentPendingActionByJid(tenantId, jid, 48);
+          const pendingAction = await storage.getRecentPendingActionByJid(tenantId, jid, 2);
           if (pendingAction && pendingAction.pendingAction) {
             const pa = pendingAction.pendingAction as { type: string; label: string; description?: string };
-            const drName = socioName ? `Dr. ${socioName.split(" ")[0]}` : "Doutor";
+            const drBaseName = socioName ? socioName.replace(/^(dr\.?|dra\.?)\s*/i, "").split(" ")[0] : "";
+            const drName = drBaseName ? `Dr. ${drBaseName}` : "Doutor";
             const resumeMsg = `Olá, ${drName}! Estava tentando gerar ${pa.label || "uma peça jurídica"} que o senhor pediu — quer que eu tente novamente?`;
             console.log(`[Secretary] PENDING-ACTION RESUME: Found pending action for ${jid}: ${pa.type}. Sending resume prompt.`);
             await whatsappService.sendToJid(jid, resumeMsg, tenantId);
