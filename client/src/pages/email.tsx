@@ -644,6 +644,39 @@ export default function EmailPage() {
     }
   };
 
+  const downloadAttachment = async (emailId: number, attachment: EmailAttachment) => {
+    try {
+      const res = await fetch(`/api/inbox/emails/${emailId}/attachments/${attachment.id}/download`, {
+        headers: getAuthHeaders(),
+        credentials: "include",
+      });
+      if (!res.ok) {
+        let message = "Falha ao baixar anexo";
+        try {
+          const data = await res.json();
+          if (data?.error) message = data.error;
+        } catch {}
+        throw new Error(message);
+      }
+
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = attachment.filename || "anexo";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+    } catch (error: any) {
+      toast({
+        title: "Erro ao baixar anexo",
+        description: error?.message || "Nao foi possivel baixar o anexo.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const countGarbledChars = (text: string): number => {
     const matches = text.match(/[\u00c3\u00c2]|[\u00e2][\u0080-\u00bf]/g);
     return matches ? matches.length : 0;
@@ -1246,13 +1279,26 @@ export default function EmailPage() {
                               </p>
                               <div className="flex flex-wrap gap-2">
                                 {selectedEmail.attachments.map((attachment) => (
-                                  <Badge key={attachment.id} variant="secondary" className="gap-1.5 max-w-full" data-testid={`attachment-received-${attachment.id}`}>
+                                  <div
+                                    key={attachment.id}
+                                    className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs max-w-full"
+                                    data-testid={`attachment-received-${attachment.id}`}
+                                  >
                                     <Paperclip className="w-3 h-3 flex-shrink-0" />
-                                    <span className="truncate max-w-[240px]">{attachment.filename}</span>
+                                    <span className="truncate max-w-[220px]">{attachment.filename}</span>
                                     {attachment.size ? (
                                       <span className="text-[10px] text-muted-foreground">({formatAttachmentSize(attachment.size)})</span>
                                     ) : null}
-                                  </Badge>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-6 px-2 text-[11px]"
+                                      onClick={() => downloadAttachment(selectedEmail.id, attachment)}
+                                      data-testid={`button-download-attachment-${attachment.id}`}
+                                    >
+                                      Baixar
+                                    </Button>
+                                  </div>
                                 ))}
                               </div>
                             </div>

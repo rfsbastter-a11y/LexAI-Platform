@@ -4248,6 +4248,60 @@ ${extractedText.substring(0, 8000)}`;
     }
   });
 
+  app.get("/api/inbox/emails/:id/attachments/:attachmentId/download", async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const emailId = parseInt(req.params.id, 10);
+      const attachmentId = parseInt(req.params.attachmentId, 10);
+
+      if (!Number.isFinite(emailId) || !Number.isFinite(attachmentId)) {
+        return res.status(400).json({ error: "Invalid email or attachment ID" });
+      }
+
+      const email = await storage.getEmail(emailId);
+      if (!email || email.tenantId !== tenantId) {
+        return res.status(404).json({ error: "Email not found" });
+      }
+
+      const attachments = await storage.getEmailAttachments(emailId);
+      const attachment = attachments.find((att) => att.id === attachmentId);
+      if (!attachment) {
+        return res.status(404).json({ error: "Attachment not found" });
+      }
+
+      if (!email.messageId || email.messageId.startsWith("zoho-")) {
+        return res.status(400).json({ error: "Email sem referencia valida para download de anexos" });
+      }
+      const folder = await storage.getEmailFolder(email.folderId);
+      if (!folder?.imapPath) {
+        return res.status(400).json({ error: "Pasta do e-mail nao encontrada para download de anexos" });
+      }
+
+      const download = await zohoMailService.downloadAttachment({
+        zohoFolderId: folder.imapPath,
+        zohoMessageId: email.messageId,
+        attachmentId: attachment.storagePath || undefined,
+        filename: attachment.filename,
+        size: attachment.size,
+        contentId: attachment.contentId,
+      });
+
+      const fallbackName = attachment.filename || `anexo-${attachment.id}`;
+      const fileName = (download.filename || fallbackName).replace(/[\r\n"]/g, "_");
+      const contentType = download.contentType || attachment.contentType || "application/octet-stream";
+
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+      return res.send(download.content);
+    } catch (error: any) {
+      console.error("Error downloading email attachment:", error);
+      if (String(error?.message || "").includes("not found")) {
+        return res.status(404).json({ error: error.message });
+      }
+      res.status(500).json({ error: "Failed to download attachment" });
+    }
+  });
+
   app.patch("/api/inbox/emails/:id/read", async (req: Request, res: Response) => {
     try {
       const id = parseInt(req.params.id);
