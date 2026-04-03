@@ -22,6 +22,8 @@ import {
   MessageSquare,
   ChevronsLeft,
   ChevronsRight,
+  ChevronDown,
+  ChevronRight,
   Handshake,
   Target,
   Video,
@@ -102,8 +104,6 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "Negociações", icon: Handshake, href: "/negotiations", highlight: true },
       { label: "Acordos", icon: FileSpreadsheet, href: "/acordos", highlight: true },
       { label: "Prospecção", icon: Target, href: "/prospecting", highlight: true },
-      { label: "Reunião Copiloto", icon: Video, href: "/meetings", highlight: true },
-      { label: "Reunião Presencial", icon: Video, href: "/meetings-presenciais", highlight: true },
     ],
   },
   {
@@ -126,6 +126,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       return false;
     }
   });
+  const [isMeetingsMenuOpen, setIsMeetingsMenuOpen] = useState(() =>
+    location.startsWith("/meetings")
+  );
 
   useEffect(() => {
     try {
@@ -238,6 +241,101 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
                 return navLink;
               })}
+              {group.title === "Inteligência Jurídica" && (
+                <>
+                  {collapsed ? (
+                    <TooltipProvider delayDuration={0}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            className={cn(
+                              "w-full flex items-center justify-center px-2 py-2.5 rounded-md text-sm font-medium transition-colors group relative",
+                              location.startsWith("/meetings")
+                                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                : "text-blue-400 hover:text-blue-300 hover:bg-sidebar-accent/50"
+                            )}
+                            onClick={() => navigate("/meetings")}
+                            data-testid="menu-meetings-collapsed"
+                          >
+                            <Video
+                              className={cn(
+                                "w-4 h-4 flex-shrink-0",
+                                location.startsWith("/meetings")
+                                  ? "text-sidebar-accent-foreground"
+                                  : "text-blue-400"
+                              )}
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="font-sans text-xs">
+                          Reunião
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    <div className="space-y-0.5">
+                      <button
+                        type="button"
+                        className={cn(
+                          "w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors",
+                          location.startsWith("/meetings")
+                            ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                            : "text-blue-400 hover:text-blue-300 hover:bg-sidebar-accent/50"
+                        )}
+                        onClick={() => setIsMeetingsMenuOpen(prev => !prev)}
+                        data-testid="menu-meetings-parent"
+                      >
+                        <Video
+                          className={cn(
+                            "w-4 h-4 flex-shrink-0",
+                            location.startsWith("/meetings")
+                              ? "text-sidebar-accent-foreground"
+                              : "text-blue-400"
+                          )}
+                        />
+                        <span className="flex-1 text-left">Reunião</span>
+                        {isMeetingsMenuOpen ? (
+                          <ChevronDown className="w-4 h-4 opacity-80" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4 opacity-80" />
+                        )}
+                      </button>
+
+                      {isMeetingsMenuOpen && (
+                        <div className="ml-8 pl-2 border-l border-sidebar-border/50 space-y-0.5">
+                          <Link href="/meetings">
+                            <div
+                              className={cn(
+                                "rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer",
+                                location === "/meetings"
+                                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                              )}
+                              data-testid="menu-meetings-virtual"
+                            >
+                              Virtual
+                            </div>
+                          </Link>
+                          <Link href="/meetings-presenciais">
+                            <div
+                              className={cn(
+                                "rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer",
+                                location === "/meetings-presenciais"
+                                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                              )}
+                              data-testid="menu-meetings-presencial"
+                            >
+                              Presencial
+                            </div>
+                          </Link>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
         ))}
