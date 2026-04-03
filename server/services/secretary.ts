@@ -8,6 +8,7 @@ import { ptBR } from "date-fns/locale";
 import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
+import PDFDocument from "pdfkit";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -81,7 +82,7 @@ async function inferDeterministicSocioAction(
   tenantId: number,
   message: string,
   recentHistory: string,
-): Promise<{ acao: string; args: any; reason: string } | null> {
+): Promise<{ acao: string; args: any; reason: string; requiresConfirmation?: boolean; confirmationQuestion?: string } | null> {
   const raw = (message || "").trim();
   if (!raw) return null;
 
@@ -116,14 +117,26 @@ async function inferDeterministicSocioAction(
     };
   }
 
-  const pieceRequest = /(faca|faça|gere|elabore|redija|prepare|crie|produza|preciso|quero).*(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo)/.test(full)
+  const pieceRequestStrong = /(faca|faça|gere|elabore|redija|prepare|crie|produza|preciso|quero).*(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo)/.test(full)
     || /(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo).*(agora|hoje|ja|já|pra mim)/.test(full);
-  if (pieceRequest) {
+  // Weak match: só menciona tipo de peça sem verbo de ação claro — pode ser ambíguo
+  const pieceRequestWeak = !pieceRequestStrong && /(peticao|pe[çc]a\s+jurid|contrarraz|contestacao|recurso\s+de|agravo|execu[çc][ãa]o|habeas\s+corpus|mandado\s+de\s+seguranca)/.test(full);
+  if (pieceRequestStrong) {
     const templateType = inferTemplateTypeFromLegalRequestText(full);
     return {
       acao: "gerar_peca_estudio",
       args: { acao: "gerar_peca_estudio", templateType, description: raw },
       reason: "pedido_natural_peca",
+    };
+  }
+  if (pieceRequestWeak) {
+    const templateType = inferTemplateTypeFromLegalRequestText(full);
+    return {
+      acao: "gerar_peca_estudio",
+      args: { acao: "gerar_peca_estudio", templateType, description: raw },
+      reason: "pedido_ambiguo_peca",
+      requiresConfirmation: true,
+      confirmationQuestion: `Quer que eu gere a *${templateType.replace(/_/g, " ")}* com base nos dados disponíveis?`,
     };
   }
 
@@ -137,7 +150,26 @@ async function inferDeterministicSocioAction(
     };
   }
 
-  const reportRequest = /(relatorio|relatório|resumo executivo|status|panorama)/.test(full);
+  // Extração automática de prazo: "o prazo vence dia 15/04", "o recurso deve ser protocolado até 20/04"
+  const deadlineDetect = /(prazo|vence|vencimento|at[eé]\s+o\s+dia|data\s+limite|protocolar\s+at[eé]|entregar\s+at[eé]|peticionar\s+at[eé]).{0,80}(\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?|amanh[aã]|segunda|ter[çc]a|quarta|quinta|sexta)/.test(full);
+  if (deadlineDetect) {
+    return {
+      acao: "registrar_prazo",
+      args: { acao: "registrar_prazo", description: raw },
+      reason: "prazo_mencionado",
+    };
+  }
+
+  // Localização de documento recente: "onde está?", "cadê?", "não chegou", "me manda de novo"
+  const locationQuery = /(onde\s+(est[aá]|fica|t[aá])|cad[eê]|n[aã]o\s+(chegou|recebi|encontrei|achei)|me\s*manda\s*(de\s*novo|novamente|outra\s*vez)|quero\s*(baixar|ver|acessar)\s*(agora|de\s*novo)?)/.test(full);
+  if (locationQuery) {
+    const recentHasDoc = /(gerada|gerado|enviada|enviado|word|\.docx|pe[çc]a|contrato)/.test(normalizeForMatch(recentHistory || ""));
+    if (recentHasDoc) {
+      return { acao: "localizar_ultimo_documento", args: {}, reason: "localizacao_documento_recente" };
+    }
+  }
+
+  const reportRequest = /(relatorio|relatório|resumo executivo|panorama\s+do\s+escrit[oó]rio|como\s+est[aá]\s+o\s+escrit[oó]rio)/.test(full);
   if (reportRequest) {
     if (/devedor|executado|reu|réu/.test(full) && /documento/.test(full)) {
       const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
@@ -177,6 +209,30 @@ async function inferDeterministicSocioAction(
   }
 
   return null;
+}
+
+// Detecta múltiplas intenções em uma mensagem de sócio separadas por conectivos
+// Retorna array de ações se > 1 detectada, null se apenas uma ou nenhuma
+async function detectMultiIntent(
+  tenantId: number,
+  message: string,
+  recentHistory: string
+): Promise<Array<{ acao: string; args: any; reason: string }> | null> {
+  // Separar por conectivos comuns: "e", "também", "além disso", "depois", "e também", "mais"
+  const separators = /\s+(e\s+também|além\s+disso|também|e\s+me\s+|depois\s+me\s+|mais\s+um[a]?\s+)\s*/i;
+  const segments = message.split(separators).map(s => s.trim()).filter(s => s.length > 8);
+
+  if (segments.length < 2) return null;
+
+  const actions: Array<{ acao: string; args: any; reason: string }> = [];
+  for (const segment of segments) {
+    const action = await inferDeterministicSocioAction(tenantId, segment, recentHistory);
+    if (action && !actions.find(a => a.acao === action.acao)) {
+      actions.push(action);
+    }
+  }
+
+  return actions.length >= 2 ? actions : null;
 }
 
 async function sendMessageInChunks(jid: string, text: string, tenantId: number): Promise<void> {
@@ -485,10 +541,11 @@ async function generatePlainWord(contentHtml: string, title: string): Promise<Bu
 }
 
 interface ConversationContext {
-  messages: { role: "user" | "assistant"; content: string }[];
+  messages: { role: "user" | "assistant" | "system"; content: string }[];
   lastActivity: number;
   clientId?: number;
   detectedTone?: string;
+  pendingConfirmation?: { acao: string; args: any; question: string };
 }
 
 const conversationContexts = new Map<string, ConversationContext>();
@@ -607,6 +664,14 @@ function summarizeAgentExecutionResult(action: string, rawResult: string): strin
       return `✅ ${title} gerado e salvo no Studio para edição/download.`;
     }
   }
+
+  if (action === "registrar_prazo") {
+    if (/Prazo registrado/i.test(text)) return text;
+    return text;
+  }
+
+  if (action === "localizar_ultimo_documento") return text;
+  if (action === "gerar_relatorio_executivo" && /Relatório Executivo enviado em PDF/i.test(text)) return text;
 
   return text;
 }
@@ -1475,13 +1540,28 @@ CONTEXTO INSUFICIENTE:
 
 CLASSIFICAÇÃO DE INTENÇÃO (OBRIGATÓRIO — faça isso antes de agir):
 Antes de responder, classifique internamente a mensagem recebida em uma destas categorias:
-- CONSULTA: o contato quer saber de algo (status, prazo, valor, processo)
-- PEDIDO DE EXECUÇÃO: quer que você faça algo (gerar peça, agendar, cadastrar)
+- CONSULTA: o contato quer saber de algo (status de processo, prazo, valor, andamento)
+- PEDIDO DE EXECUÇÃO: quer que você faça algo (gerar peça, agendar, cadastrar, gerar contrato)
+- LOCALIZAÇÃO: quer saber onde está um documento recém gerado ("onde está?", "cadê?", "não chegou", "me manda de novo")
 - NOTIFICAÇÃO/RECADO: está apenas informando algo ("os documentos foram protocolados", "já paguei", "o Dr. Ronald está a par")
 - ENVIO DOCUMENTAL: está enviando um arquivo para registro
 - CONFIRMAÇÃO: está confirmando algo que foi combinado
 - CORREÇÃO: está corrigindo um dado ("não é esse processo, é o outro")
 - COMANDO OPERACIONAL: instrução direta para executar ação
+
+SE a intenção for LOCALIZAÇÃO:
+- NUNCA chame gerar_relatorio_executivo — isso é completamente diferente de localizar um documento
+- Informe que o arquivo Word foi enviado nesta conversa logo acima
+- Indique que o documento também está disponível no Estúdio na plataforma LexAI
+
+🎯 ROTEAMENTO PARA SÓCIOS (aplica-se após classificação):
+• Peça jurídica de qualquer tipo → executar_acao(acao="gerar_peca_estudio") — OBRIGATÓRIO, sem exceção
+• "Relatório executivo", "resumo do escritório", "como está o escritório" → executar_acao(acao="gerar_relatorio_executivo") — será enviado como PDF
+• "Status do processo X", "como está o caso Y", "qual o andamento de..." → consultar_sistema — NÃO gerar relatório executivo
+• "Onde está?", "cadê?", "não chegou" (após documento gerado) → explicar localização — NÃO gerar relatório executivo
+• Prazo ou data mencionados com número de processo → executar_acao(acao="registrar_prazo")
+• Múltiplos pedidos numa mensagem → execute em sequência, confirme cada um
+• Intenção ambígua → pergunte de forma objetiva antes de agir
 
 SE a mensagem for NOTIFICAÇÃO ou RECADO:
 - NÃO tente buscar o processo ou dado no sistema para "validar"
@@ -3562,47 +3642,172 @@ async function executeSecretaryAction(
           const totalReceivable = pendingInvoices.reduce((s: number, i: any) => s + (parseFloat(i.amount) || 0), 0);
           const totalOverdue = overdueInvoices.reduce((s: number, i: any) => s + (parseFloat(i.amount) || 0), 0);
           const activeNeg = allNegotiations.filter((n: any) => n.status === "em_andamento" || n.status === "ativa");
+          const isDetailed = args.detalhado === "sim" || args.description?.includes("detalhado");
 
-          let report = `📊 *RELATÓRIO EXECUTIVO - MARQUES & SERRA*\n`;
-          report += `📅 ${format(now, "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}\n`;
-          report += `━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+          // Gerar PDF com pdfkit
+          const pdfBuffer = await new Promise<Buffer>((resolve, reject) => {
+            const doc = new PDFDocument({ margin: 50, size: "A4" });
+            const chunks: Buffer[] = [];
+            doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+            doc.on("end", () => resolve(Buffer.concat(chunks)));
+            doc.on("error", reject);
 
-          report += `👥 *CLIENTES:* ${allClients.length} cadastrados\n`;
-          report += `⚖️ *PROCESSOS:* ${allCases.length} total | ${activeCases.length} ativos\n`;
-          report += `📑 *CONTRATOS:* ${allContracts.length} total\n`;
-          report += `👤 *DEVEDORES:* ${allDebtors.length} cadastrados\n`;
-          report += `🤝 *NEGOCIAÇÕES:* ${allNegotiations.length} total | ${activeNeg.length} ativas\n\n`;
+            const primaryColor = "#1a237e";
+            const accentColor = "#283593";
+            const lightGray = "#f5f5f5";
 
-          report += `💰 *FINANCEIRO:*\n`;
-          report += `• A receber: R$ ${totalReceivable.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}\n`;
-          report += `• Em atraso: R$ ${totalOverdue.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} (${overdueInvoices.length} faturas)\n`;
-          report += `• Faturas pendentes: ${pendingInvoices.length}\n\n`;
+            // Header
+            doc.rect(0, 0, doc.page.width, 80).fill(primaryColor);
+            doc.fillColor("white").fontSize(20).font("Helvetica-Bold")
+              .text("MARQUES & SERRA", 50, 22, { align: "left" });
+            doc.fontSize(11).font("Helvetica")
+              .text("Sociedade de Advogados", 50, 46, { align: "left" });
+            doc.fillColor("white").fontSize(10)
+              .text(`Relatório Executivo — ${format(now, "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}`, 50, 60, { align: "right" });
 
-          if (urgentDeadlines.length > 0) {
-            report += `⚠️ *PRAZOS URGENTES (7 dias):*\n`;
-            for (const d of urgentDeadlines.slice(0, 10)) {
-              report += `• ${format(new Date(d.dueDate), "dd/MM", { locale: ptBR })} - ${d.title || d.description || "Sem descrição"}\n`;
+            doc.moveDown(3);
+
+            // Título
+            doc.fillColor(primaryColor).fontSize(16).font("Helvetica-Bold")
+              .text("RELATÓRIO EXECUTIVO", { align: "center" });
+            doc.moveDown(0.5);
+            doc.moveTo(50, doc.y).lineTo(doc.page.width - 50, doc.y).strokeColor(accentColor).lineWidth(2).stroke();
+            doc.moveDown(1);
+
+            // Função auxiliar para seção
+            const section = (title: string) => {
+              doc.fillColor(accentColor).fontSize(13).font("Helvetica-Bold").text(title);
+              doc.moveTo(50, doc.y + 2).lineTo(doc.page.width - 50, doc.y + 2).strokeColor("#c5cae9").lineWidth(1).stroke();
+              doc.moveDown(0.5);
+            };
+
+            const row = (label: string, value: string) => {
+              doc.fillColor("#333").fontSize(11).font("Helvetica-Bold").text(label, { continued: true });
+              doc.font("Helvetica").fillColor("#555").text(`  ${value}`);
+            };
+
+            // Visão Geral
+            section("VISÃO GERAL DO ESCRITÓRIO");
+            row("Clientes cadastrados:", `${allClients.length}`);
+            row("Processos:", `${allCases.length} total | ${activeCases.length} ativos`);
+            row("Contratos:", `${allContracts.length} total`);
+            row("Devedores cadastrados:", `${allDebtors.length}`);
+            row("Negociações:", `${allNegotiations.length} total | ${activeNeg.length} ativas`);
+            doc.moveDown(1);
+
+            // Financeiro
+            section("FINANCEIRO");
+            row("A receber:", `R$ ${totalReceivable.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`);
+            row("Em atraso:", `R$ ${totalOverdue.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} (${overdueInvoices.length} faturas)`);
+            row("Faturas pendentes:", `${pendingInvoices.length}`);
+            doc.moveDown(1);
+
+            // Prazos Urgentes
+            section("PRAZOS URGENTES (próximos 7 dias)");
+            if (urgentDeadlines.length === 0) {
+              doc.fillColor("#2e7d32").fontSize(11).font("Helvetica").text("Nenhum prazo urgente nos próximos 7 dias.");
+            } else {
+              urgentDeadlines.slice(0, 10).forEach((d: any) => {
+                doc.fillColor("#c62828").fontSize(11).font("Helvetica-Bold")
+                  .text(`• ${format(new Date(d.dueDate), "dd/MM/yyyy", { locale: ptBR })}`, { continued: true });
+                doc.font("Helvetica").fillColor("#333")
+                  .text(`  ${d.title || d.description || "Sem descrição"}`);
+              });
             }
-            report += `\n`;
-          } else {
-            report += `✅ *Sem prazos urgentes nos próximos 7 dias.*\n\n`;
+            doc.moveDown(1);
+
+            // Top clientes (se detalhado)
+            if (isDetailed) {
+              section("TOP 10 CLIENTES COM MAIS PROCESSOS");
+              const clientCaseCounts = allClients.map((c: any) => ({
+                name: c.name,
+                cases: allCases.filter((cs: any) => cs.clientId === c.id).length,
+              })).sort((a: any, b: any) => b.cases - a.cases).slice(0, 10);
+              clientCaseCounts.forEach((c: any, i: number) => {
+                row(`${i + 1}. ${c.name}:`, `${c.cases} processos`);
+              });
+              doc.moveDown(1);
+            }
+
+            // Rodapé
+            doc.fontSize(8).fillColor("#999").font("Helvetica")
+              .text(
+                `Gerado por LexAI — ${format(now, "dd/MM/yyyy HH:mm:ss", { locale: ptBR })}`,
+                50,
+                doc.page.height - 40,
+                { align: "center" }
+              );
+
+            doc.end();
+          });
+
+          // Enviar como PDF via WhatsApp
+          if (jid) {
+            await whatsappService.sendDocumentToJid(
+              jid,
+              pdfBuffer,
+              `relatorio_executivo_${format(now, "dd-MM-yyyy")}.pdf`,
+              "application/pdf",
+              `Relatório Executivo — ${format(now, "dd/MM/yyyy", { locale: ptBR })}`,
+              tenantId
+            );
           }
 
-          if (args.detalhado === "sim" || args.description?.includes("detalhado")) {
-            report += `\n📋 *TOP 10 CLIENTES COM MAIS PROCESSOS:*\n`;
-            const clientCaseCounts = allClients.map((c: any) => ({
-              name: c.name,
-              cases: allCases.filter((cs: any) => cs.clientId === c.id).length,
-            })).sort((a: any, b: any) => b.cases - a.cases).slice(0, 10);
-            clientCaseCounts.forEach((c: any, i: number) => {
-              report += `${i + 1}. ${c.name}: ${c.cases} processos\n`;
-            });
-          }
-
-          return report;
+          return `📊 *Relatório Executivo enviado em PDF!*\n\n` +
+            `Clientes: ${allClients.length} | Processos: ${activeCases.length} ativos | ` +
+            `A receber: R$ ${totalReceivable.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
         } catch (reportErr) {
           console.error("[Secretary] Error generating executive report:", reportErr);
           return "Erro ao gerar o relatório executivo.";
+        }
+      }
+
+      case "localizar_ultimo_documento": {
+        return (
+          `📎 *Documento enviado!*\n\n` +
+          `O arquivo foi enviado para este WhatsApp como Word (.docx) logo acima nesta conversa.\n\n` +
+          `Caso não tenha recebido, acesse o *Estúdio* na plataforma LexAI — ` +
+          `todos os documentos gerados ficam salvos lá com opção de download e reenvio.`
+        );
+      }
+
+      case "registrar_prazo": {
+        const desc = args.description || "";
+        try {
+          // Extrair data do texto via regex
+          const dateMatch = desc.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
+          let dueDate: Date | null = null;
+          if (dateMatch) {
+            const day = parseInt(dateMatch[1]);
+            const month = parseInt(dateMatch[2]) - 1;
+            const year = dateMatch[3] ? parseInt(dateMatch[3].length === 2 ? `20${dateMatch[3]}` : dateMatch[3]) : new Date().getFullYear();
+            dueDate = new Date(year, month, day, 23, 59, 0);
+          } else if (/amanh[aã]/i.test(desc)) {
+            dueDate = addDays(new Date(), 1);
+          }
+
+          if (!dueDate || isNaN(dueDate.getTime())) {
+            return `⚠️ Não consegui identificar a data do prazo. Por favor, informe no formato DD/MM/AAAA.`;
+          }
+
+          // Extrair título: pegar parte antes da data
+          const titleMatch = desc.match(/^(.{5,80}?)(?:\s+(?:para|at[eé]|vence|vencimento|dia)\s+\d)/i);
+          const title = titleMatch ? titleMatch[1].trim() : `Prazo — ${format(dueDate, "dd/MM/yyyy", { locale: ptBR })}`;
+
+          await storage.createDeadline({
+            tenantId,
+            title: title.substring(0, 200),
+            description: desc.substring(0, 500),
+            dueDate,
+            type: "prazo_processual",
+            priority: "alta",
+            status: "pendente",
+          });
+
+          return `✅ *Prazo registrado!*\n\n📋 *${title}*\n📅 Vencimento: ${format(dueDate, "dd/MM/yyyy", { locale: ptBR })}`;
+        } catch (deadlineErr) {
+          console.error("[Secretary] Error registering deadline:", deadlineErr);
+          return "Erro ao registrar o prazo. Tente novamente ou acesse a Agenda Jurídica na plataforma.";
         }
       }
 
@@ -4239,10 +4444,94 @@ O contato se identificou como: ${contactName}
       // Modo executivo determinístico para sócios: reduz ambiguidade para peça/relatório/contrato.
       // Quando detectado com alta confiança, executa a ação diretamente sem depender de decisão do LLM.
       if (isSocio) {
-        const recentHistoryText = ctx.messages.slice(-8).map(m => m.content).join("\n");
+        const recentHistoryText = ctx.messages.slice(-16).map(m => m.content).join("\n");
+
+        // Verificar primeiro se há múltiplas intenções na mensagem
+        const multiActions = await detectMultiIntent(tenantId, message, recentHistoryText);
+        if (multiActions && multiActions.length >= 2) {
+          console.log(`[Secretary] Multi-intent detected: ${multiActions.map(a => a.acao).join(", ")}`);
+          try {
+            const responses: string[] = [];
+            for (const act of multiActions) {
+              const result = await executeSecretaryAction(act.acao, act.args, tenantId, isSocio, clientId || undefined, jid, ctx.messages);
+              const summary = summarizeAgentExecutionResult(act.acao, result);
+              responses.push(summary);
+              ctx.messages.push({ role: "system", content: `[AÇÃO_RECENTE: ${act.acao}]` });
+            }
+            const combinedResponse = responses.join("\n");
+            ctx.messages.push({ role: "assistant", content: combinedResponse });
+            await saveMessageToDB(jid, tenantId, "assistant", combinedResponse);
+            if (config.mode === "auto") {
+              await sendMessageInChunks(jid, combinedResponse, tenantId);
+              await storage.createSecretaryAction({
+                tenantId, jid, contactName,
+                actionType: "multi_intent",
+                description: `Multi-intent: ${multiActions.map(a => a.acao).join(", ")}`,
+                status: "completed",
+                timestamp: new Date(),
+              });
+            } else {
+              await storage.createSecretaryAction({
+                tenantId, jid, contactName,
+                actionType: "multi_intent",
+                description: `Rascunho multi-intent: ${multiActions.map(a => a.acao).join(", ")}`,
+                status: "pending_approval",
+                draftMessage: combinedResponse,
+                timestamp: new Date(),
+              });
+            }
+            return;
+          } catch (multiErr) {
+            console.error("[Secretary] Multi-intent error:", multiErr);
+          }
+        }
+
+        // Verificar se há confirmação pendente e a mensagem atual é uma resposta afirmativa
+        if (ctx.pendingConfirmation) {
+          const isConfirm = /^(sim|s|pode|confirmo|isso|exato|ok|certo|faz|vai|pode\s+fazer|pode\s+sim|pode\s+gerar|afirmativo|com\s+certeza|claro)$/i.test(normalizeForMatch(message));
+          const isCancel = /^(nao|n|cancel|não|para|esquece|esquece\s+isso|deixa\s+pra\s+la)$/i.test(normalizeForMatch(message));
+          if (isConfirm) {
+            const pendingAct = ctx.pendingConfirmation;
+            ctx.pendingConfirmation = undefined;
+            try {
+              const result = await executeSecretaryAction(pendingAct.acao, pendingAct.args, tenantId, isSocio, clientId || undefined, jid, ctx.messages);
+              const summary = summarizeAgentExecutionResult(pendingAct.acao, result);
+              ctx.messages.push({ role: "assistant", content: summary });
+              ctx.messages.push({ role: "system", content: `[AÇÃO_RECENTE: ${pendingAct.acao}]` });
+              await saveMessageToDB(jid, tenantId, "assistant", summary);
+              if (config.mode === "auto") {
+                await sendMessageInChunks(jid, summary, tenantId);
+              }
+              return;
+            } catch (err) {
+              console.error("[Secretary] Pending confirmation execution error:", err);
+            }
+          } else if (isCancel) {
+            ctx.pendingConfirmation = undefined;
+            const cancelMsg = "Entendido, cancelado.";
+            ctx.messages.push({ role: "assistant", content: cancelMsg });
+            await saveMessageToDB(jid, tenantId, "assistant", cancelMsg);
+            if (config.mode === "auto") await whatsappService.sendToJid(jid, cancelMsg, tenantId);
+            return;
+          }
+          // Se não for confirm/cancel, limpar e continuar normalmente
+          ctx.pendingConfirmation = undefined;
+        }
+
         const deterministicAction = await inferDeterministicSocioAction(tenantId, message, recentHistoryText);
         if (deterministicAction) {
           console.log(`[Secretary] Deterministic sócio action: ${deterministicAction.acao} (${deterministicAction.reason})`);
+
+          // Ação ambígua — pedir confirmação antes de executar
+          if (deterministicAction.requiresConfirmation && deterministicAction.confirmationQuestion) {
+            ctx.pendingConfirmation = { acao: deterministicAction.acao, args: deterministicAction.args, question: deterministicAction.confirmationQuestion };
+            const question = deterministicAction.confirmationQuestion;
+            ctx.messages.push({ role: "assistant", content: question });
+            await saveMessageToDB(jid, tenantId, "assistant", question);
+            if (config.mode === "auto") await whatsappService.sendToJid(jid, question, tenantId);
+            return;
+          }
+
           try {
             const actionResult = await executeSecretaryAction(
               deterministicAction.acao,
@@ -4256,6 +4545,8 @@ O contato se identificou como: ${contactName}
             const conciseResponse = summarizeAgentExecutionResult(deterministicAction.acao, actionResult);
 
             ctx.messages.push({ role: "assistant", content: conciseResponse });
+            // Marcador estruturado de ação recente — aparece no recentHistory da próxima mensagem
+            ctx.messages.push({ role: "system", content: `[AÇÃO_RECENTE: ${deterministicAction.acao}]` });
             await saveMessageToDB(jid, tenantId, "assistant", conciseResponse);
 
             if (config.mode === "auto") {
