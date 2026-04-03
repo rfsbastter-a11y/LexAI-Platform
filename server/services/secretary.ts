@@ -18,6 +18,185 @@ function normalizeAccents(str: string): string {
   return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
+function normalizeForMatch(str: string): string {
+  return normalizeAccents(str || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function inferTemplateTypeFromLegalRequestText(text: string): string {
+  const t = normalizeForMatch(text);
+  if (!t) return "outro";
+
+  if (/contrarrazoes/.test(t)) return "contrarrazoes";
+  if (/agravo de instrumento|agravo/.test(t)) return "agravo_instrumento";
+  if (/recurso de apelacao|apelacao/.test(t)) return "recurso_apelacao";
+  if (/contestacao/.test(t)) return "contestacao";
+  if (/cumprimento de sentenca/.test(t)) return "cumprimento_sentenca";
+  if (/execucao de titulo|execucao extrajudicial|execucao/.test(t)) return "execucao";
+  if (/acao monitoria|monitoria/.test(t)) return "acao_monitoria";
+  if (/habeas corpus/.test(t)) return "habeas_corpus";
+  if (/mandado de seguranca/.test(t)) return "mandado_seguranca";
+  if (/notificacao extrajudicial/.test(t)) return "notificacao_extrajudicial";
+  if (/acordo extrajudicial/.test(t)) return "acordo_extrajudicial";
+  if (/peticao inicial/.test(t)) return "peticao_inicial";
+  if (/peticao|peca juridica|peca processual|recurso|embargo/.test(t)) return "outro";
+  return "outro";
+}
+
+async function findBestEntityNameInText(
+  tenantId: number,
+  text: string,
+  entity: "client" | "debtor",
+): Promise<string | null> {
+  const normalizedText = normalizeForMatch(text);
+  if (!normalizedText) return null;
+
+  if (entity === "client") {
+    const allClients = await storage.getClientsByTenant(tenantId);
+    let best: { name: string; score: number } | null = null;
+    for (const c of allClients) {
+      const candidate = normalizeForMatch(c.name || "");
+      if (!candidate) continue;
+      if (normalizedText.includes(candidate)) {
+        const score = candidate.length;
+        if (!best || score > best.score) best = { name: c.name, score };
+      }
+    }
+    return best?.name || null;
+  }
+
+  const allDebtors = await storage.getDebtorsByTenant(tenantId);
+  let best: { name: string; score: number } | null = null;
+  for (const d of allDebtors) {
+    const candidate = normalizeForMatch(d.name || "");
+    if (!candidate) continue;
+    if (normalizedText.includes(candidate)) {
+      const score = candidate.length;
+      if (!best || score > best.score) best = { name: d.name, score };
+    }
+  }
+  return best?.name || null;
+}
+
+async function inferDeterministicSocioAction(
+  tenantId: number,
+  message: string,
+  recentHistory: string,
+): Promise<{ acao: string; args: any; reason: string } | null> {
+  const raw = (message || "").trim();
+  if (!raw) return null;
+
+  const combined = `${raw}\n${recentHistory || ""}`;
+  const m = normalizeForMatch(raw);
+  const full = normalizeForMatch(combined);
+
+  if (/^\/peca\b/.test(m)) {
+    const payload = raw.replace(/^\/pe[cç]a\b\s*/i, "").trim();
+    const templateType = inferTemplateTypeFromLegalRequestText(payload || full);
+    return {
+      acao: "gerar_peca_estudio",
+      args: { acao: "gerar_peca_estudio", templateType, description: payload || raw },
+      reason: "comando_rapido_peca",
+    };
+  }
+
+  if (/^\/contrato\b/.test(m)) {
+    const payload = raw.replace(/^\/contrato\b\s*/i, "").trim();
+    return {
+      acao: "gerar_contrato",
+      args: { acao: "gerar_contrato", description: payload || raw },
+      reason: "comando_rapido_contrato",
+    };
+  }
+
+  if (/^\/prazo\b/.test(m) || /\/prazos\b/.test(m)) {
+    return {
+      acao: "gerar_relatorio_executivo",
+      args: { acao: "gerar_relatorio_executivo", description: "foco em prazos urgentes" },
+      reason: "comando_rapido_prazo",
+    };
+  }
+
+  const pieceRequest = /(faca|faça|gere|elabore|redija|prepare|crie|produza|preciso|quero).*(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo)/.test(full)
+    || /(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo).*(agora|hoje|ja|já|pra mim)/.test(full);
+  if (pieceRequest) {
+    const templateType = inferTemplateTypeFromLegalRequestText(full);
+    return {
+      acao: "gerar_peca_estudio",
+      args: { acao: "gerar_peca_estudio", templateType, description: raw },
+      reason: "pedido_natural_peca",
+    };
+  }
+
+  const contractRequest = /(faca|faça|gere|elabore|redija|prepare|crie).*(contrato|termo de acordo|termo de composicao|acordo extrajudicial|renegociacao)/.test(full)
+    || /(contrato|termo de acordo|acordo extrajudicial).*(agora|hoje|ja|já)/.test(full);
+  if (contractRequest) {
+    return {
+      acao: "gerar_contrato",
+      args: { acao: "gerar_contrato", description: raw },
+      reason: "pedido_natural_contrato",
+    };
+  }
+
+  const reportRequest = /(relatorio|relatório|resumo executivo|status|panorama)/.test(full);
+  if (reportRequest) {
+    if (/devedor|executado|reu|réu/.test(full) && /documento/.test(full)) {
+      const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
+      if (debtorName) {
+        return {
+          acao: "listar_documentos_devedor",
+          args: { acao: "listar_documentos_devedor", debtorName },
+          reason: "relatorio_documentos_devedor",
+        };
+      }
+    }
+    if (/devedor|executado|reu|réu/.test(full)) {
+      const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
+      if (debtorName) {
+        return {
+          acao: "relatorio_devedor",
+          args: { acao: "relatorio_devedor", debtorName },
+          reason: "relatorio_devedor",
+        };
+      }
+    }
+    if (/cliente/.test(full)) {
+      const clientName = await findBestEntityNameInText(tenantId, combined, "client");
+      if (clientName) {
+        return {
+          acao: "gerar_relatorio_cliente",
+          args: { acao: "gerar_relatorio_cliente", clientName },
+          reason: "relatorio_cliente",
+        };
+      }
+    }
+    return {
+      acao: "gerar_relatorio_executivo",
+      args: { acao: "gerar_relatorio_executivo", description: "relatório executivo solicitado por sócio" },
+      reason: "relatorio_executivo_default",
+    };
+  }
+
+  return null;
+}
+
+async function sendMessageInChunks(jid: string, text: string, tenantId: number): Promise<void> {
+  if (!text) return;
+  if (text.length <= 3900) {
+    await whatsappService.sendToJid(jid, text, tenantId);
+    return;
+  }
+  const parts: string[] = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    parts.push(remaining.substring(0, 3900));
+    remaining = remaining.substring(3900);
+  }
+  for (let i = 0; i < parts.length; i++) {
+    const partMsg = `(${i + 1}/${parts.length})\n${parts[i]}`;
+    await whatsappService.sendToJid(jid, partMsg, tenantId);
+  }
+}
+
 async function generateWordWithLetterhead(contentHtml: string, title: string): Promise<Buffer | null> {
   try {
     const templatePath = path.join(process.cwd(), "public/templates/default_letterhead.docx");
@@ -400,6 +579,36 @@ async function getAvailableSlots(tenantId: number, date: string): Promise<string
 
 function extractPhoneFromJid(jid: string): string {
   return jid.split("@")[0].replace(/\D/g, "");
+}
+
+function summarizeAgentExecutionResult(action: string, rawResult: string): string {
+  const text = (rawResult || "").trim();
+  if (!text) return "✅ Ação executada.";
+
+  if (action === "gerar_peca_estudio") {
+    const labelMatch = text.match(/📋\s*([^\n]+)/);
+    const label = labelMatch?.[1]?.trim() || "Peça Jurídica";
+    if (/ENVIADA COM SUCESSO|enviado diretamente/i.test(text)) {
+      return `✅ ${label} gerada e enviada em Word via WhatsApp.`;
+    }
+    if (/FALHA AO ENVIAR|falha no envio/i.test(text)) {
+      return `⚠️ ${label} gerada no Studio, mas houve falha no envio do Word via WhatsApp. Posso tentar reenviar agora.`;
+    }
+    return `✅ ${label} gerada com sucesso.`;
+  }
+
+  if (action === "gerar_contrato") {
+    if (/CONTRATO GERADO COM SUCESSO/i.test(text)) {
+      const titleMatch = text.match(/📄\s*([^\n]+)/);
+      const title = titleMatch?.[1]?.trim() || "Contrato";
+      if (/foi enviado diretamente nesta conversa/i.test(text)) {
+        return `✅ ${title} gerado e enviado em Word via WhatsApp.`;
+      }
+      return `✅ ${title} gerado e salvo no Studio para edição/download.`;
+    }
+  }
+
+  return text;
 }
 
 async function findClientByJid(jid: string, tenantId: number, contactName?: string) {
@@ -3992,8 +4201,8 @@ O contato se identificou como: ${contactName}
             properties: {
               acao: {
                 type: "string",
-                enum: ["cadastrar_devedor", "cadastrar_cliente", "atualizar_cliente", "atualizar_devedor", "vincular_processo", "gerar_relatorio_cliente", "arquivar_documento", "enviar_documento_sistema", "gerar_contrato", "gerar_peca_estudio", "gerar_relatorio_executivo"],
-                description: "Tipo de ação. atualizar_cliente=atualizar dados de cliente existente. atualizar_devedor=atualizar dados de devedor existente. gerar_peca_estudio=gerar peças jurídicas. gerar_contrato=contratos/acordos/termos. gerar_relatorio_executivo=relatório completo. enviar_documento_sistema=buscar e enviar documento já arquivado no sistema para o cliente via WhatsApp."
+                enum: ["cadastrar_devedor", "cadastrar_cliente", "atualizar_cliente", "atualizar_devedor", "vincular_processo", "gerar_relatorio_cliente", "relatorio_devedor", "listar_documentos_devedor", "arquivar_documento", "enviar_documento_sistema", "gerar_contrato", "gerar_peca_estudio", "gerar_relatorio_executivo"],
+                description: "Tipo de ação. atualizar_cliente=atualizar dados de cliente existente. atualizar_devedor=atualizar dados de devedor existente. gerar_peca_estudio=gerar peças jurídicas. gerar_contrato=contratos/acordos/termos. gerar_relatorio_executivo=relatório completo. relatorio_devedor=relatório detalhado de processos do devedor. listar_documentos_devedor=lista documentos do devedor. enviar_documento_sistema=buscar e enviar documento já arquivado no sistema para o cliente via WhatsApp."
               },
               clientName: { type: "string", description: "Nome do cliente" },
               debtorName: { type: "string", description: "Nome do devedor ou da parte contrária" },
@@ -4026,6 +4235,58 @@ O contato se identificou como: ${contactName}
 
       console.log(`[Secretary] tool_choice: ${shouldForceAction ? "FORCED executar_acao" : shouldForceSearch ? "FORCED pesquisar_web" : shouldForceSystemQuery ? "FORCED consultar_sistema" : "auto"} (msg: "${lastUserMsg.substring(0, 60)}")`);
       if (isSocio) console.log(`[Secretary] Sender identified as sócio/advogado: ${senderUser?.email || senderUser?.username}`);
+
+      // Modo executivo determinístico para sócios: reduz ambiguidade para peça/relatório/contrato.
+      // Quando detectado com alta confiança, executa a ação diretamente sem depender de decisão do LLM.
+      if (isSocio) {
+        const recentHistoryText = ctx.messages.slice(-8).map(m => m.content).join("\n");
+        const deterministicAction = await inferDeterministicSocioAction(tenantId, message, recentHistoryText);
+        if (deterministicAction) {
+          console.log(`[Secretary] Deterministic sócio action: ${deterministicAction.acao} (${deterministicAction.reason})`);
+          try {
+            const actionResult = await executeSecretaryAction(
+              deterministicAction.acao,
+              deterministicAction.args,
+              tenantId,
+              isSocio,
+              clientId || undefined,
+              jid,
+              ctx.messages
+            );
+            const conciseResponse = summarizeAgentExecutionResult(deterministicAction.acao, actionResult);
+
+            ctx.messages.push({ role: "assistant", content: conciseResponse });
+            await saveMessageToDB(jid, tenantId, "assistant", conciseResponse);
+
+            if (config.mode === "auto") {
+              await sendMessageInChunks(jid, conciseResponse, tenantId);
+              await storage.createSecretaryAction({
+                tenantId,
+                jid,
+                contactName,
+                actionType: `deterministic_${deterministicAction.acao}`,
+                description: `Execução determinística (${deterministicAction.reason}): ${deterministicAction.acao}`,
+                status: "completed",
+                timestamp: new Date(),
+              });
+            } else {
+              await storage.createSecretaryAction({
+                tenantId,
+                jid,
+                contactName,
+                actionType: `deterministic_${deterministicAction.acao}`,
+                description: `Rascunho determinístico (${deterministicAction.reason}): ${deterministicAction.acao}`,
+                status: "pending_approval",
+                draftMessage: conciseResponse,
+                timestamp: new Date(),
+              });
+            }
+            return;
+          } catch (detErr) {
+            console.error("[Secretary] Deterministic sócio action error:", detErr);
+          }
+        }
+      }
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
