@@ -261,7 +261,7 @@ class ZohoMailService {
           contentId: contentIdRaw ? String(contentIdRaw) : undefined,
         };
       })
-      .filter((att) => !!att.filename);
+      .filter((att: { filename: string }) => !!att.filename);
   }
 
   private async fetchMessageDetails(zohoMsgId: string, zohoFolderId?: string): Promise<any | null> {
