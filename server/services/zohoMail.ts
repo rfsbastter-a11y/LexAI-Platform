@@ -149,6 +149,320 @@ class ZohoMailService {
     return "";
   }
 
+  private normalizeCharset(charset: string): string {
+    const normalized = (charset || "").toLowerCase().trim();
+    if (!normalized) return "utf-8";
+    if (normalized === "utf8") return "utf-8";
+    if (normalized === "latin1") return "iso-8859-1";
+    if (normalized === "cp1252") return "windows-1252";
+    return normalized;
+  }
+
+  private decodeBytesWithCharset(bytes: Uint8Array, charset: string): string {
+    const normalizedCharset = this.normalizeCharset(charset);
+    try {
+      return new TextDecoder(normalizedCharset as any, { fatal: false }).decode(bytes);
+    } catch {
+      return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    }
+  }
+
+  private decodeQEncodedHeader(value: string): Uint8Array {
+    const bytes: number[] = [];
+    for (let i = 0; i < value.length; i++) {
+      const ch = value[i];
+      if (ch === "_") {
+        bytes.push(0x20);
+        continue;
+      }
+      if (ch === "=" && i + 2 < value.length) {
+        const hex = value.slice(i + 1, i + 3);
+        if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+          bytes.push(parseInt(hex, 16));
+          i += 2;
+          continue;
+        }
+      }
+      bytes.push(ch.charCodeAt(0) & 0xff);
+    }
+    return Uint8Array.from(bytes);
+  }
+
+  private countGarbledChars(text: string): number {
+    const matches = text.match(/[\u00c3\u00c2]|[\u00e2][\u0080-\u00bf]/g);
+    return matches ? matches.length : 0;
+  }
+
+  private fixMojibake(value: string): string {
+    if (!value || !/[\u00c3\u00c2]|[\u00e2][\u0080-\u00bf]/.test(value)) return value;
+    try {
+      const repaired = Buffer.from(value, "latin1").toString("utf8");
+      return this.countGarbledChars(repaired) < this.countGarbledChars(value) ? repaired : value;
+    } catch {
+      return value;
+    }
+  }
+
+  private decodeMimeHeader(value: string): string {
+    if (!value) return "";
+    const decoded = value.replace(/=\?([^?]+)\?([bBqQ])\?([^?]+)\?=/g, (_full, charset, encoding, encodedText) => {
+      try {
+        if (String(encoding).toUpperCase() === "B") {
+          const bytes = Buffer.from(String(encodedText), "base64");
+          return this.decodeBytesWithCharset(bytes, String(charset));
+        }
+        const bytes = this.decodeQEncodedHeader(String(encodedText));
+        return this.decodeBytesWithCharset(bytes, String(charset));
+      } catch {
+        return String(encodedText);
+      }
+    });
+
+    return this.fixMojibake(decoded).trim();
+  }
+
+  private parseAttachmentSize(rawSize: unknown): number | undefined {
+    if (rawSize === undefined || rawSize === null) return undefined;
+    const num = Number(rawSize);
+    if (!Number.isFinite(num) || num <= 0) return undefined;
+    return Math.round(num);
+  }
+
+  private extractZohoAttachments(messageData: any): Array<{
+    filename: string;
+    contentType?: string;
+    size?: number;
+    storagePath?: string;
+    contentId?: string;
+  }> {
+    const attachmentsRaw = Array.isArray(messageData?.attachments) ? messageData.attachments : [];
+
+    return attachmentsRaw
+      .map((att: any, index: number) => {
+        const rawFilename =
+          att?.attachmentName ||
+          att?.fileName ||
+          att?.filename ||
+          att?.name ||
+          att?.contentName ||
+          `anexo-${index + 1}`;
+
+        const filename = this.decodeMimeHeader(String(rawFilename || "")).trim() || `anexo-${index + 1}`;
+        const contentType = att?.contentType || att?.mimeType || att?.type || undefined;
+        const size = this.parseAttachmentSize(att?.size ?? att?.attachmentSize ?? att?.fileSize);
+        const storagePathRaw = att?.attachmentId || att?.partId || att?.storeName || att?.attachmentPath;
+        const contentIdRaw = att?.contentId || att?.cid;
+
+        return {
+          filename,
+          contentType: contentType ? String(contentType) : undefined,
+          size,
+          storagePath: storagePathRaw ? String(storagePathRaw) : undefined,
+          contentId: contentIdRaw ? String(contentIdRaw) : undefined,
+        };
+      })
+      .filter((att: { filename: string }) => !!att.filename);
+  }
+
+  private async fetchMessageDetails(zohoMsgId: string, zohoFolderId?: string): Promise<any | null> {
+    const endpoints = [];
+    if (zohoFolderId) {
+      endpoints.push(`/folders/${zohoFolderId}/messages/${zohoMsgId}`);
+    }
+    endpoints.push(`/messages/${zohoMsgId}`);
+
+    for (const endpoint of endpoints) {
+      try {
+        const result = await this.apiRequest(endpoint, true);
+        if (result?.data) {
+          return result.data;
+        }
+      } catch (error: any) {
+        console.warn(`[ZohoMail] Failed to fetch message details via ${endpoint}: ${error.message}`);
+      }
+    }
+
+    return null;
+  }
+
+  private async apiRequestBinary(path: string): Promise<Response> {
+    const token = await this.refreshAccessToken();
+    const accountId = await this.getAccountId();
+    const url = `${ZOHO_BASE_URL}/accounts/${accountId}${path}`;
+
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Zoho-oauthtoken ${token}`,
+        Accept: "application/octet-stream",
+      },
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Zoho API binary error ${response.status}: ${text}`);
+    }
+
+    return response;
+  }
+
+  private parseContentDispositionFilename(contentDisposition: string | null): string | undefined {
+    if (!contentDisposition) return undefined;
+
+    const filenameStarMatch = contentDisposition.match(/filename\*=([^;]+)/i);
+    if (filenameStarMatch?.[1]) {
+      const rawValue = filenameStarMatch[1].trim();
+      const cleaned = rawValue.replace(/^UTF-8''/i, "").replace(/^["']|["']$/g, "");
+      try {
+        return decodeURIComponent(cleaned);
+      } catch {
+        return cleaned;
+      }
+    }
+
+    const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
+    if (filenameMatch?.[1]) {
+      return filenameMatch[1];
+    }
+
+    return undefined;
+  }
+
+  private async fetchAttachmentInfos(zohoFolderId: string, zohoMsgId: string): Promise<Array<{
+    attachmentId: string;
+    attachmentName: string;
+    attachmentSize?: number;
+    contentId?: string;
+  }>> {
+    const result = await this.apiRequest(
+      `/folders/${zohoFolderId}/messages/${zohoMsgId}/attachmentinfo?includeInline=true`,
+      true
+    );
+    const data = result?.data || {};
+
+    const normalizeItem = (item: any): {
+      attachmentId: string;
+      attachmentName: string;
+      attachmentSize?: number;
+      contentId?: string;
+    } | null => {
+      const attachmentId = item?.attachmentId ? String(item.attachmentId) : "";
+      if (!attachmentId) return null;
+      return {
+        attachmentId,
+        attachmentName: this.decodeMimeHeader(String(item?.attachmentName || "")).trim(),
+        attachmentSize: this.parseAttachmentSize(item?.attachmentSize),
+        contentId: item?.cid ? String(item.cid) : undefined,
+      };
+    };
+
+    const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+    const inline = Array.isArray(data.inline) ? data.inline : [];
+
+    return [...attachments, ...inline]
+      .map(normalizeItem)
+      .filter((entry): entry is NonNullable<ReturnType<typeof normalizeItem>> => !!entry);
+  }
+
+  private findBestAttachmentInfo(
+    infos: Array<{ attachmentId: string; attachmentName: string; attachmentSize?: number; contentId?: string }>,
+    target: { filename?: string | null; size?: number | null; contentId?: string | null; attachmentId?: string | null }
+  ): { attachmentId: string; attachmentName: string; attachmentSize?: number; contentId?: string } | null {
+    const normalizedFilename = this.decodeMimeHeader(String(target.filename || "")).trim().toLowerCase();
+    const normalizedContentId = target.contentId ? String(target.contentId).trim() : "";
+    const targetSize = this.parseAttachmentSize(target.size);
+    const targetAttachmentId = target.attachmentId ? String(target.attachmentId).trim() : "";
+
+    if (targetAttachmentId) {
+      const byId = infos.find(info => info.attachmentId === targetAttachmentId);
+      if (byId) return byId;
+    }
+
+    if (normalizedContentId) {
+      const byContentId = infos.find(info => info.contentId && info.contentId === normalizedContentId);
+      if (byContentId) return byContentId;
+    }
+
+    if (normalizedFilename && targetSize) {
+      const byNameAndSize = infos.find(
+        info => info.attachmentName.toLowerCase() === normalizedFilename && info.attachmentSize === targetSize
+      );
+      if (byNameAndSize) return byNameAndSize;
+    }
+
+    if (normalizedFilename) {
+      const byName = infos.find(info => info.attachmentName.toLowerCase() === normalizedFilename);
+      if (byName) return byName;
+    }
+
+    if (targetSize) {
+      const bySize = infos.find(info => info.attachmentSize === targetSize);
+      if (bySize) return bySize;
+    }
+
+    return infos[0] || null;
+  }
+
+  async downloadAttachment(options: {
+    zohoFolderId: string;
+    zohoMessageId: string;
+    attachmentId?: string | null;
+    filename?: string | null;
+    size?: number | null;
+    contentId?: string | null;
+  }): Promise<{ filename: string; contentType: string; content: Buffer }> {
+    if (!this.configured) {
+      throw new Error("Zoho Mail not configured");
+    }
+
+    if (!options.zohoFolderId || !options.zohoMessageId) {
+      throw new Error("Missing Zoho folder/message identifiers");
+    }
+
+    let resolvedAttachmentId = options.attachmentId ? String(options.attachmentId).trim() : "";
+    let attachmentInfos: Array<{ attachmentId: string; attachmentName: string; attachmentSize?: number; contentId?: string }> = [];
+
+    if (!resolvedAttachmentId) {
+      attachmentInfos = await this.fetchAttachmentInfos(options.zohoFolderId, options.zohoMessageId);
+      const best = this.findBestAttachmentInfo(attachmentInfos, options);
+      resolvedAttachmentId = best?.attachmentId || "";
+    }
+
+    if (!resolvedAttachmentId) {
+      throw new Error("Attachment ID not found");
+    }
+
+    let response: Response;
+    try {
+      response = await this.apiRequestBinary(
+        `/folders/${options.zohoFolderId}/messages/${options.zohoMessageId}/attachments/${resolvedAttachmentId}`
+      );
+    } catch (firstError) {
+      attachmentInfos = attachmentInfos.length > 0
+        ? attachmentInfos
+        : await this.fetchAttachmentInfos(options.zohoFolderId, options.zohoMessageId);
+      const best = this.findBestAttachmentInfo(attachmentInfos, options);
+      if (!best || best.attachmentId === resolvedAttachmentId) {
+        throw firstError;
+      }
+      resolvedAttachmentId = best.attachmentId;
+      response = await this.apiRequestBinary(
+        `/folders/${options.zohoFolderId}/messages/${options.zohoMessageId}/attachments/${resolvedAttachmentId}`
+      );
+    }
+
+    const content = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get("content-type") || "application/octet-stream";
+    const headerFilename = this.parseContentDispositionFilename(response.headers.get("content-disposition"));
+    const bestInfo = attachmentInfos.find(info => info.attachmentId === resolvedAttachmentId);
+    const filename =
+      this.decodeMimeHeader(String(headerFilename || "")).trim() ||
+      bestInfo?.attachmentName ||
+      this.decodeMimeHeader(String(options.filename || "")).trim() ||
+      `anexo-${resolvedAttachmentId}`;
+
+    return { filename, contentType, content };
+  }
+
   private async fetchFullContent(zohoMsgId: string, zohoFolderId?: string): Promise<string> {
     const MAX_ATTEMPTS = 3;
     const delays = [500, 1500, 3000];
@@ -297,6 +611,7 @@ class ZohoMailService {
         console.log(`[ZohoMail] Saving email ${zohoMsgId}: bodyHtml=${savedBodySize} bytes`);
 
         const { address: fromAddress, name: fromName } = this.parseFromAddress(msg.fromAddress || msg.sender || "");
+        const decodedSubject = this.decodeMimeHeader(msg.subject || "(Sem assunto)") || "(Sem assunto)";
 
         const toAddresses = this.parseToAddresses(msg.toAddress || msg.to || "");
         const ccAddresses = this.parseCcAddresses(msg.ccAddress || msg.cc || "");
@@ -309,13 +624,18 @@ class ZohoMailService {
 
         const isRead = msg.status === "1" || msg.flagid === "2";
         const hasAttachments = msg.hasAttachment === "1" || (msg.attachments && msg.attachments.length > 0);
+        let attachments = this.extractZohoAttachments(msg);
+        if (hasAttachments && attachments.length === 0 && zohoMsgId) {
+          const details = await this.fetchMessageDetails(zohoMsgId, zohoFolderId);
+          attachments = this.extractZohoAttachments(details);
+        }
 
         const emailData: InsertEmail = {
           tenantId,
           folderId,
           messageId,
           uid: 0,
-          subject: msg.subject || "(Sem assunto)",
+          subject: decodedSubject,
           fromAddress,
           fromName,
           toAddresses,
@@ -329,7 +649,17 @@ class ZohoMailService {
           references: msg.references ? (Array.isArray(msg.references) ? msg.references : [msg.references]) : undefined,
         };
 
-        await storage.createEmail(emailData);
+        const email = await storage.createEmail(emailData);
+        for (const att of attachments) {
+          await storage.createEmailAttachment({
+            emailId: email.id,
+            filename: att.filename,
+            contentType: att.contentType,
+            size: att.size,
+            storagePath: att.storagePath,
+            contentId: att.contentId,
+          });
+        }
         syncedCount++;
       } catch (emailError) {
         console.error("[ZohoMail] Error saving email:", emailError);
@@ -428,6 +758,25 @@ class ZohoMailService {
     const sizeBytes = Buffer.byteLength(fullBody, "utf-8");
     await storage.updateEmail(emailId, { bodyHtml: fullBody });
 
+    const existingAttachments = await storage.getEmailAttachments(emailId);
+    if (existingAttachments.length === 0) {
+      const details = await this.fetchMessageDetails(zohoMsgId, zohoFolderId);
+      const attachments = this.extractZohoAttachments(details);
+      for (const att of attachments) {
+        await storage.createEmailAttachment({
+          emailId,
+          filename: att.filename,
+          contentType: att.contentType,
+          size: att.size,
+          storagePath: att.storagePath,
+          contentId: att.contentId,
+        });
+      }
+      if (attachments.length > 0 && !email.hasAttachments) {
+        await storage.updateEmail(emailId, { hasAttachments: true });
+      }
+    }
+
     console.log(`[ZohoMail] Single email ${zohoMsgId} updated: ${sizeBytes} bytes`);
     return { success: true, sizeBytes };
   }
@@ -516,19 +865,21 @@ class ZohoMailService {
   private parseFromAddress(from: string): { address: string; name: string } {
     if (!from) return { address: "", name: "" };
 
-    const match = from.match(/^"?([^"<]*)"?\s*<([^>]+)>/);
+    const decodedFrom = this.decodeMimeHeader(from).replace(/\s+/g, " ").trim();
+
+    const match = decodedFrom.match(/^"?([^"<]*)"?\s*<([^>]+)>/);
     if (match) {
       return {
-        name: match[1].trim(),
+        name: this.decodeMimeHeader(match[1].trim()),
         address: match[2].trim(),
       };
     }
 
-    if (from.includes("@")) {
-      return { address: from.trim(), name: "" };
+    if (decodedFrom.includes("@")) {
+      return { address: decodedFrom.trim(), name: "" };
     }
 
-    return { address: from.trim(), name: "" };
+    return { address: decodedFrom.trim(), name: "" };
   }
 
   private parseToAddresses(to: string | string[]): string[] {

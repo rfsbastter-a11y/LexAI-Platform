@@ -51,6 +51,8 @@ import {
   Settings,
   FileText,
   Type,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -77,6 +79,19 @@ interface Email {
   isRead: boolean;
   isStarred: boolean;
   hasAttachments: boolean;
+}
+
+interface EmailAttachment {
+  id: number;
+  filename: string;
+  contentType?: string | null;
+  size?: number | null;
+  storagePath?: string | null;
+  contentId?: string | null;
+}
+
+interface EmailDetails extends Email {
+  attachments?: EmailAttachment[];
 }
 
 interface EmailTemplate {
@@ -128,6 +143,7 @@ export default function EmailPage() {
   const queryClient = useQueryClient();
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
   const [selectedEmailId, setSelectedEmailId] = useState<number | null>(null);
+  const [isEmailFullscreen, setIsEmailFullscreen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeTo, setComposeTo] = useState("");
@@ -180,7 +196,7 @@ export default function EmailPage() {
     enabled: !!selectedFolderId,
   });
 
-  const { data: selectedEmail, isLoading: loadingEmail } = useQuery<Email>({
+  const { data: selectedEmail, isLoading: loadingEmail } = useQuery<EmailDetails | null>({
     queryKey: ["/api/inbox/emails", selectedEmailId],
     queryFn: async () => {
       if (!selectedEmailId) return null;
@@ -252,6 +268,40 @@ export default function EmailPage() {
       setSignatureHtml(signature.html || "");
     }
   }, [signature]);
+
+  useEffect(() => {
+    if (!selectedEmailId && isEmailFullscreen) {
+      setIsEmailFullscreen(false);
+    }
+  }, [selectedEmailId, isEmailFullscreen]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isEditable =
+        !!target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          !!target.closest("[contenteditable='true'], [role='textbox']"));
+
+      if (isEditable) return;
+
+      if (event.key === "Escape" && isEmailFullscreen) {
+        event.preventDefault();
+        setIsEmailFullscreen(false);
+        return;
+      }
+
+      if (event.key.toLowerCase() === "f" && selectedEmailId) {
+        event.preventDefault();
+        setIsEmailFullscreen((prev) => !prev);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isEmailFullscreen, selectedEmailId]);
 
   useEffect(() => {
     if (
@@ -545,11 +595,13 @@ export default function EmailPage() {
   };
 
   const handleReply = (email: Email) => {
+    const replySubject = readableHeader(email.subject, "(Sem assunto)");
+    const replySender = readableHeader(email.fromName, email.fromAddress);
     setComposeTo(email.fromAddress);
     setComposeCc("");
-    setComposeSubject(email.subject?.startsWith("RE: ") ? email.subject : `RE: ${email.subject}`);
+    setComposeSubject(replySubject.startsWith("RE: ") ? replySubject : `RE: ${replySubject}`);
     const dateStr = format(new Date(email.date), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR });
-    const quotedBody = `<br/><br/><p>Em ${dateStr}, ${email.fromName || email.fromAddress} escreveu:</p><blockquote style="border-left: 2px solid #ccc; padding-left: 10px; margin-left: 10px; color: #666;">${email.bodyHtml || email.bodyText?.replace(/\n/g, "<br/>") || ""}</blockquote>`;
+    const quotedBody = `<br/><br/><p>Em ${dateStr}, ${replySender} escreveu:</p><blockquote style="border-left: 2px solid #ccc; padding-left: 10px; margin-left: 10px; color: #666;">${email.bodyHtml || email.bodyText?.replace(/\n/g, "<br/>") || ""}</blockquote>`;
     setComposeBody(quotedBody);
     setComposeCaseId("");
     setComposeClientId("");
@@ -557,11 +609,13 @@ export default function EmailPage() {
   };
 
   const handleForward = (email: Email) => {
+    const forwardedSubject = readableHeader(email.subject, "(Sem assunto)");
+    const forwardedSender = readableHeader(email.fromName, email.fromAddress);
     setComposeTo("");
     setComposeCc("");
-    setComposeSubject(email.subject?.startsWith("FW: ") ? email.subject : `FW: ${email.subject}`);
+    setComposeSubject(forwardedSubject.startsWith("FW: ") ? forwardedSubject : `FW: ${forwardedSubject}`);
     const dateStr = format(new Date(email.date), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR });
-    const fwdBody = `<br/><br/><p>---------- Mensagem encaminhada ----------</p><p><strong>De:</strong> ${email.fromName || ""} &lt;${email.fromAddress}&gt;</p><p><strong>Data:</strong> ${dateStr}</p><p><strong>Assunto:</strong> ${email.subject}</p><p><strong>Para:</strong> ${email.toAddresses?.join(", ") || ""}</p><br/>${email.bodyHtml || email.bodyText?.replace(/\n/g, "<br/>") || ""}`;
+    const fwdBody = `<br/><br/><p>---------- Mensagem encaminhada ----------</p><p><strong>De:</strong> ${forwardedSender || ""} &lt;${email.fromAddress}&gt;</p><p><strong>Data:</strong> ${dateStr}</p><p><strong>Assunto:</strong> ${forwardedSubject}</p><p><strong>Para:</strong> ${email.toAddresses?.join(", ") || ""}</p><br/>${email.bodyHtml || email.bodyText?.replace(/\n/g, "<br/>") || ""}`;
     setComposeBody(fwdBody);
     setComposeCaseId("");
     setComposeClientId("");
@@ -588,6 +642,112 @@ export default function EmailPage() {
     } else {
       createTemplateMutation.mutate(data);
     }
+  };
+
+  const downloadAttachment = async (emailId: number, attachment: EmailAttachment) => {
+    try {
+      const res = await fetch(`/api/inbox/emails/${emailId}/attachments/${attachment.id}/download`, {
+        headers: getAuthHeaders(),
+        credentials: "include",
+      });
+      if (!res.ok) {
+        let message = "Falha ao baixar anexo";
+        try {
+          const data = await res.json();
+          if (data?.error) message = data.error;
+        } catch {}
+        throw new Error(message);
+      }
+
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = attachment.filename || "anexo";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+    } catch (error: any) {
+      toast({
+        title: "Erro ao baixar anexo",
+        description: error?.message || "Nao foi possivel baixar o anexo.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const countGarbledChars = (text: string): number => {
+    const matches = text.match(/[\u00c3\u00c2]|[\u00e2][\u0080-\u00bf]/g);
+    return matches ? matches.length : 0;
+  };
+
+  const fixMojibake = (value: string): string => {
+    if (!/[\u00c3\u00c2]|[\u00e2][\u0080-\u00bf]/.test(value)) return value;
+    try {
+      const bytes = Uint8Array.from(Array.from(value).map((char) => char.charCodeAt(0) & 0xff));
+      const repaired = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+      return countGarbledChars(repaired) < countGarbledChars(value) ? repaired : value;
+    } catch {
+      return value;
+    }
+  };
+
+  const decodeMimeHeader = (value: string): string => {
+    if (!value) return "";
+
+    const decodeQEncoded = (encoded: string): Uint8Array => {
+      const bytes: number[] = [];
+      for (let i = 0; i < encoded.length; i++) {
+        const ch = encoded[i];
+        if (ch === "_") {
+          bytes.push(0x20);
+          continue;
+        }
+        if (ch === "=" && i + 2 < encoded.length) {
+          const hex = encoded.slice(i + 1, i + 3);
+          if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+            bytes.push(parseInt(hex, 16));
+            i += 2;
+            continue;
+          }
+        }
+        bytes.push(ch.charCodeAt(0) & 0xff);
+      }
+      return Uint8Array.from(bytes);
+    };
+
+    const decoded = value.replace(/=\?([^?]+)\?([bBqQ])\?([^?]+)\?=/g, (_full, charset, encoding, payload) => {
+      const normalizedCharset =
+        String(charset).toLowerCase() === "utf8"
+          ? "utf-8"
+          : String(charset).toLowerCase() === "latin1"
+            ? "iso-8859-1"
+            : String(charset);
+      try {
+        const bytes =
+          String(encoding).toUpperCase() === "B"
+            ? Uint8Array.from(atob(String(payload)), (c) => c.charCodeAt(0))
+            : decodeQEncoded(String(payload));
+        return new TextDecoder(normalizedCharset as any, { fatal: false }).decode(bytes);
+      } catch {
+        return String(payload);
+      }
+    });
+
+    return fixMojibake(decoded).trim();
+  };
+
+  const readableHeader = (value?: string | null, fallback = ""): string => {
+    const base = (value || "").trim();
+    if (!base) return fallback;
+    return decodeMimeHeader(base) || fallback;
+  };
+
+  const formatAttachmentSize = (size?: number | null) => {
+    if (!size || size <= 0) return "";
+    if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(size / 1024))} KB`;
   };
 
   const displayEmails = searchQuery.length >= 3 ? searchResults : emailsList;
@@ -625,8 +785,14 @@ export default function EmailPage() {
           </div>
         </div>
 
-        <div className="flex flex-1 gap-4 min-h-0">
-          <Card className="w-56 flex-shrink-0 overflow-y-auto">
+        <div
+          className={cn(
+            "flex flex-1 gap-4 min-h-0",
+            isEmailFullscreen && "fixed inset-0 z-50 bg-background p-4"
+          )}
+        >
+          {!isEmailFullscreen && (
+            <Card className="w-56 flex-shrink-0 overflow-y-auto">
             <CardContent className="p-3">
               <Dialog open={composeOpen} onOpenChange={(open) => { if (!open) resetCompose(); else setComposeOpen(true); }}>
                 <DialogTrigger asChild>
@@ -879,9 +1045,10 @@ export default function EmailPage() {
                 </Button>
               </div>
             </CardContent>
-          </Card>
+            </Card>
+          )}
 
-          <Card className="flex-1 flex flex-col min-w-0">
+          <Card className={cn("flex-1 flex flex-col min-w-0", isEmailFullscreen && "shadow-2xl")}>
             <CardHeader className="py-3 px-4 border-b flex-shrink-0">
               <div className="flex items-center gap-2">
                 <div className="relative flex-1 max-w-md">
@@ -903,10 +1070,27 @@ export default function EmailPage() {
                 >
                   <RefreshCw className={cn("w-4 h-4", syncEmailsMutation.isPending && "animate-spin")} />
                 </Button>
+                {selectedEmailId && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsEmailFullscreen((prev) => !prev)}
+                    title={isEmailFullscreen ? "Sair da tela cheia (Esc)" : "Abrir e-mail em tela cheia (F)"}
+                    data-testid="button-toggle-fullscreen-email"
+                  >
+                    {isEmailFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                  </Button>
+                )}
               </div>
+              {selectedEmailId && (
+                <p className="mt-2 text-[11px] text-muted-foreground" data-testid="text-email-fullscreen-hint">
+                  Atalho: F para alternar tela cheia, Esc para sair.
+                </p>
+              )}
             </CardHeader>
-            <div className="flex flex-1 min-h-0">
-              <ScrollArea className="w-80 border-r flex-shrink-0">
+            <div className={cn("flex flex-1 min-h-0", isEmailFullscreen && "overflow-hidden")}>
+              {!isEmailFullscreen && (
+                <ScrollArea className="w-80 border-r flex-shrink-0">
                 <div className="divide-y">
                   {loadingEmails && (
                     <div className="p-4 text-center text-muted-foreground">
@@ -962,14 +1146,14 @@ export default function EmailPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <span className={cn("text-sm truncate", !email.isRead && "font-semibold")}>
-                              {email.fromName || email.fromAddress}
+                              {readableHeader(email.fromName, email.fromAddress)}
                             </span>
                             {email.hasAttachments && (
                               <Paperclip className="w-3 h-3 text-muted-foreground flex-shrink-0" />
                             )}
                           </div>
                           <p className={cn("text-sm truncate", !email.isRead ? "font-medium" : "text-muted-foreground")}>
-                            {email.subject || "(Sem assunto)"}
+                            {readableHeader(email.subject, "(Sem assunto)")}
                           </p>
                           <p className="text-xs text-muted-foreground truncate">
                             {email.bodyText?.substring(0, 60)}...
@@ -982,7 +1166,8 @@ export default function EmailPage() {
                     </button>
                   ))}
                 </div>
-              </ScrollArea>
+                </ScrollArea>
+              )}
 
               <div className="flex-1 min-w-0">
                 {!selectedEmailId && (
@@ -1011,7 +1196,7 @@ export default function EmailPage() {
                         >
                           <ArrowLeft className="w-4 h-4" />
                         </Button>
-                        <h3 className="font-semibold truncate" data-testid="text-email-subject">{selectedEmail.subject || "(Sem assunto)"}</h3>
+                        <h3 className="font-semibold truncate" data-testid="text-email-subject">{readableHeader(selectedEmail.subject, "(Sem assunto)")}</h3>
                       </div>
                       <div className="flex items-center gap-1">
                         <Button
@@ -1075,7 +1260,7 @@ export default function EmailPage() {
                           {(selectedEmail.fromName || selectedEmail.fromAddress || "?")[0].toUpperCase()}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="font-medium" data-testid="text-email-from-name">{selectedEmail.fromName || selectedEmail.fromAddress}</p>
+                          <p className="font-medium" data-testid="text-email-from-name">{readableHeader(selectedEmail.fromName, selectedEmail.fromAddress)}</p>
                           <p className="text-sm text-muted-foreground" data-testid="text-email-from-address">{selectedEmail.fromAddress}</p>
                           <p className="text-xs text-muted-foreground mt-1" data-testid="text-email-to">
                             Para: {selectedEmail.toAddresses?.join(", ") || "-"}
@@ -1084,6 +1269,49 @@ export default function EmailPage() {
                         <span className="text-sm text-muted-foreground flex-shrink-0" data-testid="text-email-date">
                           {format(new Date(selectedEmail.date), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
                         </span>
+                      </div>
+                      <div className="mt-3">
+                        {selectedEmail.hasAttachments ? (
+                          selectedEmail.attachments && selectedEmail.attachments.length > 0 ? (
+                            <div className="rounded-md border bg-muted/30 p-3" data-testid="email-attachments-list">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2" data-testid="text-email-attachments-title">
+                                Anexos ({selectedEmail.attachments.length})
+                              </p>
+                              <div className="flex flex-wrap gap-2">
+                                {selectedEmail.attachments.map((attachment) => (
+                                  <div
+                                    key={attachment.id}
+                                    className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs max-w-full"
+                                    data-testid={`attachment-received-${attachment.id}`}
+                                  >
+                                    <Paperclip className="w-3 h-3 flex-shrink-0" />
+                                    <span className="truncate max-w-[220px]">{attachment.filename}</span>
+                                    {attachment.size ? (
+                                      <span className="text-[10px] text-muted-foreground">({formatAttachmentSize(attachment.size)})</span>
+                                    ) : null}
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-6 px-2 text-[11px]"
+                                      onClick={() => downloadAttachment(selectedEmail.id, attachment)}
+                                      data-testid={`button-download-attachment-${attachment.id}`}
+                                    >
+                                      Baixar
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground" data-testid="text-email-attachments-pending">
+                              Este e-mail indica anexos, mas os metadados ainda não foram carregados. Clique em recarregar para tentar buscar do Zoho.
+                            </div>
+                          )
+                        ) : (
+                          <div className="text-xs text-muted-foreground" data-testid="text-email-no-attachments">
+                            Este e-mail não possui anexos.
+                          </div>
+                        )}
                       </div>
                     </div>
                     <ScrollArea className="flex-1 p-4">
