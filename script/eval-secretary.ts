@@ -40,4 +40,6 @@ const verifierCompleted = verifySecretaryActionResult("gerar_peca_estudio", "�
 assert.equal(verifierCompleted.finalStatus, "completed");
 const verifierPartial = verifySecretaryActionResult("gerar_peca_estudio", "📋 Recurso de Apelação\nSalvo no LexAI Studio");
 assert.equal(verifierPartial.finalStatus, "partial");
+const verifierFailed = verifySecretaryActionResult("gerar_peca_estudio", "📋 Recurso de Apelação\nFoi processada no Studio, mas sem confirmação de entrega.");
+assert.equal(verifierFailed.finalStatus, "failed");
 console.log("PASS verifier_piece_statuses");

@@ -11,12 +11,30 @@ export type SecretaryPlan = {
   summary: string;
 };
 
+type PieceRequestHints = {
+  genericTemplateRequested: boolean;
+  useAnySystemCase: boolean;
+  hasCaseNumber: boolean;
+  hasDocuments: boolean;
+};
+
 function normalizeAccents(str: string): string {
   return (str || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
 function normalizeForMatch(str: string): string {
   return normalizeAccents(str || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function derivePieceRequestHints(message: string): PieceRequestHints {
+  const normalized = normalizeForMatch(message);
+
+  return {
+    genericTemplateRequested: /(modelo padrao|modelo generico|generica|generico|sem validade|apenas modelo|so modelo|somente modelo|rascunho|exemplo)/.test(normalized),
+    useAnySystemCase: /(qualquer processo|qlq processo|pegue qualquer processo|use qualquer processo|algum processo do sistema|processo aleatorio|processo aleatorio do sistema)/.test(normalized),
+    hasCaseNumber: /\d{7,}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/.test(message),
+    hasDocuments: /(documentos?|anexos?|pdf|word|docx)/.test(normalized),
+  };
 }
 
 export function buildSecretaryPlannerSystemPrompt(params: {
@@ -30,6 +48,8 @@ Regras:
 - Nao responda ao usuario.
 - Se faltar dado minimo para executar, marque needsClarification=true e gere UMA pergunta curta.
 - Se a intencao for legal_piece, a actionType deve ser gerar_peca_estudio.
+- Se o usuario pedir modelo padrao, modelo generico, rascunho, exemplo ou disser que e sem validade, NAO exija numero do processo.
+- Se o usuario disser para usar qualquer processo do sistema, entenda que voce pode consultar o backend para pegar um processo de exemplo e seguir.
 - Se a intencao for contract, a actionType deve ser gerar_contrato.
 - Se a intencao for system_query, preencha queryType quando possivel.
 - Se a intencao for greeting, nao execute nada.
@@ -93,6 +113,7 @@ export function buildFallbackSecretaryPlan(params: {
   message: string;
 }): SecretaryPlan {
   const normalized = normalizeForMatch(params.message);
+  const pieceHints = derivePieceRequestHints(params.message);
 
   if (params.routing.intent === "greeting") {
     return {
@@ -105,7 +126,10 @@ export function buildFallbackSecretaryPlan(params: {
   }
 
   if (params.routing.intent === "legal_piece") {
-    const missingCaseNumber = !/\d{7,}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/.test(params.message) && !/(documentos?|anexos?|pdf|word|docx)/.test(normalized);
+    const missingCaseNumber = !pieceHints.genericTemplateRequested
+      && !pieceHints.useAnySystemCase
+      && !pieceHints.hasCaseNumber
+      && !pieceHints.hasDocuments;
     return {
       intent: "legal_piece",
       shouldExecuteNow: !missingCaseNumber,
@@ -114,8 +138,18 @@ export function buildFallbackSecretaryPlan(params: {
       clarificationQuestion: missingCaseNumber ? "Qual e o numero do processo ou qual documento devo usar como base?" : undefined,
       steps: missingCaseNumber
         ? ["ask_minimum_case_context"]
-        : ["collect_sources", "build_brief", "run_studio_piece", "verify_delivery", "respond"],
-      summary: missingCaseNumber ? "Peca precisa de contexto minimo" : "Plano de geracao de peca pelo Studio",
+        : pieceHints.useAnySystemCase
+          ? ["query_system_for_example_case", "build_demo_piece_brief", "run_studio_piece", "verify_delivery", "respond"]
+          : pieceHints.genericTemplateRequested
+            ? ["build_generic_piece_brief", "run_studio_piece", "verify_delivery", "respond"]
+            : ["collect_sources", "build_brief", "run_studio_piece", "verify_delivery", "respond"],
+      summary: missingCaseNumber
+        ? "Peca precisa de contexto minimo"
+        : pieceHints.useAnySystemCase
+          ? "Plano de geracao de modelo de peca usando processo de exemplo do sistema"
+          : pieceHints.genericTemplateRequested
+            ? "Plano de geracao de modelo padrao de peca pelo Studio"
+            : "Plano de geracao de peca pelo Studio",
     };
   }
 
@@ -161,5 +195,37 @@ export function buildFallbackSecretaryPlan(params: {
     needsClarification: false,
     steps: ["fallback_response"],
     summary: "Sem plano operacional forte",
+  };
+}
+
+export function applySecretaryPlanOverrides(params: {
+  plan: SecretaryPlan;
+  routing: SecretaryInternalRoutingResult;
+  message: string;
+}): SecretaryPlan {
+  if (params.routing.intent !== "legal_piece") {
+    return params.plan;
+  }
+
+  const pieceHints = derivePieceRequestHints(params.message);
+  if (!pieceHints.genericTemplateRequested && !pieceHints.useAnySystemCase) {
+    return params.plan;
+  }
+
+  if (!params.plan.needsClarification) {
+    return params.plan;
+  }
+
+  return {
+    ...params.plan,
+    shouldExecuteNow: true,
+    needsClarification: false,
+    clarificationQuestion: undefined,
+    steps: pieceHints.useAnySystemCase
+      ? ["query_system_for_example_case", "build_demo_piece_brief", "run_studio_piece", "verify_delivery", "respond"]
+      : ["build_generic_piece_brief", "run_studio_piece", "verify_delivery", "respond"],
+    summary: pieceHints.useAnySystemCase
+      ? "Plano corrigido para usar processo de exemplo do sistema"
+      : "Plano corrigido para gerar modelo padrao sem exigir processo especifico",
   };
 }

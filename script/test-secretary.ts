@@ -9,6 +9,8 @@ import { processLegacySecretaryActions } from "../server/services/secretaryLegac
 import { archiveSignedAgreementIfMatched } from "../server/services/secretaryMediaTasks";
 import { getOrCreateConversationContext, appendMessageToConversationContext } from "../server/services/secretaryConversationState";
 import { buildFallbackSecretaryInternalRouting, parseSecretaryInternalRoutingResult } from "../server/services/secretaryInternalPrompts";
+import { buildFallbackSecretaryPlan, applySecretaryPlanOverrides } from "../server/services/secretaryPlanning";
+import { verifySecretaryActionResult } from "../server/services/secretaryVerifier";
 
 function test(name: string, fn: () => void | Promise<void>) {
   return Promise.resolve()
@@ -94,6 +96,68 @@ async function main() {
     assert.equal(parsed?.intent, "system_query");
     assert.equal(parsed?.recommendedTool, "consultar_sistema");
     assert.equal(parsed?.needsClarification, false);
+  });
+
+  await test("piece planner allows generic model request without forcing process number", () => {
+    const routing = {
+      intent: "legal_piece" as const,
+      confidence: 0.99,
+      latentNeed: "geracao_peca_juridica",
+      recommendedTool: "executar_acao" as const,
+      needsClarification: false,
+      explicitResume: false,
+      shouldIgnoreHistory: false,
+      pieceType: "recurso_apelacao",
+      reasoningSummary: "follow-up de apelação pedindo modelo genérico",
+    };
+    const plan = buildFallbackSecretaryPlan({
+      routing,
+      message: "Deixe-a generica apenas quero ver o modelo padrao",
+    });
+
+    assert.equal(plan.shouldExecuteNow, true);
+    assert.equal(plan.needsClarification, false);
+    assert.ok(plan.steps.includes("build_generic_piece_brief"));
+  });
+
+  await test("piece planner override allows using any system case as demo", () => {
+    const overridden = applySecretaryPlanOverrides({
+      routing: {
+        intent: "legal_piece",
+        confidence: 0.99,
+        latentNeed: "geracao_peca_juridica",
+        recommendedTool: "executar_acao",
+        needsClarification: false,
+        explicitResume: false,
+        shouldIgnoreHistory: false,
+        reasoningSummary: "pedido claro",
+      },
+      message: "Pegue qualquer processo do sistema e faca so como modelo padrao sem validade",
+      plan: {
+        intent: "legal_piece",
+        shouldExecuteNow: false,
+        actionType: "gerar_peca_estudio",
+        needsClarification: true,
+        clarificationQuestion: "Qual e o numero do processo ou qual documento devo usar como base?",
+        steps: ["ask_minimum_case_context"],
+        summary: "Peca precisa de contexto minimo",
+      },
+    });
+
+    assert.equal(overridden.shouldExecuteNow, true);
+    assert.equal(overridden.needsClarification, false);
+    assert.ok(overridden.steps.includes("query_system_for_example_case"));
+  });
+
+  await test("piece verifier does not treat bare Studio mention as saved", () => {
+    const verification = verifySecretaryActionResult(
+      "gerar_peca_estudio",
+      "Peça Jurídica foi processada no Studio, mas ainda não confirmei a entrega do Word nesta conversa.",
+    );
+
+    assert.equal(verification.verified, false);
+    assert.equal(verification.finalStatus, "failed");
+    assert.equal(verification.checks.saved, false);
   });
 
   await test("policy matrix flags critical document send for approval", () => {

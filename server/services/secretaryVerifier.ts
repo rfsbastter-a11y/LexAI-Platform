@@ -22,36 +22,39 @@ export function verifySecretaryActionResult(action: string, rawResult: string): 
   }
 
   if (action === "gerar_peca_estudio") {
-    const failed = /nao consegui gerar|não consegui gerar|nao foi possivel gerar|não foi possível gerar|erro/i.test(text);
+    const failed = /nao consegui gerar|nÃ£o consegui gerar|nao foi possivel gerar|nÃ£o foi possÃ­vel gerar|erro/i.test(text);
     const delivered = /ENVIADA COM SUCESSO|enviado diretamente/i.test(text);
     const sendFailed = /FALHA AO ENVIAR|falha no envio/i.test(text);
-    const saved = /Salvo no LexAI Studio|Studio/i.test(text);
+    const saved = /Salv[ao]\s+no\s+(LexAI\s+)?Studio|\bID:\s*\d+\b/i.test(text);
 
     if (failed) {
-      return { verified: false, finalStatus: "failed", checks: { saved: false, delivered: false }, summary: "Falha na geração da peça" };
+      return { verified: false, finalStatus: "failed", checks: { saved: false, delivered: false }, summary: "Falha na geraÃ§Ã£o da peÃ§a" };
     }
     if (delivered) {
-      return { verified: true, finalStatus: "completed", checks: { saved: true, wordGenerated: true, delivered: true }, summary: "Peça gerada e entregue" };
+      return { verified: true, finalStatus: "completed", checks: { saved: true, wordGenerated: true, delivered: true }, summary: "PeÃ§a gerada e entregue" };
     }
-    if (sendFailed || saved) {
-      return { verified: true, finalStatus: "partial", checks: { saved: true, wordGenerated: true, delivered: false }, summary: "Peça gerada sem confirmação de entrega" };
+    if (sendFailed && saved) {
+      return { verified: true, finalStatus: "partial", checks: { saved: true, wordGenerated: true, delivered: false }, summary: "PeÃ§a gerada sem confirmaÃ§Ã£o de entrega" };
     }
-    return { verified: false, finalStatus: "partial", checks: { saved: false, delivered: false }, summary: "Peça processada sem evidência suficiente" };
+    if (saved) {
+      return { verified: true, finalStatus: "partial", checks: { saved: true, delivered: false }, summary: "PeÃ§a salva sem confirmaÃ§Ã£o de entrega" };
+    }
+    return { verified: false, finalStatus: "failed", checks: { saved: false, delivered: false }, summary: "PeÃ§a sem evidÃªncia de salvamento ou entrega" };
   }
 
   if (action === "gerar_contrato") {
-    const failed = /erro ao gerar|nao foi possivel gerar|não foi possível gerar/i.test(text);
+    const failed = /erro ao gerar|nao foi possivel gerar|nÃ£o foi possÃ­vel gerar/i.test(text);
     const delivered = /foi enviado diretamente nesta conversa/i.test(text);
     const saved = /Salvo no LexAI Studio|Studio/i.test(text);
 
     if (failed) {
-      return { verified: false, finalStatus: "failed", checks: { saved: false, delivered: false }, summary: "Falha na geração do contrato" };
+      return { verified: false, finalStatus: "failed", checks: { saved: false, delivered: false }, summary: "Falha na geraÃ§Ã£o do contrato" };
     }
     if (delivered) {
       return { verified: true, finalStatus: "completed", checks: { saved: true, wordGenerated: true, delivered: true }, summary: "Contrato gerado e entregue" };
     }
     if (saved) {
-      return { verified: true, finalStatus: "partial", checks: { saved: true, delivered: false }, summary: "Contrato salvo sem confirmação de entrega" };
+      return { verified: true, finalStatus: "partial", checks: { saved: true, delivered: false }, summary: "Contrato salvo sem confirmaÃ§Ã£o de entrega" };
     }
   }
 
@@ -59,6 +62,6 @@ export function verifySecretaryActionResult(action: string, rawResult: string): 
     verified: true,
     finalStatus: "completed",
     checks: {},
-    summary: "Resultado operacional concluído",
+    summary: "Resultado operacional concluÃ­do",
   };
 }

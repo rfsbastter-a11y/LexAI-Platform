@@ -46,6 +46,7 @@ import {
   buildSecretaryPlannerSystemPrompt,
   buildSecretaryPlannerUserPrompt,
   parseSecretaryPlan,
+  applySecretaryPlanOverrides,
 } from "./secretaryPlanning";
 import { verifySecretaryActionResult } from "./secretaryVerifier";
 import {
@@ -836,7 +837,7 @@ function summarizeAgentExecutionResult(action: string, rawResult: string): strin
     if (/FALHA AO ENVIAR|falha no envio/i.test(text)) {
       return `⚠️ ${label} gerada no Studio, mas houve falha no envio do Word via WhatsApp. Posso tentar reenviar agora.`;
     }
-    return `⚠️ ${label} foi processada no Studio, mas ainda não confirmei a entrega do Word nesta conversa.`;
+    return `⚠️ Não confirmei que a ${label} foi salva no Studio nem enviada em Word nesta conversa.`;
   }
 
   if (action === "gerar_contrato") {
@@ -3480,8 +3481,8 @@ async function executeSecretaryAction(
           else pieceType = "peticao_inicial";
           console.log(`[Secretary] Auto-detected pieceType from prompt: ${pieceType}`);
         }
-        const partyNameP = args.clientName || args.debtorName || "";
-        const caseNumberP = args.caseNumber || "";
+        let partyNameP = args.clientName || args.debtorName || "";
+        let caseNumberP = args.caseNumber || "";
 
         if (!prompt) return "Preciso da descrição detalhada da peça: tipo, partes envolvidas, fatos, pedidos desejados.";
 
@@ -3516,6 +3517,30 @@ async function executeSecretaryAction(
           let matchedDebtors: any[] = [];
           const debtorNameFromArgs = args.debtorName || "";
           const promptLower = prompt.toLowerCase();
+          const normalizedPrompt = normalizeForMatch(prompt);
+          const allowsExampleCaseFromSystem = /(qualquer processo|qlq processo|pegue qualquer processo|use qualquer processo|algum processo do sistema|processo aleatorio|processo aleatorio do sistema)/.test(normalizedPrompt);
+
+          if (allowsExampleCaseFromSystem && !caseNumberP && !partyNameP) {
+            const allCases = await storage.getCasesByTenant(tenantId);
+            const exampleCase = allCases.find((item: any) => item.caseNumber && (item.title || item.clientId)) || allCases.find((item: any) => item.caseNumber);
+            if (exampleCase) {
+              caseNumberP = exampleCase.caseNumber || caseNumberP;
+              if (exampleCase.clientId) {
+                const exampleClient = await storage.getClient(exampleCase.clientId, tenantId);
+                if (exampleClient?.name) {
+                  partyNameP = exampleClient.name;
+                }
+              }
+              systemCtx += "=== PROCESSO DE EXEMPLO SELECIONADO DO SISTEMA ===\n";
+              systemCtx += "O sócio autorizou usar qualquer processo real do sistema apenas como modelo interno sem validade.\n";
+              if (exampleCase.caseNumber) systemCtx += `NUMERO DO PROCESSO DE EXEMPLO: ${exampleCase.caseNumber}\n`;
+              if (exampleCase.title) systemCtx += `TITULO DO PROCESSO: ${exampleCase.title}\n`;
+              if (exampleCase.court) systemCtx += `TRIBUNAL/ORGAO: ${exampleCase.court}\n`;
+              if (partyNameP) systemCtx += `PARTE VINCULADA AO PROCESSO: ${partyNameP}\n`;
+              systemCtx += "A peca deve ser tratada explicitamente como MODELO PADRAO SEM VALIDADE, apenas para demonstracao interna.\n\n";
+            }
+          }
+
           if (partyNameP) {
             const allClients = await storage.getClientsByTenant(tenantId);
             const foundClient = allClients.find(c => c.name?.toLowerCase().includes(partyNameP.toLowerCase()));
@@ -4663,11 +4688,21 @@ O contato se identificou como: ${contactName}
         const plannerRaw = plannerCompletion.choices[0]?.message?.content || "";
         const parsedPlan = parseSecretaryPlan(plannerRaw);
         if (parsedPlan) {
-          internalPlan = parsedPlan;
+          internalPlan = applySecretaryPlanOverrides({
+            plan: parsedPlan,
+            routing: internalRouting,
+            message,
+          });
         }
       } catch (plannerErr) {
         console.error("[Secretary] Internal planner failed, using fallback:", plannerErr);
       }
+
+      internalPlan = applySecretaryPlanOverrides({
+        plan: internalPlan,
+        routing: internalRouting,
+        message,
+      });
 
       await safeCreateAgentStep({
         runId: agentRun?.id,
