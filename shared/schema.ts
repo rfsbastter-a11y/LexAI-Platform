@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, serial, integer, bigint, boolean, timestamp, decimal, jsonb, date } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, integer, bigint, boolean, timestamp, decimal, jsonb, date, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -832,10 +832,34 @@ export const insertDebtorAgreementSchema = createInsertSchema(debtorAgreements).
 export type InsertDebtorAgreement = z.infer<typeof insertDebtorAgreementSchema>;
 export type DebtorAgreement = typeof debtorAgreements.$inferSelect;
 
-export const debtorAgreementsRelations = relations(debtorAgreements, ({ one }) => ({
+export const agreementMonthlyPayments = pgTable("agreement_monthly_payments", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  agreementId: integer("agreement_id").notNull().references(() => debtorAgreements.id),
+  month: integer("month").notNull(),
+  year: integer("year").notNull(),
+  paidValue: decimal("paid_value", { precision: 12, scale: 2 }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  agreementMonthYearUnique: unique().on(table.agreementId, table.month, table.year),
+}));
+
+export const insertAgreementMonthlyPaymentSchema = createInsertSchema(agreementMonthlyPayments).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAgreementMonthlyPayment = z.infer<typeof insertAgreementMonthlyPaymentSchema>;
+export type AgreementMonthlyPayment = typeof agreementMonthlyPayments.$inferSelect;
+
+export const debtorAgreementsRelations = relations(debtorAgreements, ({ one, many }) => ({
   tenant: one(tenants, { fields: [debtorAgreements.tenantId], references: [tenants.id] }),
   debtor: one(debtors, { fields: [debtorAgreements.debtorId], references: [debtors.id] }),
   client: one(clients, { fields: [debtorAgreements.clientId], references: [clients.id] }),
+  monthlyPayments: many(agreementMonthlyPayments),
+}));
+
+export const agreementMonthlyPaymentsRelations = relations(agreementMonthlyPayments, ({ one }) => ({
+  tenant: one(tenants, { fields: [agreementMonthlyPayments.tenantId], references: [tenants.id] }),
+  agreement: one(debtorAgreements, { fields: [agreementMonthlyPayments.agreementId], references: [debtorAgreements.id] }),
 }));
 
 // ==================== NEGOTIATIONS ====================

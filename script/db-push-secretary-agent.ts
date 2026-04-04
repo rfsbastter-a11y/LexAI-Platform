@@ -64,7 +64,27 @@ async function main() {
       ON agent_steps (run_id)
   `);
 
-  console.log("Secretary agent tables ensured successfully.");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agreement_monthly_payments (
+      id serial PRIMARY KEY,
+      tenant_id integer NOT NULL REFERENCES tenants(id),
+      agreement_id integer NOT NULL REFERENCES debtor_agreements(id),
+      month integer NOT NULL,
+      year integer NOT NULL,
+      paid_value decimal(12, 2),
+      notes text,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now(),
+      CONSTRAINT agreement_monthly_payments_agreement_month_year_unique UNIQUE (agreement_id, month, year)
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS agreement_monthly_payments_agreement_id_idx
+      ON agreement_monthly_payments (agreement_id)
+  `);
+
+  console.log("Secretary agent and agreement tables ensured successfully.");
 }
 
 main()
