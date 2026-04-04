@@ -8,6 +8,11 @@ export interface ConversationContext {
   lastActivity: number;
   clientId?: number;
   detectedTone?: string;
+  lastUserRequest?: string;
+  pendingAgentAction?: Record<string, unknown> | null;
+  lastExecutedActionFingerprint?: string;
+  lastExecutedActionAt?: number;
+  lastAssistantResponseFingerprint?: string;
 }
 
 type LoadConversationDeps = {
@@ -40,6 +45,40 @@ export function createEmptyConversationContext(): ConversationContext {
 }
 
 export function touchConversationContext(ctx: ConversationContext): ConversationContext {
+  ctx.lastActivity = Date.now();
+  return ctx;
+}
+
+export function setConversationLastUserRequest(ctx: ConversationContext, request: string): ConversationContext {
+  ctx.lastUserRequest = request;
+  ctx.lastActivity = Date.now();
+  return ctx;
+}
+
+export function setConversationPendingAgentAction(
+  ctx: ConversationContext,
+  pendingAgentAction: Record<string, unknown> | null,
+): ConversationContext {
+  ctx.pendingAgentAction = pendingAgentAction;
+  ctx.lastActivity = Date.now();
+  return ctx;
+}
+
+export function setConversationLastExecutedAction(
+  ctx: ConversationContext,
+  fingerprint: string,
+): ConversationContext {
+  ctx.lastExecutedActionFingerprint = fingerprint;
+  ctx.lastExecutedActionAt = Date.now();
+  ctx.lastActivity = Date.now();
+  return ctx;
+}
+
+export function setConversationLastAssistantResponse(
+  ctx: ConversationContext,
+  fingerprint: string,
+): ConversationContext {
+  ctx.lastAssistantResponseFingerprint = fingerprint;
   ctx.lastActivity = Date.now();
   return ctx;
 }

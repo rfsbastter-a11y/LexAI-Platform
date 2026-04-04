@@ -15,6 +15,10 @@ import {
   ConversationContext,
   getOrCreateConversationContext,
   listActiveConversationJids,
+  setConversationLastAssistantResponse,
+  setConversationLastExecutedAction,
+  setConversationLastUserRequest,
+  setConversationPendingAgentAction,
 } from "./secretaryConversationState";
 import {
   buildPieceInstructionBrief,
@@ -26,6 +30,7 @@ import {
   canActorExecuteSecretaryAction,
   deriveSecretaryActorContext,
   formatDeterministicSocioReply,
+  isExplicitResumeRequest,
   isGreetingOnlyMessage,
 } from "./secretaryPolicy";
 import { buildSecretaryAuditPayload, getSecretaryPolicyDecision } from "./secretaryApprovalPolicy";
@@ -849,6 +854,28 @@ function extractPendingSecretaryRequest(pendingAction: unknown): {
       ? audit.actorType
       : undefined,
   };
+}
+
+function buildActionExecutionFingerprint(action: string, args: Record<string, any>): string {
+  const normalizedArgs = JSON.stringify(args || {}, Object.keys(args || {}).sort());
+  return `${action}::${normalizeForMatch(normalizedArgs)}`;
+}
+
+function buildResponseFingerprint(text: string): string {
+  return normalizeForMatch(text || "");
+}
+
+function shouldSkipDuplicateExecution(
+  ctx: ConversationContext,
+  fingerprint: string,
+  windowMs: number = 120000,
+): boolean {
+  return Boolean(
+    ctx.lastExecutedActionFingerprint &&
+    ctx.lastExecutedActionFingerprint === fingerprint &&
+    ctx.lastExecutedActionAt &&
+    (Date.now() - ctx.lastExecutedActionAt) <= windowMs
+  );
 }
 
 function isDocumentResendRequest(message: string): boolean {
@@ -4270,6 +4297,7 @@ export const secretaryService = {
         getMessagesByConversation: storage.getMessagesByConversation.bind(storage),
       });
       const isFirstMessage = ctx.messages.length === 0;
+      setConversationLastUserRequest(ctx, message);
       appendMessageToConversationContext(ctx, { role: "user", content: enrichedMessage });
       await saveMessageToDB(jid, tenantId, "user", enrichedMessage);
 
@@ -4307,9 +4335,13 @@ O contato se identificou como: ${contactName}
       const { isSocio, socioName } = actorContext;
       if (isSocio) console.log(`[Secretary] ✅ SÓCIO IDENTIFICADO: ${senderUser?.name} (role: ${senderUser?.role}) via JID: ${jid}`);
 
-      if (isSocio && isDocumentResendRequest(message)) {
-        const recentDocumentAction = await findRecentGeneratedDocumentAction(tenantId, jid);
-        if (recentDocumentAction) {
+        if (isSocio && isDocumentResendRequest(message)) {
+          const recentDocumentAction = await findRecentGeneratedDocumentAction(tenantId, jid);
+          if (recentDocumentAction) {
+          const resendFingerprint = buildActionExecutionFingerprint(recentDocumentAction.requestedAction, recentDocumentAction.requestedArgs);
+          if (shouldSkipDuplicateExecution(ctx, resendFingerprint)) {
+            return;
+          }
           const resendResult = await executeSecretaryAction(
             recentDocumentAction.requestedAction,
             {
@@ -4332,6 +4364,8 @@ O contato se identificou como: ${contactName}
           );
 
           appendMessageToConversationContext(ctx, { role: "assistant", content: resendReply });
+          setConversationLastExecutedAction(ctx, resendFingerprint);
+          setConversationLastAssistantResponse(ctx, buildResponseFingerprint(resendReply));
           await saveMessageToDB(jid, tenantId, "assistant", resendReply);
 
           if (config.mode === "auto") {
@@ -4409,16 +4443,59 @@ O contato se identificou como: ${contactName}
 
       if (isSocio && jid) {
         const isShortGreeting = isGreetingOnlyMessage(message);
-        if (isShortGreeting) {
-          const pendingAction = await storage.getRecentPendingActionByJid(tenantId, jid, 48);
-          if (pendingAction && pendingAction.pendingAction) {
-            const pa = pendingAction.pendingAction as { type: string; label: string; description?: string };
-            const resumeMsg = buildPendingActionResumeMessage({ socioName, label: pa.label });
-            console.log(`[Secretary] PENDING-ACTION RESUME: Found pending action for ${jid}: ${pa.type}. Sending resume prompt.`);
-            await whatsappService.sendToJid(jid, resumeMsg, tenantId);
-            appendMessageToConversationContext(ctx, { role: "assistant", content: resumeMsg });
-            await saveMessageToDB(jid, tenantId, "assistant", resumeMsg);
-            return;
+        const explicitResume = isExplicitResumeRequest(message);
+        const pendingAction = await storage.getRecentPendingActionByJid(tenantId, jid, 48);
+
+        if (isShortGreeting && !explicitResume) {
+          const greetingReply = `Olá, Dr. ${socioName.replace(/^(dr|dra|doutor|doutora)\.?\s+/i, "").split(" ")[0] || "Ronald"}! Aqui é do escritório Marques & Serra Sociedade de Advogados. Como posso ajudar?`;
+          const greetingFingerprint = buildResponseFingerprint(greetingReply);
+          if (ctx.lastAssistantResponseFingerprint !== greetingFingerprint) {
+            await whatsappService.sendToJid(jid, greetingReply, tenantId);
+            appendMessageToConversationContext(ctx, { role: "assistant", content: greetingReply });
+            setConversationLastAssistantResponse(ctx, greetingFingerprint);
+            await saveMessageToDB(jid, tenantId, "assistant", greetingReply);
+          }
+          return;
+        }
+
+        if (explicitResume && pendingAction && pendingAction.pendingAction) {
+          const pa = pendingAction.pendingAction as { type?: string; label?: string; description?: string; requestedAction?: string; requestedArgs?: Record<string, any> };
+          const requestedAction = pa.requestedAction || (pa.type ? "gerar_peca_estudio" : undefined);
+          const requestedArgs = pa.requestedArgs || (pa.type ? {
+            acao: "gerar_peca_estudio",
+            templateType: pa.type,
+            description: pa.description || message,
+          } : undefined);
+
+          if (requestedAction && requestedArgs) {
+            const fingerprint = buildActionExecutionFingerprint(requestedAction, requestedArgs);
+            if (!shouldSkipDuplicateExecution(ctx, fingerprint)) {
+              console.log(`[Secretary] EXPLICIT-RESUME: Resuming pending action for ${jid}: ${requestedAction}`);
+              const resumedResult = await executeSecretaryAction(
+                requestedAction,
+                requestedArgs,
+                tenantId,
+                true,
+                clientId || undefined,
+                jid,
+                ctx.messages,
+              );
+              const resumedReply = formatDeterministicSocioReply(
+                summarizeAgentExecutionResult(requestedAction, resumedResult),
+                requestedAction,
+                isFirstMessage,
+                message,
+                socioName,
+              );
+              appendMessageToConversationContext(ctx, { role: "assistant", content: resumedReply });
+              setConversationLastExecutedAction(ctx, fingerprint);
+              setConversationLastAssistantResponse(ctx, buildResponseFingerprint(resumedReply));
+              setConversationPendingAgentAction(ctx, null);
+              await saveMessageToDB(jid, tenantId, "assistant", resumedReply);
+              await whatsappService.sendToJid(jid, resumedReply, tenantId);
+              await storage.updateSecretaryAction(pendingAction.id, { status: "completed" });
+              return;
+            }
           }
         }
       }
@@ -4550,6 +4627,11 @@ O contato se identificou como: ${contactName}
         const recentHistoryText = ctx.messages.slice(-8).map(m => m.content).join("\n");
         const deterministicAction = await inferDeterministicSocioAction(tenantId, message, recentHistoryText);
         if (deterministicAction) {
+          const deterministicFingerprint = buildActionExecutionFingerprint(deterministicAction.acao, deterministicAction.args);
+          if (shouldSkipDuplicateExecution(ctx, deterministicFingerprint)) {
+            console.log(`[Secretary] Skipping duplicate deterministic action ${deterministicAction.acao}`);
+            return;
+          }
           console.log(`[Secretary] Deterministic sócio action: ${deterministicAction.acao} (${deterministicAction.reason})`);
           try {
             const actionResult = await executeSecretaryAction(
@@ -4570,6 +4652,9 @@ O contato se identificou como: ${contactName}
             );
 
             appendMessageToConversationContext(ctx, { role: "assistant", content: conciseResponse });
+            setConversationLastExecutedAction(ctx, deterministicFingerprint);
+            setConversationLastAssistantResponse(ctx, buildResponseFingerprint(conciseResponse));
+            setConversationPendingAgentAction(ctx, null);
             await saveMessageToDB(jid, tenantId, "assistant", conciseResponse);
 
             if (config.mode === "auto") {
@@ -4877,6 +4962,7 @@ O contato se identificou como: ${contactName}
             );
             const sent = result.includes("ENVIADA COM SUCESSO") || result.includes("enviado diretamente");
             if (!sent) {
+              setConversationPendingAgentAction(ctx, { type: templateType, label, description: description.substring(0, 200) });
               await createSecretaryAuditLog({
                 tenantId, jid, contactName, actionType: "peca_prometida_falhou",
                 description: `Prometeu ${label} mas falhou ao entregar — ${result.substring(0, 150)}`,
@@ -4886,6 +4972,7 @@ O contato se identificou como: ${contactName}
                 pendingAction: { type: templateType, label, description: description.substring(0, 200) },
               });
             } else {
+              setConversationPendingAgentAction(ctx, null);
               await createSecretaryAuditLog({
                 tenantId, jid, contactName, actionType,
                 description: `Auto-gerou ${label} via ${actionType}`,
@@ -4898,6 +4985,7 @@ O contato se identificou como: ${contactName}
             return { sent, label };
           } catch (err) {
             console.error(`[Secretary] ${actionType} error:`, err);
+            setConversationPendingAgentAction(ctx, { type: templateType, label, description: description.substring(0, 200) });
             await createSecretaryAuditLog({
               tenantId, jid, contactName, actionType: "peca_prometida_falhou",
               description: `Prometeu ${label} mas falhou com erro: ${(err as Error).message?.substring(0, 150)}`,
@@ -5049,6 +5137,7 @@ O contato se identificou como: ${contactName}
       }
 
       appendMessageToConversationContext(ctx, { role: "assistant", content: aiResponse });
+      setConversationLastAssistantResponse(ctx, buildResponseFingerprint(aiResponse));
       await saveMessageToDB(jid, tenantId, "assistant", aiResponse);
 
       if (config.mode === "auto") {

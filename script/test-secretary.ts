@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import { getSecretaryPolicyDecision, buildSecretaryAuditPayload, requiresSecretaryHumanApproval } from "../server/services/secretaryApprovalPolicy";
-import { canActorExecuteSecretaryAction, deriveSecretaryActorContext, isGreetingOnlyMessage, formatDeterministicSocioReply, buildPendingActionResumeMessage } from "../server/services/secretaryPolicy";
+import { canActorExecuteSecretaryAction, deriveSecretaryActorContext, isGreetingOnlyMessage, formatDeterministicSocioReply, buildPendingActionResumeMessage, isExplicitResumeRequest } from "../server/services/secretaryPolicy";
 import { deriveSecretaryOperationalState } from "../server/services/secretaryOperationalState";
 import { createSecretaryActionTool, createSecretarySystemQueryTool, createSecretaryWebSearchTool } from "../server/services/secretaryToolRegistry";
 import { runSecretaryJob } from "../server/services/secretaryJobRunner";
@@ -61,6 +61,11 @@ async function main() {
 
     assert.match(reply, /Olá, Dr\. Ronald!/);
     assert.doesNotMatch(reply, /Dr\. Dr\./);
+  });
+
+  await test("explicit resume request is distinct from plain greeting", () => {
+    assert.equal(isExplicitResumeRequest("retome a peça"), true);
+    assert.equal(isExplicitResumeRequest("oi"), false);
   });
 
   await test("policy matrix flags critical document send for approval", () => {

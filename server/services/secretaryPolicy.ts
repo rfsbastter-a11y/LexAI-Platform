@@ -44,6 +44,10 @@ export function isGreetingOnlyMessage(message: string): boolean {
   return /^(oi|olá|ola|bom dia|boa tarde|boa noite|e aí|eai|alô|hello|hey|oi oi|olá!|oi!)[\s!?.]*$/i.test((message || "").trim());
 }
 
+export function isExplicitResumeRequest(message: string): boolean {
+  return /(retome|retomar|continue|continuar|pode continuar|pode retomar|tente novamente|gere novamente|reenvie a peça|reenvie o documento)/i.test((message || "").trim());
+}
+
 export function buildPendingActionResumeMessage(params: {
   socioName: string;
   label?: string;
