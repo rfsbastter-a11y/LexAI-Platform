@@ -733,6 +733,36 @@ async function saveMessageToDB(jid: string, tenantId: number, role: string, cont
   }
 }
 
+async function loadAppealReferenceModelFile(): Promise<Array<{
+  name: string;
+  type: string;
+  data: string;
+  extractedText?: string;
+  isReferenceModel?: boolean;
+}>> {
+  const modelPath = path.join(process.cwd(), "server/templates/models/recurso_apelacao.docx");
+  if (!fs.existsSync(modelPath)) {
+    return [];
+  }
+
+  try {
+    const modelBuffer = await fs.promises.readFile(modelPath);
+    const mammoth = await import("mammoth");
+    const extracted = await mammoth.default.extractRawText({ buffer: modelBuffer });
+
+    return [{
+      name: "modelo_apelacao.docx",
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      data: modelBuffer.toString("base64"),
+      extractedText: extracted.value || "",
+      isReferenceModel: true,
+    }];
+  } catch (error) {
+    console.error("[Secretary] Failed to load appeal reference model:", error);
+    return [];
+  }
+}
+
 async function createSecretaryAuditLog(params: {
   tenantId: number;
   jid: string;
@@ -3684,12 +3714,16 @@ async function executeSecretaryAction(
           const wantsRonald = !wantsBothAttorneys && /ronald/i.test(allText);
           const selectedAttorney = wantsRonald ? "ronald" : "pedro";
           const attorneys = wantsBothAttorneys ? ["pedro", "ronald"] : undefined;
+          const referenceFiles = pieceType === "recurso_apelacao"
+            ? await loadAppealReferenceModelFile()
+            : [];
 
           const studioResult = await generateStudioPiece({
             prompt: fullPrompt,
             templateType: pieceType,
             attorney: selectedAttorney,
             attorneys,
+            files: referenceFiles,
             userId: actorUserId,
             systemContext: systemCtx || undefined,
             tenantId,
