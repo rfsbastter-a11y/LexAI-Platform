@@ -11,6 +11,7 @@
     "check": "tsc",
     "test:secretary": "tsx script/test-secretary.ts",
     "eval:secretary": "tsx script/eval-secretary.ts",
+    "db:push:secretary-agent": "tsx script/db-push-secretary-agent.ts",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
