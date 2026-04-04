@@ -8,6 +8,7 @@ import { runSecretaryJob } from "../server/services/secretaryJobRunner";
 import { processLegacySecretaryActions } from "../server/services/secretaryLegacyActionHandlers";
 import { archiveSignedAgreementIfMatched } from "../server/services/secretaryMediaTasks";
 import { getOrCreateConversationContext, appendMessageToConversationContext } from "../server/services/secretaryConversationState";
+import { buildFallbackSecretaryInternalRouting, parseSecretaryInternalRoutingResult } from "../server/services/secretaryInternalPrompts";
 
 function test(name: string, fn: () => void | Promise<void>) {
   return Promise.resolve()
@@ -68,12 +69,42 @@ async function main() {
     assert.equal(isExplicitResumeRequest("oi"), false);
   });
 
+  await test("internal routing fallback ignores history for greeting and detects legal piece", () => {
+    const greeting = buildFallbackSecretaryInternalRouting({ message: "Oi", isSocio: true });
+    assert.equal(greeting.intent, "greeting");
+    assert.equal(greeting.shouldIgnoreHistory, true);
+
+    const piece = buildFallbackSecretaryInternalRouting({ message: "Faca uma apelacao com base nos documentos enviados", isSocio: true });
+    assert.equal(piece.intent, "legal_piece");
+    assert.equal(piece.recommendedTool, "executar_acao");
+  });
+
+  await test("internal routing parser accepts structured JSON", () => {
+    const parsed = parseSecretaryInternalRoutingResult(JSON.stringify({
+      intent: "system_query",
+      confidence: 0.93,
+      latentNeed: "consultar_dados_internos",
+      recommendedTool: "consultar_sistema",
+      needsClarification: false,
+      explicitResume: false,
+      shouldIgnoreHistory: false,
+      reasoningSummary: "pedido claro",
+    }));
+
+    assert.equal(parsed?.intent, "system_query");
+    assert.equal(parsed?.recommendedTool, "consultar_sistema");
+    assert.equal(parsed?.needsClarification, false);
+  });
+
   await test("policy matrix flags critical document send for approval", () => {
     const decision = getSecretaryPolicyDecision("acao_enviar_documento_sistema");
     assert.equal(decision.capability, "enviar_documento_sistema");
     assert.equal(decision.sensitivity, "critical");
     assert.equal(decision.requiresHumanApproval, true);
     assert.equal(requiresSecretaryHumanApproval("acao_enviar_documento_sistema"), true);
+    assert.equal(requiresSecretaryHumanApproval("acao_atualizar_cliente"), true);
+    assert.equal(requiresSecretaryHumanApproval("acao_cadastrar_processo"), true);
+    assert.equal(requiresSecretaryHumanApproval("acao_cadastrar_contrato"), true);
     assert.equal(requiresSecretaryHumanApproval("resposta_auto"), false);
   });
 
@@ -161,6 +192,7 @@ async function main() {
     const auditLogs: any[] = [];
     const agendaEvents: any[] = [];
     const updatedClients: any[] = [];
+    let legacyPieceCalls = 0;
 
     const result = await processLegacySecretaryActions({
       response: "Perfeito. [AÃ‡ÃƒO:GERAR_PEÃ‡A|contestacao|Contestação com base nos documentos] [AÃ‡ÃƒO:AGENDAR|2026-04-10|14:00|15:00|Reunião estratégica|Dr. Ronald Serra] [AÃ‡ÃƒO:RELATÃ“RIO|cliente|Relatório completo] [URGENTE] [NOTA:Cliente pediu retorno ainda hoje]",
@@ -182,7 +214,10 @@ async function main() {
       createAgendaEvent: async (data: any) => {
         agendaEvents.push(data);
       },
-      generateSimpleLegacyPiece: async () => ({ id: 99 }),
+      generateSimpleLegacyPiece: async () => {
+        legacyPieceCalls += 1;
+        return null;
+      },
       formatForWhatsApp: (text: string) => text.replace(/\s+/g, " ").trim(),
       runSecretaryJob,
     });
@@ -190,7 +225,9 @@ async function main() {
     assert.equal(result, "Perfeito.");
     assert.equal(agendaEvents.length, 1);
     assert.equal(updatedClients.length, 1);
+    assert.equal(legacyPieceCalls, 1);
     assert.ok(auditLogs.some((log) => log.actionType === "gerar_peca"));
+    assert.ok(auditLogs.some((log) => log.actionType === "gerar_peca" && log.status === "blocked"));
     assert.ok(auditLogs.some((log) => log.actionType === "agendamento"));
     assert.ok(auditLogs.some((log) => log.actionType === "relatorio"));
     assert.ok(auditLogs.some((log) => log.actionType === "urgencia"));

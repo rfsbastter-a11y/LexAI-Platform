@@ -463,6 +463,50 @@ export const insertSecretaryActionSchema = createInsertSchema(secretaryActions).
 export type InsertSecretaryAction = z.infer<typeof insertSecretaryActionSchema>;
 export type SecretaryAction = typeof secretaryActions.$inferSelect;
 
+export const agentRuns = pgTable("agent_runs", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  jid: text("jid").notNull(),
+  contactName: text("contact_name"),
+  messageText: text("message_text").notNull(),
+  actorType: text("actor_type").notNull().default("unknown"),
+  intentType: text("intent_type").notNull().default("unknown"),
+  status: text("status").notNull().default("received"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  currentTask: text("current_task"),
+  requestedAction: text("requested_action"),
+  requestedArgs: jsonb("requested_args"),
+  plan: jsonb("plan"),
+  sourcesUsed: jsonb("sources_used"),
+  verification: jsonb("verification"),
+  responsePreview: text("response_preview"),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertAgentRunSchema = createInsertSchema(agentRuns).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAgentRun = z.infer<typeof insertAgentRunSchema>;
+export type AgentRun = typeof agentRuns.$inferSelect;
+
+export const agentSteps = pgTable("agent_steps", {
+  id: serial("id").primaryKey(),
+  runId: integer("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  stepType: text("step_type").notNull(),
+  status: text("status").notNull().default("started"),
+  input: jsonb("input"),
+  output: jsonb("output"),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  finishedAt: timestamp("finished_at"),
+});
+
+export const insertAgentStepSchema = createInsertSchema(agentSteps).omit({ id: true, startedAt: true });
+export type InsertAgentStep = z.infer<typeof insertAgentStepSchema>;
+export type AgentStep = typeof agentSteps.$inferSelect;
+
 // ==================== RELATIONS ====================
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   users: many(users),

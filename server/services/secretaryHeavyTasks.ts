@@ -7,28 +7,8 @@ export async function generateSimpleLegacyPiece(params: {
   description: string;
   createGeneratedPiece: (data: any) => Promise<any>;
 }) {
-  const piecePrompt = `Gere uma ${params.pieceType} jurídica completa e profissional para o escritório Marques e Serra.
-Advogado responsável: Ronald Ferreira Serra, OAB/DF 23.947.
-Descrição do pedido: ${params.description}
-Gere o documento completo em formato profissional, com todas as seções necessárias.`;
-
-  const pieceCompletion = await params.openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [{ role: "user", content: piecePrompt }],
-    max_tokens: 4000,
-    temperature: 0.5,
-  });
-
-  const pieceContent = pieceCompletion.choices[0]?.message?.content || "";
-  if (!pieceContent) return null;
-
-  return params.createGeneratedPiece({
-    tenantId: params.tenantId,
-    title: `${params.pieceType} - ${params.description.substring(0, 80)}`,
-    pieceType: params.pieceType,
-    contentHtml: pieceContent,
-    prompt: params.description,
-  });
+  void params;
+  return null;
 }
 
 export async function sendGeneratedWordDocument(params: {
@@ -57,8 +37,8 @@ export async function sendGeneratedWordDocument(params: {
   }
 
   const caption = usedFallbackWord
-    ? `📄 ${params.title} (sem timbre)\nGerado por LexAI em ${format(new Date(), "dd/MM/yyyy 'às' HH:mm")}`
-    : `📄 ${params.title}\nGerado por LexAI em ${format(new Date(), "dd/MM/yyyy 'às' HH:mm")}`;
+    ? `ðŸ“„ ${params.title} (sem timbre)\nGerado por LexAI em ${format(new Date(), "dd/MM/yyyy 'Ã s' HH:mm")}`
+    : `ðŸ“„ ${params.title}\nGerado por LexAI em ${format(new Date(), "dd/MM/yyyy 'Ã s' HH:mm")}`;
 
   const sent = await params.sendDocumentToJid(
     params.jid,

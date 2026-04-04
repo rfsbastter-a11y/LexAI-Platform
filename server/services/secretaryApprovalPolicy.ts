@@ -11,14 +11,14 @@ export type SecretaryPolicyDecision = {
 };
 
 const actionPolicyMatrix: Record<SecretaryActionName, Omit<SecretaryPolicyDecision, "capability">> = {
-  cadastrar_devedor: { sensitivity: "high", requiresHumanApproval: false, auditLevel: "elevated", reason: "altera cadastro de terceiro" },
-  cadastrar_cliente: { sensitivity: "high", requiresHumanApproval: false, auditLevel: "elevated", reason: "altera cadastro de cliente" },
-  atualizar_cliente: { sensitivity: "high", requiresHumanApproval: false, auditLevel: "elevated", reason: "atualiza dados cadastrais sensiveis" },
-  atualizar_devedor: { sensitivity: "high", requiresHumanApproval: false, auditLevel: "elevated", reason: "atualiza dados cadastrais sensiveis" },
+  cadastrar_devedor: { sensitivity: "high", requiresHumanApproval: true, auditLevel: "elevated", reason: "altera cadastro de terceiro" },
+  cadastrar_cliente: { sensitivity: "high", requiresHumanApproval: true, auditLevel: "elevated", reason: "altera cadastro de cliente" },
+  atualizar_cliente: { sensitivity: "high", requiresHumanApproval: true, auditLevel: "elevated", reason: "atualiza dados cadastrais sensiveis" },
+  atualizar_devedor: { sensitivity: "high", requiresHumanApproval: true, auditLevel: "elevated", reason: "atualiza dados cadastrais sensiveis" },
   vincular_processo: { sensitivity: "high", requiresHumanApproval: false, auditLevel: "elevated", reason: "vincula processo a parte existente" },
-  cadastrar_processo: { sensitivity: "high", requiresHumanApproval: false, auditLevel: "elevated", reason: "cria registro processual" },
-  atualizar_processo: { sensitivity: "high", requiresHumanApproval: false, auditLevel: "elevated", reason: "atualiza registro processual" },
-  cadastrar_contrato: { sensitivity: "high", requiresHumanApproval: false, auditLevel: "elevated", reason: "cria registro contratual" },
+  cadastrar_processo: { sensitivity: "high", requiresHumanApproval: true, auditLevel: "elevated", reason: "cria registro processual" },
+  atualizar_processo: { sensitivity: "high", requiresHumanApproval: true, auditLevel: "elevated", reason: "atualiza registro processual" },
+  cadastrar_contrato: { sensitivity: "high", requiresHumanApproval: true, auditLevel: "elevated", reason: "cria registro contratual" },
   cadastrar_prazo: { sensitivity: "medium", requiresHumanApproval: false, auditLevel: "standard", reason: "registra prazo operacional" },
   agendar_compromisso: { sensitivity: "medium", requiresHumanApproval: false, auditLevel: "standard", reason: "agenda compromisso" },
   gerar_relatorio_cliente: { sensitivity: "medium", requiresHumanApproval: false, auditLevel: "standard", reason: "gera relatorio de cliente" },

@@ -1,0 +1,31 @@
+[
+  {
+    "name": "greeting_only",
+    "message": "Oi",
+    "isSocio": true,
+    "expectedIntent": "greeting",
+    "expectedTool": "none"
+  },
+  {
+    "name": "piece_request_with_docs",
+    "message": "Faca uma apelacao com base nos documentos enviados",
+    "isSocio": true,
+    "expectedIntent": "legal_piece",
+    "expectedTool": "executar_acao"
+  },
+  {
+    "name": "contract_request_missing_financials",
+    "message": "Gere um contrato de renegociacao para Carlos Henrique",
+    "isSocio": true,
+    "expectedIntent": "contract",
+    "expectedTool": "executar_acao",
+    "expectClarification": true
+  },
+  {
+    "name": "web_research_request",
+    "message": "Qual a jurisprudencia do STJ sobre dano moral?",
+    "isSocio": true,
+    "expectedIntent": "web_research",
+    "expectedTool": "pesquisar_web"
+  }
+]

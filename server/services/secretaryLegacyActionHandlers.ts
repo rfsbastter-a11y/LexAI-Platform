@@ -48,7 +48,7 @@ export async function processLegacySecretaryActions(params: {
   if (pieceMatch) {
     const [, pieceType, description] = pieceMatch;
     try {
-      const generatedPiece = await runSecretaryJob({
+      await runSecretaryJob({
         kind: "legacy_piece_generation",
         operation: () => generateSimpleLegacyPiece({
           openai,
@@ -59,15 +59,13 @@ export async function processLegacySecretaryActions(params: {
         }),
       });
 
-      if (generatedPiece) {
-        await createSecretaryAuditLog({
-          tenantId, jid, contactName,
-          actionType: "gerar_peca",
-          description: `Gerou ${pieceType}: ${description.substring(0, 100)}`,
-          status: "completed",
-          actorType: clientId ? "client" : "unknown",
-        });
-      }
+      await createSecretaryAuditLog({
+        tenantId, jid, contactName,
+        actionType: "gerar_peca",
+        description: `Bloqueou geraÃ§Ã£o legada de ${pieceType}; o fluxo formal agora exige Studio. Pedido original: ${description.substring(0, 100)}`,
+        status: "blocked",
+        actorType: clientId ? "client" : "unknown",
+      });
     } catch (error) {
       console.error("[Secretary] Error generating piece:", error);
     }

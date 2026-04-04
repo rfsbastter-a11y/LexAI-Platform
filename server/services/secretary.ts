@@ -35,6 +35,26 @@ import {
 } from "./secretaryPolicy";
 import { buildSecretaryAuditPayload, getSecretaryPolicyDecision } from "./secretaryApprovalPolicy";
 import { inferTemplateTypeFromLegalRequestText } from "./secretaryPromptShared";
+import {
+  buildFallbackSecretaryInternalRouting,
+  buildSecretaryIntentRouterSystemPrompt,
+  buildSecretaryIntentRouterUserPrompt,
+  parseSecretaryInternalRoutingResult,
+} from "./secretaryInternalPrompts";
+import {
+  buildFallbackSecretaryPlan,
+  buildSecretaryPlannerSystemPrompt,
+  buildSecretaryPlannerUserPrompt,
+  parseSecretaryPlan,
+} from "./secretaryPlanning";
+import { verifySecretaryActionResult } from "./secretaryVerifier";
+import {
+  buildAgentResponsePreview,
+  buildSecretaryIdempotencyKey,
+  safeCreateAgentRun,
+  safeCreateAgentStep,
+  safeUpdateAgentRun,
+} from "./secretaryAgentRuntime";
 import { generateSimpleLegacyPiece, sendGeneratedWordDocument } from "./secretaryHeavyTasks";
 import { runSecretaryJob } from "./secretaryJobRunner";
 import { processLegacySecretaryActions } from "./secretaryLegacyActionHandlers";
@@ -816,7 +836,7 @@ function summarizeAgentExecutionResult(action: string, rawResult: string): strin
     if (/FALHA AO ENVIAR|falha no envio/i.test(text)) {
       return `⚠️ ${label} gerada no Studio, mas houve falha no envio do Word via WhatsApp. Posso tentar reenviar agora.`;
     }
-    return `✅ ${label} gerada com sucesso.`;
+    return `⚠️ ${label} foi processada no Studio, mas ainda não confirmei a entrega do Word nesta conversa.`;
   }
 
   if (action === "gerar_contrato") {
@@ -878,25 +898,50 @@ function shouldSkipDuplicateExecution(
   );
 }
 
-function isDocumentResendRequest(message: string): boolean {
+function classifyDocumentResendRequest(message: string): "gerar_peca_estudio" | "gerar_contrato" | null {
   const normalized = normalizeForMatch(message);
-  if (!normalized) return false;
+  if (!normalized) return null;
 
-  return [
+  const hasExplicitDeliveryRequest = [
     /mande em word/,
     /me mande em word/,
-    /traga aqui/,
-    /me mande aqui/,
     /manda o arquivo/,
     /envie o arquivo/,
-    /quero em word/,
+    /envie o documento/,
+    /me envie o arquivo/,
+    /me envie o documento/,
+    /manda o word/,
+    /envie em word/,
+    /envie em docx/,
+    /manda em docx/,
+    /me manda o docx/,
+    /me mande o docx/,
+    /reenvie o arquivo/,
+    /reenvie o documento/,
+    /reenvie o word/,
+    /reenvie em word/,
     /me envia em word/,
     /reenvie/,
-    /reenvie/,
   ].some((pattern) => pattern.test(normalized));
+
+  if (!hasExplicitDeliveryRequest) return null;
+
+  if (/(contrato|acordo|termo)/.test(normalized)) {
+    return "gerar_contrato";
+  }
+
+  if (/(peti[çc][ãa]o|pe[çc]a|contesta[çc][ãa]o|contrarraz|recurso|apela[çc][ãa]o|agravo|execu[çc][ãa]o|cumprimento|mandado|habeas|monit[oó]ria|embargo)/.test(normalized)) {
+    return "gerar_peca_estudio";
+  }
+
+  return null;
 }
 
-async function findRecentGeneratedDocumentAction(tenantId: number, jid: string): Promise<{
+async function findRecentGeneratedDocumentActionForRequest(
+  tenantId: number,
+  jid: string,
+  requestedActionType: "gerar_peca_estudio" | "gerar_contrato",
+): Promise<{
   requestedAction: string;
   requestedArgs: Record<string, any>;
 } | null> {
@@ -904,7 +949,7 @@ async function findRecentGeneratedDocumentAction(tenantId: number, jid: string):
   for (const action of recentActions) {
     const pendingRequest = extractPendingSecretaryRequest(action.pendingAction);
     if (!pendingRequest.requestedAction || !pendingRequest.requestedArgs) continue;
-    if (pendingRequest.requestedAction !== "gerar_peca_estudio" && pendingRequest.requestedAction !== "gerar_contrato") continue;
+    if (pendingRequest.requestedAction !== requestedActionType) continue;
     return {
       requestedAction: pendingRequest.requestedAction,
       requestedArgs: pendingRequest.requestedArgs,
@@ -1653,7 +1698,7 @@ AUTONOMIA TOTAL - VOCÊ É UM AGENTE DE IA COMPLETO:
 
 ENVIO DE DOCUMENTOS VIA WHATSAPP — REGRA CRÍTICA:
 - Quando o sistema gerar uma peça/contrato, ele ENVIA o arquivo Word automaticamente por esta conversa.
-- Se o sócio disser "me mande aqui", "manda o arquivo", "envia o documento", "quero o arquivo", "me manda" ou qualquer variação: CHAME gerar_peca_estudio ou gerar_contrato NOVAMENTE com os mesmos dados para regenerar e reenviar. NUNCA diga que não pode enviar.
+- Só reenvie automaticamente um documento quando o sócio pedir EXPLICITAMENTE o arquivo Word/docx e indicar o tipo do documento atual, por exemplo "mande o contrato em Word" ou "reenvie a petição em Word". Pedidos vagos como "manda aqui" ou "traga aqui" NÃO autorizam reaproveitar a última peça/contrato.
 - VOCÊ TEM TOTAL CAPACIDADE DE ENVIAR DOCUMENTOS. Já enviou inúmeros. Jamais diga "não posso enviar documentos diretamente".
 - Se a ferramenta retornar que o envio falhou, diga "Estou gerando novamente para reenviar" e CHAME a ferramenta de geração de novo.
 - EXCEÇÃO DE SEGURANÇA: para reenviar documento já arquivado no sistema por meio de enviar_documento_sistema, peça confirmação humana explícita antes do envio. Só use confirmed=true quando houver autorização expressa.
@@ -4149,6 +4194,7 @@ export const secretaryService = {
     mediaFileName?: string,
     mediaMimetype?: string,
   ): Promise<void> {
+    let agentRun: { id: number } | null = null;
     try {
       const config = await storage.getSecretaryConfig(tenantId);
       if (!config || !config.isActive) return;
@@ -4334,9 +4380,28 @@ O contato se identificou como: ${contactName}
       const actorContext = deriveSecretaryActorContext({ senderUser, client, contactName });
       const { isSocio, socioName } = actorContext;
       if (isSocio) console.log(`[Secretary] ✅ SÓCIO IDENTIFICADO: ${senderUser?.name} (role: ${senderUser?.role}) via JID: ${jid}`);
+      agentRun = await safeCreateAgentRun({
+        tenantId,
+        jid,
+        contactName,
+        messageText: enrichedMessage,
+        actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+        idempotencyKey: buildSecretaryIdempotencyKey({
+          tenantId,
+          jid,
+          message: enrichedMessage,
+          mediaType,
+          mediaFileName,
+        }),
+        metadata: {
+          mediaType: mediaType || null,
+          mediaFileName: mediaFileName || null,
+        },
+      });
 
-        if (isSocio && isDocumentResendRequest(message)) {
-          const recentDocumentAction = await findRecentGeneratedDocumentAction(tenantId, jid);
+        const resendActionType = isSocio ? classifyDocumentResendRequest(message) : null;
+        if (isSocio && resendActionType) {
+          const recentDocumentAction = await findRecentGeneratedDocumentActionForRequest(tenantId, jid, resendActionType);
           if (recentDocumentAction) {
           const resendFingerprint = buildActionExecutionFingerprint(recentDocumentAction.requestedAction, recentDocumentAction.requestedArgs);
           if (shouldSkipDuplicateExecution(ctx, resendFingerprint)) {
@@ -4502,6 +4567,167 @@ O contato se identificou como: ${contactName}
 
       const operationalState = deriveSecretaryOperationalState(ctx.messages);
       const operationalContext = formatOperationalStateForPrompt(operationalState);
+      const recentHistoryTextForRouting = ctx.messages.slice(-8).map(m => m.content).join("\n");
+      const extractedMediaContext = ctx.messages
+        .slice(-8)
+        .filter((m) => m.role === "user" && /\[conte[uú]do do documento extra[ií]do|\[transcri[cç][aã]o|\[ocr/i.test(m.content || ""))
+        .map((m) => m.content)
+        .join("\n");
+
+      let internalRouting = buildFallbackSecretaryInternalRouting({
+        message,
+        isSocio,
+      });
+
+      try {
+        const routingCompletion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0.1,
+          max_tokens: 250,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: buildSecretaryIntentRouterSystemPrompt({
+                isSocio,
+                isKnownClient: actorContext.isKnownClient,
+              }),
+            },
+            {
+              role: "user",
+              content: buildSecretaryIntentRouterUserPrompt({
+                message,
+                recentHistory: recentHistoryTextForRouting,
+                extractedMediaContext,
+              }),
+            },
+          ],
+        });
+
+        const routingRaw = routingCompletion.choices[0]?.message?.content || "";
+        const parsedRouting = parseSecretaryInternalRoutingResult(routingRaw);
+        if (parsedRouting) {
+          internalRouting = parsedRouting;
+        }
+      } catch (routingErr) {
+        console.error("[Secretary] Internal intent routing failed, using fallback:", routingErr);
+      }
+
+      console.log(`[Secretary] Internal routing => intent=${internalRouting.intent}, tool=${internalRouting.recommendedTool}, confidence=${internalRouting.confidence}, clarify=${internalRouting.needsClarification}`);
+      await safeCreateAgentStep({
+        runId: agentRun?.id,
+        tenantId,
+        stepType: "classify",
+        status: "completed",
+        input: { message, recentHistoryTextForRouting },
+        output: internalRouting,
+      });
+      await safeUpdateAgentRun(agentRun?.id, {
+        intentType: internalRouting.intent,
+        status: "classified",
+        metadata: {
+          internalRouting,
+        },
+      });
+
+      let internalPlan = buildFallbackSecretaryPlan({
+        routing: internalRouting,
+        message,
+      });
+
+      try {
+        const plannerCompletion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0.1,
+          max_tokens: 350,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: buildSecretaryPlannerSystemPrompt({
+                routing: internalRouting,
+                isSocio,
+              }),
+            },
+            {
+              role: "user",
+              content: buildSecretaryPlannerUserPrompt({
+                message,
+                recentHistory: recentHistoryTextForRouting,
+                extractedMediaContext,
+              }),
+            },
+          ],
+        });
+
+        const plannerRaw = plannerCompletion.choices[0]?.message?.content || "";
+        const parsedPlan = parseSecretaryPlan(plannerRaw);
+        if (parsedPlan) {
+          internalPlan = parsedPlan;
+        }
+      } catch (plannerErr) {
+        console.error("[Secretary] Internal planner failed, using fallback:", plannerErr);
+      }
+
+      await safeCreateAgentStep({
+        runId: agentRun?.id,
+        tenantId,
+        stepType: "plan",
+        status: "completed",
+        input: internalRouting,
+        output: internalPlan,
+      });
+      await safeUpdateAgentRun(agentRun?.id, {
+        status: "planned",
+        currentTask: internalPlan.summary,
+        requestedAction: internalPlan.actionType || null,
+        plan: internalPlan,
+      });
+
+      if (
+        internalPlan.needsClarification &&
+        internalPlan.clarificationQuestion &&
+        internalRouting.confidence >= 0.75
+      ) {
+        const clarificationReply = isSocio
+          ? formatDeterministicSocioReply(
+            internalPlan.clarificationQuestion,
+            internalPlan.intent === "contract" ? "gerar_contrato" : "gerar_peca_estudio",
+            isFirstMessage,
+            message,
+            socioName,
+          )
+          : internalPlan.clarificationQuestion;
+
+        appendMessageToConversationContext(ctx, { role: "assistant", content: clarificationReply });
+        await saveMessageToDB(jid, tenantId, "assistant", clarificationReply);
+
+        if (config.mode === "auto") {
+          await sendMessageInChunks(jid, clarificationReply, tenantId);
+        }
+
+        await createSecretaryAuditLog({
+          tenantId,
+          jid,
+          contactName,
+          actionType: "resposta_pendente",
+          description: `Pediu esclarecimento objetivo antes de prosseguir: ${internalRouting.intent}`,
+          status: "awaiting_input",
+          draftMessage: clarificationReply,
+          actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+          executionMode: config.mode,
+          pendingAction: {
+            internalRouting,
+            internalPlan,
+          },
+        });
+        await safeUpdateAgentRun(agentRun?.id, {
+          status: "awaiting_input",
+          responsePreview: buildAgentResponsePreview(clarificationReply),
+          plan: internalPlan,
+        });
+        return;
+      }
 
       const systemPrompt = await buildSystemPrompt(
         tenantId,
@@ -4544,7 +4770,9 @@ O contato se identificou como: ${contactName}
         "pesquisar", "pesquisa", "buscar na web", "buscar na internet",
         "sou obrigado", "posso ser preso",
       ];
-      const shouldForceSearch = searchKeywords.some(kw => lastUserMsg.includes(kw)) || searchKeywords.some(kw => originalUserMsg.includes(kw));
+      const shouldForceSearch = internalPlan.intent === "web_research"
+        || internalRouting.recommendedTool === "pesquisar_web"
+        || searchKeywords.some(kw => lastUserMsg.includes(kw)) || searchKeywords.some(kw => originalUserMsg.includes(kw));
 
       const systemQueryKeywords = [
         "quantos clientes", "lista de clientes", "meus processos", "meus contratos",
@@ -4559,7 +4787,9 @@ O contato se identificou como: ${contactName}
         "acordos do devedor", "reuniões", "meetings", "copiloto de reuniões",
         "prospecção", "leads", "network", "outreach",
       ];
-      const shouldForceSystemQuery = systemQueryKeywords.some(kw => lastUserMsg.includes(kw));
+      const shouldForceSystemQuery = internalPlan.intent === "system_query"
+        || internalRouting.recommendedTool === "consultar_sistema"
+        || systemQueryKeywords.some(kw => lastUserMsg.includes(kw));
 
       const socioActionKeywords = [
         "cadastrar devedor", "novo devedor", "registrar devedor",
@@ -4603,7 +4833,9 @@ O contato se identificou como: ${contactName}
         "meus prazos", "minhas faturas", "meus documentos",
         "resumo dos meus", "relatório dos meus processos",
       ];
-      const shouldForceAction = (isSocio && (socioActionKeywords.some(kw => originalUserMsg.includes(kw)) || socioActionKeywords.some(kw => lastUserMsg.includes(kw))))
+      const shouldForceAction = Boolean(internalPlan.actionType)
+        || internalRouting.recommendedTool === "executar_acao"
+        || (isSocio && (socioActionKeywords.some(kw => originalUserMsg.includes(kw)) || socioActionKeywords.some(kw => lastUserMsg.includes(kw))))
         || (clientId && (clientReportKeywords.some(kw => originalUserMsg.includes(kw)) || clientReportKeywords.some(kw => lastUserMsg.includes(kw))));
 
       const executarAcaoTool = createSecretaryActionTool();
@@ -4624,7 +4856,7 @@ O contato se identificou como: ${contactName}
       // Modo executivo determinístico para sócios: reduz ambiguidade para peça/relatório/contrato.
       // Quando detectado com alta confiança, executa a ação diretamente sem depender de decisão do LLM.
       if (isSocio) {
-        const recentHistoryText = ctx.messages.slice(-8).map(m => m.content).join("\n");
+        const recentHistoryText = internalRouting.shouldIgnoreHistory ? "" : ctx.messages.slice(-8).map(m => m.content).join("\n");
         const deterministicAction = await inferDeterministicSocioAction(tenantId, message, recentHistoryText);
         if (deterministicAction) {
           const deterministicFingerprint = buildActionExecutionFingerprint(deterministicAction.acao, deterministicAction.args);
@@ -4643,6 +4875,7 @@ O contato se identificou como: ${contactName}
               jid,
               ctx.messages
             );
+            const verification = verifySecretaryActionResult(deterministicAction.acao, actionResult);
             const conciseResponse = formatDeterministicSocioReply(
               summarizeAgentExecutionResult(deterministicAction.acao, actionResult),
               deterministicAction.acao,
@@ -4655,6 +4888,21 @@ O contato se identificou como: ${contactName}
             setConversationLastExecutedAction(ctx, deterministicFingerprint);
             setConversationLastAssistantResponse(ctx, buildResponseFingerprint(conciseResponse));
             setConversationPendingAgentAction(ctx, null);
+            await safeCreateAgentStep({
+              runId: agentRun?.id,
+              tenantId,
+              stepType: "verification",
+              status: verification.finalStatus,
+              input: { action: deterministicAction.acao },
+              output: verification,
+            });
+            await safeUpdateAgentRun(agentRun?.id, {
+              status: verification.finalStatus === "failed" ? "failed" : "completed",
+              requestedAction: deterministicAction.acao,
+              requestedArgs: deterministicAction.args,
+              verification,
+              responsePreview: buildAgentResponsePreview(conciseResponse),
+            });
             await saveMessageToDB(jid, tenantId, "assistant", conciseResponse);
 
             if (config.mode === "auto") {
@@ -4766,13 +5014,35 @@ O contato se identificou como: ${contactName}
               const acao = args.acao || "";
               console.log(`[Secretary] AI triggered action: "${acao}" (sócio: ${isSocio})`);
               if (acao === "gerar_peca_estudio") pecaEstudioCalled = true;
+              const toolCallFingerprint = buildActionExecutionFingerprint(acao, args);
+              if (shouldSkipDuplicateExecution(ctx, toolCallFingerprint)) {
+                console.log(`[Secretary] Skipping duplicate tool_call action: ${acao}`);
+                toolResults.push({ role: "tool", tool_call_id: toolCall.id, content: "Ação ignorada por duplicidade recente." });
+                continue;
+              }
               const actionResult = await executeSecretaryAction(acao, args, tenantId, isSocio, clientId || undefined, jid, ctx.messages);
+              setConversationLastExecutedAction(ctx, toolCallFingerprint);
+              const verification = verifySecretaryActionResult(acao, actionResult);
               if (acao === "gerar_peca_estudio" && (actionResult.includes("ENVIADA COM SUCESSO") || actionResult.includes("enviado diretamente"))) {
                 pieceGeneratedAndSent = true;
                 const labelMatch = actionResult.match(/📋\s*([^\n]+)/);
                 if (labelMatch) pieceGeneratedLabel = labelMatch[1].trim();
               }
               toolResults.push({ role: "tool", tool_call_id: toolCall.id, content: actionResult });
+              await safeCreateAgentStep({
+                runId: agentRun?.id,
+                tenantId,
+                stepType: "tool_call",
+                status: verification.finalStatus,
+                input: { acao, args },
+                output: { verification, actionResult: actionResult.substring(0, 500) },
+              });
+              await safeUpdateAgentRun(agentRun?.id, {
+                status: verification.finalStatus === "failed" ? "failed" : "executing",
+                requestedAction: acao,
+                requestedArgs: args,
+                verification,
+              });
 
               await createSecretaryAuditLog({
                 tenantId, jid, contactName,
@@ -5138,6 +5408,18 @@ O contato se identificou como: ${contactName}
 
       appendMessageToConversationContext(ctx, { role: "assistant", content: aiResponse });
       setConversationLastAssistantResponse(ctx, buildResponseFingerprint(aiResponse));
+      await safeCreateAgentStep({
+        runId: agentRun?.id,
+        tenantId,
+        stepType: "response",
+        status: "completed",
+        input: { mode: config.mode },
+        output: { aiResponse: buildAgentResponsePreview(aiResponse) },
+      });
+      await safeUpdateAgentRun(agentRun?.id, {
+        status: config.mode === "auto" ? "completed" : "awaiting_approval",
+        responsePreview: buildAgentResponsePreview(aiResponse),
+      });
       await saveMessageToDB(jid, tenantId, "assistant", aiResponse);
 
       if (config.mode === "auto") {
@@ -5163,6 +5445,10 @@ O contato se identificou como: ${contactName}
       }
     } catch (error) {
       console.error("[Secretary] Error processing message:", error);
+      await safeUpdateAgentRun(agentRun?.id, {
+        status: "failed",
+        errorMessage: (error as Error).message,
+      });
       await createSecretaryAuditLog({
         tenantId, jid, contactName,
         actionType: "erro",

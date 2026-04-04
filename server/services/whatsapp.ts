@@ -732,12 +732,221 @@ export const whatsappService = {
       const processedMessageIds = new Set<string>();
       const secretaryDebounce = new Map<string, ReturnType<typeof setTimeout>>();
       const secretaryBuffer = new Map<string, { texts: string[], mediaItems: { msg: any, type: string }[], senderName: string }>();
-      const DEBOUNCE_MS = 30000;
+      const DEBOUNCE_MS = 2500;
 
       const groupDocDebounce = new Map<string, ReturnType<typeof setTimeout>>();
       const groupDocBuffer = new Map<string, { docs: { msg: any, mediaType: string, senderName: string }[], texts: string[], senderName: string }>();
       const GROUP_DOC_DEBOUNCE_MS = 8000;
       const groupAuthCache = new Map<string, { allowed: boolean, expires: number }>();
+
+      const isStandaloneShortMessage = (text?: string | null) => {
+        const value = (text || "").trim().toLowerCase();
+        if (!value) return false;
+        if (value.length > 24) return false;
+        return /^(oi|olá|ola|bom dia|boa tarde|boa noite|ok|certo|entendi|obrigado|obg|valeu|sim|não|nao)[!?.\s]*$/i.test(value);
+      };
+
+      const flushSecretaryBatch = async (jid: string, batch: { texts: string[], mediaItems: { msg: any, type: string }[], senderName: string }) => {
+        if (await isManualSilenced(jid)) {
+          const { findActiveNegotiationForJid } = await import("./secretary");
+          const hasActiveNeg = await findActiveNegotiationForJid(jid, tenantId);
+          if (hasActiveNeg) {
+            console.log(`[WhatsApp] Silêncio ativo para ${jid}, mas negociação ativa encontrada — permitindo resposta do negociador`);
+          } else {
+            console.log(`[WhatsApp] Silêncio ativo para ${jid} — ignorando resposta automática`);
+            return;
+          }
+        }
+
+        try {
+          const { secretaryService } = await import("./secretary");
+          const mergedText = batch.texts.join("\n");
+
+          if (batch.mediaItems.length > 0 && sock) {
+            const { downloadMediaMessage, downloadContentFromMessage } = await import("@whiskeysockets/baileys");
+
+            const downloadOneMedia = async (mMsg: any, mType: string): Promise<{ buffer: Buffer | null, mInner: any, mType: string, mMsg: any }> => {
+              const mInner = mMsg.message?.ephemeralMessage?.message
+                || mMsg.message?.viewOnceMessage?.message
+                || mMsg.message?.viewOnceMessageV2?.message
+                || mMsg.message?.documentWithCaptionMessage?.message
+                || mMsg.message;
+              let buffer: Buffer | null = null;
+
+              if (mType === "audio") {
+                const audioMsg = mInner?.audioMessage
+                  || (mInner as any)?.ptvMessage
+                  || mMsg.message?.ephemeralMessage?.message?.audioMessage
+                  || mMsg.message?.viewOnceMessage?.message?.audioMessage
+                  || mMsg.message?.viewOnceMessageV2?.message?.audioMessage
+                  || (mMsg.message as any)?.ptvMessage;
+                const isForwardedAudio = audioMsg?.contextInfo?.isForwarded || (audioMsg?.contextInfo?.forwardingScore || 0) > 0;
+                console.log(`[WhatsApp] Audio detected - audioMsg found: ${!!audioMsg}, mimetype: ${audioMsg?.mimetype || "unknown"}, seconds: ${audioMsg?.seconds || "?"}, isPtv: ${!!(mInner as any)?.ptvMessage || !!(mMsg.message as any)?.ptvMessage}, isForwarded: ${isForwardedAudio}`);
+
+                try {
+                  const dlOptions: any = {};
+                  if (sock?.updateMediaMessage) dlOptions.reuploadRequest = sock.updateMediaMessage;
+                  buffer = await downloadMediaMessage(mMsg, "buffer", {}, dlOptions) as Buffer;
+                  console.log(`[WhatsApp] Audio downloadMediaMessage: ${buffer?.length || 0} bytes`);
+                } catch (dlErr1) {
+                  console.warn(`[WhatsApp] Audio downloadMediaMessage failed: ${(dlErr1 as Error).message}`);
+                }
+
+                if ((!buffer || buffer.length === 0) && audioMsg) {
+                  try {
+                    const stream = await downloadContentFromMessage(audioMsg, "audio");
+                    const chunks: Buffer[] = [];
+                    for await (const chunk of stream) chunks.push(chunk as Buffer);
+                    buffer = Buffer.concat(chunks);
+                    console.log(`[WhatsApp] Audio stream download: ${buffer.length} bytes`);
+                  } catch (streamErr) {
+                    console.warn(`[WhatsApp] Audio stream also failed: ${(streamErr as Error).message}`);
+                  }
+                }
+
+                if ((!buffer || buffer.length === 0) && isForwardedAudio && sock?.updateMediaMessage) {
+                  try {
+                    console.log(`[WhatsApp] Forwarded audio - trying updateMediaMessage + re-download...`);
+                    const updatedMsg = await sock.updateMediaMessage(mMsg);
+                    buffer = await downloadMediaMessage(updatedMsg || mMsg, "buffer", {}) as Buffer;
+                    console.log(`[WhatsApp] Audio re-upload download: ${buffer?.length || 0} bytes`);
+                  } catch (reupErr) {
+                    console.error(`[WhatsApp] Audio re-upload fallback failed: ${(reupErr as Error).message}`);
+                  }
+                }
+              } else {
+                try {
+                  const dlOptions: any = {};
+                  if (sock?.updateMediaMessage) dlOptions.reuploadRequest = sock.updateMediaMessage;
+                  buffer = await downloadMediaMessage(mMsg, "buffer", {}, dlOptions) as Buffer;
+                  console.log(`[WhatsApp] downloadMediaMessage: ${buffer?.length || 0} bytes for ${mType}`);
+                } catch (dlErr1) {
+                  console.warn(`[WhatsApp] downloadMediaMessage failed for ${mType}: ${(dlErr1 as Error).message}`);
+                }
+
+                if (!buffer || buffer.length === 0) {
+                  try {
+                    const mediaMsg = mInner?.imageMessage || mInner?.documentMessage;
+                    if (mediaMsg) {
+                      const contentType = mType === "image" ? "image" : "document";
+                      const stream = await downloadContentFromMessage(mediaMsg, contentType as any);
+                      const chunks: Buffer[] = [];
+                      for await (const chunk of stream) chunks.push(chunk as Buffer);
+                      buffer = Buffer.concat(chunks);
+                      console.log(`[WhatsApp] Stream fallback got ${buffer.length} bytes for ${mType}`);
+                    }
+                  } catch (dlErr2) {
+                    console.error(`[WhatsApp] Stream fallback also failed: ${(dlErr2 as Error).message}`);
+                  }
+                }
+              }
+              return { buffer, mInner, mType, mMsg };
+            };
+
+            try {
+              console.log(`[WhatsApp] Processing batch: ${batch.mediaItems.length} media item(s), texts: ${batch.texts.length}`);
+
+              if (batch.mediaItems.length === 1) {
+                const { buffer, mInner, mType, mMsg } = await downloadOneMedia(batch.mediaItems[0].msg, batch.mediaItems[0].type);
+                if (buffer && buffer.length > 0) {
+                  const base64 = buffer.toString("base64");
+                  console.log(`[WhatsApp] Media downloaded: ${mType}, ${buffer.length} bytes`);
+                  if (mType === "image") {
+                    const caption = mInner?.imageMessage?.caption || "";
+                    await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || caption || "[Imagem recebida]", batch.senderName, mType, base64);
+                    return;
+                  }
+                  if (mType === "audio") {
+                    const audioMime = mInner?.audioMessage?.mimetype || (mInner as any)?.ptvMessage?.mimetype || mMsg.message?.audioMessage?.mimetype || (mMsg.message as any)?.ptvMessage?.mimetype || "audio/ogg; codecs=opus";
+                    console.log(`[WhatsApp] Audio: ${buffer.length} bytes, mime: ${audioMime}`);
+                    await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || "[Áudio recebido]", batch.senderName, mType, base64, undefined, audioMime);
+                    return;
+                  }
+                  if (mType === "document") {
+                    const fileName = mInner?.documentMessage?.fileName || "documento";
+                    const mimetype = mInner?.documentMessage?.mimetype || "";
+                    await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || `[Documento: ${fileName}]`, batch.senderName, mType, base64, fileName, mimetype);
+                    return;
+                  }
+                } else {
+                  console.error(`[WhatsApp] Failed to download ${mType} media`);
+                  if (mType === "audio") {
+                    const failMsg = `${mergedText ? mergedText + "\n" : ""}[O áudio não pôde ser baixado para transcrição. Por favor, tente enviar novamente.]`;
+                    await secretaryService.processIncomingMessage(activeTenantId, jid, failMsg, batch.senderName);
+                    return;
+                  }
+                }
+              } else {
+                const docResults: { fileName: string, base64: string, mimetype: string }[] = [];
+                let audioResult: { base64: string, mime: string } | null = null;
+                let imageResult: { base64: string, caption: string } | null = null;
+
+                for (const item of batch.mediaItems) {
+                  try {
+                    const { buffer, mInner, mType, mMsg } = await downloadOneMedia(item.msg, item.type);
+                    if (!buffer || buffer.length === 0) {
+                      console.warn(`[WhatsApp] Skipping failed download for ${mType}`);
+                      continue;
+                    }
+                    const base64 = buffer.toString("base64");
+                    console.log(`[WhatsApp] Multi-media downloaded: ${mType}, ${buffer.length} bytes`);
+
+                    if (mType === "document") {
+                      const fileName = mInner?.documentMessage?.fileName || "documento";
+                      const mimetype = mInner?.documentMessage?.mimetype || "";
+                      docResults.push({ fileName, base64, mimetype });
+                    } else if (mType === "audio") {
+                      const audioMime = mInner?.audioMessage?.mimetype || (mInner as any)?.ptvMessage?.mimetype || "audio/ogg; codecs=opus";
+                      audioResult = { base64, mime: audioMime };
+                    } else if (mType === "image") {
+                      const caption = mInner?.imageMessage?.caption || "";
+                      imageResult = { base64, caption };
+                    }
+                  } catch (itemErr) {
+                    console.error(`[WhatsApp] Error downloading media item: ${(itemErr as Error).message}`);
+                  }
+                }
+
+                if (audioResult) {
+                  console.log(`[WhatsApp] Processing audio from multi-media batch`);
+                  await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || "[Áudio recebido]", batch.senderName, "audio", audioResult.base64, undefined, audioResult.mime);
+                  return;
+                }
+
+                if (docResults.length > 0) {
+                  console.log(`[WhatsApp] Processing ${docResults.length} documents in batch`);
+                  for (let i = 0; i < docResults.length; i++) {
+                    const doc = docResults[i];
+                    const isLast = i === docResults.length - 1;
+                    const textForDoc = isLast ? (mergedText || `[Documento: ${doc.fileName}]`) : `[Documento: ${doc.fileName}]`;
+                    await secretaryService.processIncomingMessage(activeTenantId, jid, textForDoc, batch.senderName, "document", doc.base64, doc.fileName, doc.mimetype);
+                  }
+                  return;
+                }
+
+                if (imageResult) {
+                  await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || imageResult.caption || "[Imagem recebida]", batch.senderName, "image", imageResult.base64);
+                  return;
+                }
+              }
+            } catch (dlErr) {
+              console.error("[WhatsApp] Error downloading media:", (dlErr as Error).message);
+              if (mergedText) {
+                await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText + "\n[Nota: erro ao baixar mídia anexada]", batch.senderName);
+                return;
+              }
+            }
+          }
+
+          if (mergedText) {
+            await secretaryService.processIncomingMessage(
+              activeTenantId, jid, mergedText, batch.senderName
+            );
+          }
+        } catch (secErr) {
+          console.error("[WhatsApp] Secretary processing error:", secErr);
+        }
+      };
 
       sock.ev.on("messages.upsert", async (m) => {
         console.log(`[WhatsApp] messages.upsert event: ${m.messages.length} message(s), type=${m.type}`);
@@ -1000,7 +1209,24 @@ export const whatsappService = {
 
             if (hasText || hasProcessableMedia) {
               const existing = secretaryDebounce.get(jid);
+              const existingBuffer = secretaryBuffer.get(jid);
+              const shouldFlushExisting =
+                Boolean(
+                  existing &&
+                  existingBuffer &&
+                  (existingBuffer.texts.length > 0 || existingBuffer.mediaItems.length > 0) &&
+                  !hasProcessableMedia &&
+                  hasText &&
+                  isStandaloneShortMessage(content)
+                );
+
               if (existing) clearTimeout(existing);
+
+              if (shouldFlushExisting && existingBuffer) {
+                secretaryDebounce.delete(jid);
+                secretaryBuffer.delete(jid);
+                await flushSecretaryBatch(jid, existingBuffer);
+              }
 
               let buf = secretaryBuffer.get(jid);
               if (!buf) {
@@ -1021,206 +1247,7 @@ export const whatsappService = {
                 const batch = secretaryBuffer.get(jid);
                 secretaryBuffer.delete(jid);
                 if (!batch) return;
-
-                if (await isManualSilenced(jid)) {
-                  const { findActiveNegotiationForJid } = await import("./secretary");
-                  const hasActiveNeg = await findActiveNegotiationForJid(jid, tenantId);
-                  if (hasActiveNeg) {
-                    console.log(`[WhatsApp] Silêncio ativo para ${jid}, mas negociação ativa encontrada — permitindo resposta do negociador`);
-                  } else {
-                    console.log(`[WhatsApp] Silêncio ativo para ${jid} — ignorando resposta automática`);
-                    return;
-                  }
-                }
-
-                try {
-                  const { secretaryService } = await import("./secretary");
-                  const mergedText = batch.texts.join("\n");
-
-                  if (batch.mediaItems.length > 0 && sock) {
-                    const { downloadMediaMessage, downloadContentFromMessage } = await import("@whiskeysockets/baileys");
-
-                    const downloadOneMedia = async (mMsg: any, mType: string): Promise<{ buffer: Buffer | null, mInner: any, mType: string, mMsg: any }> => {
-                      const mInner = mMsg.message?.ephemeralMessage?.message
-                        || mMsg.message?.viewOnceMessage?.message
-                        || mMsg.message?.viewOnceMessageV2?.message
-                        || mMsg.message?.documentWithCaptionMessage?.message
-                        || mMsg.message;
-                      let buffer: Buffer | null = null;
-
-                      if (mType === "audio") {
-                        const audioMsg = mInner?.audioMessage
-                          || (mInner as any)?.ptvMessage
-                          || mMsg.message?.ephemeralMessage?.message?.audioMessage
-                          || mMsg.message?.viewOnceMessage?.message?.audioMessage
-                          || mMsg.message?.viewOnceMessageV2?.message?.audioMessage
-                          || (mMsg.message as any)?.ptvMessage;
-                        const isForwardedAudio = audioMsg?.contextInfo?.isForwarded || (audioMsg?.contextInfo?.forwardingScore || 0) > 0;
-                        console.log(`[WhatsApp] Audio detected - audioMsg found: ${!!audioMsg}, mimetype: ${audioMsg?.mimetype || "unknown"}, seconds: ${audioMsg?.seconds || "?"}, isPtv: ${!!(mInner as any)?.ptvMessage || !!(mMsg.message as any)?.ptvMessage}, isForwarded: ${isForwardedAudio}`);
-
-                        try {
-                          const dlOptions: any = {};
-                          if (sock?.updateMediaMessage) dlOptions.reuploadRequest = sock.updateMediaMessage;
-                          buffer = await downloadMediaMessage(mMsg, "buffer", {}, dlOptions) as Buffer;
-                          console.log(`[WhatsApp] Audio downloadMediaMessage: ${buffer?.length || 0} bytes`);
-                        } catch (dlErr1) {
-                          console.warn(`[WhatsApp] Audio downloadMediaMessage failed: ${(dlErr1 as Error).message}`);
-                        }
-
-                        if ((!buffer || buffer.length === 0) && audioMsg) {
-                          try {
-                            const stream = await downloadContentFromMessage(audioMsg, "audio");
-                            const chunks: Buffer[] = [];
-                            for await (const chunk of stream) chunks.push(chunk as Buffer);
-                            buffer = Buffer.concat(chunks);
-                            console.log(`[WhatsApp] Audio stream download: ${buffer.length} bytes`);
-                          } catch (streamErr) {
-                            console.warn(`[WhatsApp] Audio stream also failed: ${(streamErr as Error).message}`);
-                          }
-                        }
-
-                        if ((!buffer || buffer.length === 0) && isForwardedAudio && sock?.updateMediaMessage) {
-                          try {
-                            console.log(`[WhatsApp] Forwarded audio - trying updateMediaMessage + re-download...`);
-                            const updatedMsg = await sock.updateMediaMessage(mMsg);
-                            buffer = await downloadMediaMessage(updatedMsg || mMsg, "buffer", {}) as Buffer;
-                            console.log(`[WhatsApp] Audio re-upload download: ${buffer?.length || 0} bytes`);
-                          } catch (reupErr) {
-                            console.error(`[WhatsApp] Audio re-upload fallback failed: ${(reupErr as Error).message}`);
-                          }
-                        }
-                      } else {
-                        try {
-                          const dlOptions: any = {};
-                          if (sock?.updateMediaMessage) dlOptions.reuploadRequest = sock.updateMediaMessage;
-                          buffer = await downloadMediaMessage(mMsg, "buffer", {}, dlOptions) as Buffer;
-                          console.log(`[WhatsApp] downloadMediaMessage: ${buffer?.length || 0} bytes for ${mType}`);
-                        } catch (dlErr1) {
-                          console.warn(`[WhatsApp] downloadMediaMessage failed for ${mType}: ${(dlErr1 as Error).message}`);
-                        }
-
-                        if (!buffer || buffer.length === 0) {
-                          try {
-                            const mediaMsg = mInner?.imageMessage || mInner?.documentMessage;
-                            if (mediaMsg) {
-                              const contentType = mType === "image" ? "image" : "document";
-                              const stream = await downloadContentFromMessage(mediaMsg, contentType as any);
-                              const chunks: Buffer[] = [];
-                              for await (const chunk of stream) chunks.push(chunk as Buffer);
-                              buffer = Buffer.concat(chunks);
-                              console.log(`[WhatsApp] Stream fallback got ${buffer.length} bytes for ${mType}`);
-                            }
-                          } catch (dlErr2) {
-                            console.error(`[WhatsApp] Stream fallback also failed: ${(dlErr2 as Error).message}`);
-                          }
-                        }
-                      }
-                      return { buffer, mInner, mType, mMsg };
-                    };
-
-                    try {
-                      console.log(`[WhatsApp] Processing batch: ${batch.mediaItems.length} media item(s), texts: ${batch.texts.length}`);
-
-                      if (batch.mediaItems.length === 1) {
-                        const { buffer, mInner, mType, mMsg } = await downloadOneMedia(batch.mediaItems[0].msg, batch.mediaItems[0].type);
-                        if (buffer && buffer.length > 0) {
-                          const base64 = buffer.toString("base64");
-                          console.log(`[WhatsApp] Media downloaded: ${mType}, ${buffer.length} bytes`);
-                          if (mType === "image") {
-                            const caption = mInner?.imageMessage?.caption || "";
-                            await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || caption || "[Imagem recebida]", batch.senderName, mType, base64);
-                            return;
-                          }
-                          if (mType === "audio") {
-                            const audioMime = mInner?.audioMessage?.mimetype || (mInner as any)?.ptvMessage?.mimetype || mMsg.message?.audioMessage?.mimetype || (mMsg.message as any)?.ptvMessage?.mimetype || "audio/ogg; codecs=opus";
-                            console.log(`[WhatsApp] Audio: ${buffer.length} bytes, mime: ${audioMime}`);
-                            await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || "[Áudio recebido]", batch.senderName, mType, base64, undefined, audioMime);
-                            return;
-                          }
-                          if (mType === "document") {
-                            const fileName = mInner?.documentMessage?.fileName || "documento";
-                            const mimetype = mInner?.documentMessage?.mimetype || "";
-                            await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || `[Documento: ${fileName}]`, batch.senderName, mType, base64, fileName, mimetype);
-                            return;
-                          }
-                        } else {
-                          console.error(`[WhatsApp] Failed to download ${mType} media`);
-                          if (mType === "audio") {
-                            const failMsg = `${mergedText ? mergedText + "\n" : ""}[O áudio não pôde ser baixado para transcrição. Por favor, tente enviar novamente.]`;
-                            await secretaryService.processIncomingMessage(activeTenantId, jid, failMsg, batch.senderName);
-                            return;
-                          }
-                        }
-                      } else {
-                        const docResults: { fileName: string, base64: string, mimetype: string }[] = [];
-                        let audioResult: { base64: string, mime: string } | null = null;
-                        let imageResult: { base64: string, caption: string } | null = null;
-
-                        for (const item of batch.mediaItems) {
-                          try {
-                            const { buffer, mInner, mType, mMsg } = await downloadOneMedia(item.msg, item.type);
-                            if (!buffer || buffer.length === 0) {
-                              console.warn(`[WhatsApp] Skipping failed download for ${mType}`);
-                              continue;
-                            }
-                            const base64 = buffer.toString("base64");
-                            console.log(`[WhatsApp] Multi-media downloaded: ${mType}, ${buffer.length} bytes`);
-
-                            if (mType === "document") {
-                              const fileName = mInner?.documentMessage?.fileName || "documento";
-                              const mimetype = mInner?.documentMessage?.mimetype || "";
-                              docResults.push({ fileName, base64, mimetype });
-                            } else if (mType === "audio") {
-                              const audioMime = mInner?.audioMessage?.mimetype || (mInner as any)?.ptvMessage?.mimetype || "audio/ogg; codecs=opus";
-                              audioResult = { base64, mime: audioMime };
-                            } else if (mType === "image") {
-                              const caption = mInner?.imageMessage?.caption || "";
-                              imageResult = { base64, caption };
-                            }
-                          } catch (itemErr) {
-                            console.error(`[WhatsApp] Error downloading media item: ${(itemErr as Error).message}`);
-                          }
-                        }
-
-                        if (audioResult) {
-                          console.log(`[WhatsApp] Processing audio from multi-media batch`);
-                          await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || "[Áudio recebido]", batch.senderName, "audio", audioResult.base64, undefined, audioResult.mime);
-                          return;
-                        }
-
-                        if (docResults.length > 0) {
-                          console.log(`[WhatsApp] Processing ${docResults.length} documents in batch`);
-                          for (let i = 0; i < docResults.length; i++) {
-                            const doc = docResults[i];
-                            const isLast = i === docResults.length - 1;
-                            const textForDoc = isLast ? (mergedText || `[Documento: ${doc.fileName}]`) : `[Documento: ${doc.fileName}]`;
-                            await secretaryService.processIncomingMessage(activeTenantId, jid, textForDoc, batch.senderName, "document", doc.base64, doc.fileName, doc.mimetype);
-                          }
-                          return;
-                        }
-
-                        if (imageResult) {
-                          await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText || imageResult.caption || "[Imagem recebida]", batch.senderName, "image", imageResult.base64);
-                          return;
-                        }
-                      }
-                    } catch (dlErr) {
-                      console.error("[WhatsApp] Error downloading media:", (dlErr as Error).message);
-                      if (mergedText) {
-                        await secretaryService.processIncomingMessage(activeTenantId, jid, mergedText + "\n[Nota: erro ao baixar mídia anexada]", batch.senderName);
-                        return;
-                      }
-                    }
-                  }
-
-                  if (mergedText) {
-                    await secretaryService.processIncomingMessage(
-                      activeTenantId, jid, mergedText, batch.senderName
-                    );
-                  }
-                } catch (secErr) {
-                  console.error("[WhatsApp] Secretary processing error:", secErr);
-                }
+                await flushSecretaryBatch(jid, batch);
               }, DEBOUNCE_MS));
             }
           } catch (err) {
