@@ -5,6 +5,8 @@ import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { metaImagesPlugin } from "./vite-plugin-meta-images";
 
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || process.env.PROD_APP_URL;
+
 export default defineConfig({
   plugins: [
     react(),
@@ -43,6 +45,17 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     allowedHosts: true,
+    proxy: apiProxyTarget
+      ? {
+          "/api": {
+            target: apiProxyTarget,
+            changeOrigin: true,
+            secure: true,
+            ws: true,
+            cookieDomainRewrite: "127.0.0.1",
+          },
+        }
+      : undefined,
     fs: {
       strict: true,
       deny: ["**/.*"],
