@@ -4649,6 +4649,43 @@ ${extractedText.substring(0, 8000)}`;
     }
   });
 
+  // ==================== HARVEY: PIECE APPROVAL + EMBEDDING INDEXING ====================
+  app.post("/api/studio/pieces/:id/approve", async (req: Request, res: Response) => {
+    try {
+      const pieceId = parseInt(req.params.id);
+      const userId = getUserId(req);
+      const tenantId = getTenantId(req);
+
+      if (isNaN(pieceId)) {
+        return res.status(400).json({ error: "ID inválido" });
+      }
+
+      const piece = await storage.getGeneratedPiece(pieceId);
+      if (!piece) {
+        return res.status(404).json({ error: "Peça não encontrada" });
+      }
+
+      // Persist approval in database
+      await storage.approveGeneratedPiece(pieceId, userId, tenantId);
+
+      // Async: index embedding for RAG (non-blocking)
+      import("./services/embeddingService").then(({ embeddingService }) => {
+        void embeddingService.upsertPieceEmbedding({
+          tenantId,
+          pieceId,
+          pieceType: piece.pieceType,
+          contentText: piece.contentText || piece.contentHtml.replace(/<[^>]+>/g, " ").substring(0, 8000),
+        }).catch(err => console.error("[RAG] Failed to index approved piece:", err.message));
+      });
+
+      console.log(`[Harvey] Piece ${pieceId} approved by user ${userId} — embedding indexing queued`);
+      res.json({ success: true, pieceId });
+    } catch (error) {
+      console.error("Error approving piece:", error);
+      res.status(500).json({ error: "Falha ao aprovar a peça" });
+    }
+  });
+
   // ==================== LEXAI STUDIO - GENERATE PIECE ====================
   const generatePieceSchema = z.object({
     prompt: z.string().min(3, "O prompt deve ter pelo menos 3 caracteres"),
@@ -4698,7 +4735,8 @@ ${extractedText.substring(0, 8000)}`;
         attorney,
         attorneys,
         systemContext,
-        tenantId: 1,
+        tenantId: getTenantId(req),
+        userId: getUserId(req),
       });
 
       res.json(result);

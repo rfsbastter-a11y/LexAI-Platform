@@ -190,6 +190,7 @@ export interface IStorage {
   createGeneratedPiece(data: InsertGeneratedPiece): Promise<GeneratedPiece>;
   updateGeneratedPiece(id: number, data: Partial<InsertGeneratedPiece>): Promise<GeneratedPiece>;
   deleteGeneratedPiece(id: number): Promise<void>;
+  approveGeneratedPiece(id: number, userId: number, tenantId: number): Promise<void>;
 
   // Letterhead Config
   getLetterheadConfig(tenantId: number): Promise<LetterheadConfig | undefined>;
@@ -1158,6 +1159,17 @@ class DatabaseStorage implements IStorage {
 
   async deleteGeneratedPiece(id: number): Promise<void> {
     await db.delete(generatedPieces).where(eq(generatedPieces.id, id));
+  }
+
+  async approveGeneratedPiece(id: number, userId: number, _tenantId: number): Promise<void> {
+    await db.update(generatedPieces)
+      .set({
+        humanApproved: true,
+        approvedBy: userId,
+        approvedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(generatedPieces.id, id));
   }
 
   // Letterhead Config

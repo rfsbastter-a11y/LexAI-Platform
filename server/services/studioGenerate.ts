@@ -30,6 +30,8 @@ interface StudioGenerateParams {
     citationABNT?: string;
   }>;
   tenantId?: number;
+  userId?: number;       // Harvey: real user ID for audit trail
+  ragEnabled?: boolean;  // Harvey: enable/disable RAG retrieval (default: true)
 }
 
 interface StudioGenerateResult {
@@ -44,6 +46,11 @@ interface StudioGenerateResult {
     const files = params.files || [];
     const selectedJurisprudence = params.selectedJurisprudence || [];
     const selectedDoctrine = params.selectedDoctrine || [];
+    const tenantId = params.tenantId || 1;
+    const ragEnabled = params.ragEnabled !== false; // default true
+
+    // Harvey technique: track RAG context used for audit/fine-tuning
+    let ragContextUsed: Array<{ pieceId: number | null; similarity: number; pieceType: string }> = [];
 
     const attorneyMap: Record<string, { name: string; oab: string }> = {
     ronald: { name: "Ronald Ferreira Serra", oab: "OAB/DF 23.947" },
@@ -56,6 +63,56 @@ interface StudioGenerateResult {
 
   const brasiliaDate = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", day: "numeric", month: "long", year: "numeric" });
   let contextBuilder = `TIPO DE PEÇA: ${templateType}\nDATA DE HOJE (Brasília): ${brasiliaDate}\nLOCAL: Brasília/DF\n\nINSTRUÇÕES DO USUÁRIO:\n${prompt}\n\n`;
+
+  // ================================================================
+  // HARVEY TECHNIQUE: Semantic RAG — inject similar approved pieces
+  // ================================================================
+  if (ragEnabled && tenantId) {
+    try {
+      const { embeddingService } = await import("./embeddingService");
+      const similarPieces = await embeddingService.retrieveSimilarPieces({
+        tenantId,
+        queryText: prompt,
+        pieceType: templateType,
+        topK: 3,
+      });
+
+      if (similarPieces.length > 0) {
+        ragContextUsed = similarPieces.map(p => ({
+          pieceId: p.pieceId,
+          similarity: p.similarity,
+          pieceType: p.pieceType,
+        }));
+
+        // Cap total RAG context at 4500 chars to stay within token budget
+        let ragCharsUsed = 0;
+        const ragMaxChars = 4500;
+        const ragExamples: string[] = [];
+
+        for (let i = 0; i < similarPieces.length; i++) {
+          const preview = similarPieces[i].contentText.substring(0, 1500);
+          if (ragCharsUsed + preview.length > ragMaxChars) break;
+          ragExamples.push(
+            `[EXEMPLO APROVADO ${i + 1}] Similaridade: ${(similarPieces[i].similarity * 100).toFixed(0)}%\n${preview}`
+          );
+          ragCharsUsed += preview.length;
+        }
+
+        if (ragExamples.length > 0) {
+          contextBuilder += `\n=== PEÇAS APROVADAS SIMILARES — REFERÊNCIA INTERNA DO ESCRITÓRIO ===\n`;
+          contextBuilder += `Use como referência de qualidade, profundidade argumentativa e estilo. `;
+          contextBuilder += `NÃO copie fatos, nomes ou dados das partes — adapte apenas estrutura e lógica jurídica.\n\n`;
+          contextBuilder += ragExamples.join("\n---\n");
+          contextBuilder += `\n=== FIM DAS REFERÊNCIAS INTERNAS ===\n\n`;
+          console.log(`[Studio RAG] Injected ${ragExamples.length} similar pieces (${ragCharsUsed} chars) for tenant ${tenantId}`);
+        }
+      }
+    } catch (ragErr: any) {
+      // RAG failure must never block generation
+      console.warn("[Studio RAG] Retrieval failed (non-fatal):", ragErr.message);
+    }
+  }
+  // ================================================================
 
   interface PartyFieldMap {
     nome?: string;
@@ -2442,13 +2499,17 @@ NUNCA inverta a lógica do caso. NUNCA escreva o recorrente errado. O diagnósti
 
   await storage.createAiGenerationLog({
     tenantId: params.tenantId || 1,
-    userId: 1,
+    userId: params.userId || 1,
     generationType: "studio_piece",
     prompt: prompt.substring(0, 500),
     citations: response.citations as any,
     modelUsed,
     tokensUsed: response.tokensUsed,
     outputPreview: response.content.substring(0, 500),
+    // Harvey: full context for fine-tuning dataset
+    fullPrompt: (strictInstructions + userContent).substring(0, 100000),
+    fullOutput: response.content,
+    ragContext: ragContextUsed as any,
   });
 
     return {

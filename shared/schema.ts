@@ -311,6 +311,11 @@ export const aiGenerationLogs = pgTable("ai_generation_logs", {
   humanApproved: boolean("human_approved"),
   approvedBy: integer("approved_by").references(() => users.id),
   approvedAt: timestamp("approved_at"),
+  // Harvey-technique fields
+  fullPrompt: text("full_prompt"),          // prompt completo (system + user)
+  fullOutput: text("full_output"),          // output completo do LLM
+  ragContext: jsonb("rag_context"),          // peças similares recuperadas
+  generatedPieceId: integer("generated_piece_id").references(() => generatedPieces.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -680,6 +685,11 @@ export const generatedPieces = pgTable("generated_pieces", {
   jurisprudences: jsonb("jurisprudences"),
   doctrines: jsonb("doctrines"),
   createdBy: integer("created_by").references(() => users.id),
+  // Harvey-technique fields
+  humanApproved: boolean("human_approved").default(false),
+  approvedBy: integer("approved_by").references(() => users.id),
+  approvedAt: timestamp("approved_at"),
+  ragPiecesUsed: jsonb("rag_pieces_used"), // IDs das peças similares usadas como contexto
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -1148,5 +1158,29 @@ export const whatsappAuthState = pgTable("whatsapp_auth_state", {
   key: text("key").notNull(),
   value: jsonb("value"),
 });
+
+// ==================== HARVEY TECHNIQUES: CORPUS PÚBLICO JURÍDICO ====================
+// Documentos públicos da AGU (4 carreiras) e outras fontes para RAG e fine-tuning
+export const legalCorpusDocuments = pgTable("legal_corpus_documents", {
+  id: serial("id").primaryKey(),
+  // Carreira AGU: 'advogado_uniao' | 'procurador_federal' | 'pgfn' | 'pgbc'
+  career: text("career").notNull(),
+  // Entidade específica para Procurador Federal: 'CADE' | 'ANEEL' | 'ANP' | 'INSS' etc.
+  entity: text("entity"),
+  // Fonte: 'agu_decor' | 'agu_conuni' | 'agu_legis' | 'pgfn_dadosabertos' | 'pgbc_revista' | 'pfe_cade' etc.
+  source: text("source").notNull(),
+  // Tipo: 'parecer' | 'nota_tecnica' | 'orientacao_normativa' | 'parecer_referencial'
+  docType: text("doc_type").notNull(),
+  docNumber: text("doc_number"),
+  title: text("title"),
+  content: text("content").notNull(),
+  sourceUrl: text("source_url"),
+  publishedAt: timestamp("published_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertLegalCorpusDocumentSchema = createInsertSchema(legalCorpusDocuments).omit({ id: true, createdAt: true });
+export type InsertLegalCorpusDocument = z.infer<typeof insertLegalCorpusDocumentSchema>;
+export type LegalCorpusDocument = typeof legalCorpusDocuments.$inferSelect;
 
 export type WhatsappAuthState = typeof whatsappAuthState.$inferSelect;
