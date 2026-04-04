@@ -422,14 +422,29 @@ async function sendMessageInChunks(jid: string, text: string, tenantId: number):
   }
 }
 
-async function generateWordWithLetterhead(contentHtml: string, title: string): Promise<Buffer | null> {
+function decodeDocxTemplateFromDataUrl(dataUrl?: string | null): Buffer | null {
+  if (!dataUrl) return null;
+  const match = dataUrl.match(/^data:application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document;base64,(.+)$/i);
+  if (!match?.[1]) return null;
   try {
-    const templatePath = path.join(process.cwd(), "public/templates/default_letterhead.docx");
-    if (!fs.existsSync(templatePath)) {
-      console.log("[Secretary] No letterhead template found, falling back to plain docx");
-      return null;
+    return Buffer.from(match[1], "base64");
+  } catch {
+    return null;
+  }
+}
+
+async function generateWordWithLetterhead(contentHtml: string, title: string, tenantId: number): Promise<Buffer | null> {
+  try {
+    const config = await storage.getLetterheadConfig(tenantId);
+    let templateBuffer = decodeDocxTemplateFromDataUrl(config?.logoUrl);
+    if (!templateBuffer) {
+      const templatePath = path.join(process.cwd(), "public/templates/default_letterhead.docx");
+      if (!fs.existsSync(templatePath)) {
+        console.log("[Secretary] No letterhead template found in DB or disk, falling back to plain docx");
+        return null;
+      }
+      templateBuffer = await fs.promises.readFile(templatePath);
     }
-    const templateBuffer = await fs.promises.readFile(templatePath);
 
     const PizZip = (await import("pizzip")).default;
     const Docxtemplater = (await import("docxtemplater")).default;
@@ -2912,7 +2927,8 @@ async function executeSecretaryAction(
   isSocio: boolean,
   clientId?: number,
   jid?: string,
-  conversationMessages?: Array<{ role: string; content: string }>
+  conversationMessages?: Array<{ role: string; content: string }>,
+  actorUserId?: number,
 ): Promise<string> {
   if (!canActorExecuteSecretaryAction(acao, isSocio)) {
     return "Apenas os sócios do escritório podem executar essa ação. Se você é um cliente e precisa de algo, entre em contato com o Dr. Ronald.";
@@ -3674,6 +3690,7 @@ async function executeSecretaryAction(
             templateType: pieceType,
             attorney: selectedAttorney,
             attorneys,
+            userId: actorUserId,
             systemContext: systemCtx || undefined,
             tenantId,
           });
@@ -3807,7 +3824,7 @@ async function executeSecretaryAction(
           let usedFallbackWord = false;
           if (jid) {
             try {
-              let wordBuffer = await generateWordWithLetterhead(pieceContent, `${pieceLabel} - ${savedPiece.id}`);
+              let wordBuffer = await generateWordWithLetterhead(pieceContent, `${pieceLabel} - ${savedPiece.id}`, tenantId);
               if (!wordBuffer) {
                 console.warn(`[Secretary] generateWordWithLetterhead returned null for piece ${savedPiece.id}. Generating plain Word as fallback.`);
                 wordBuffer = await generatePlainWord(pieceContent, `${pieceLabel} - ${savedPiece.id}`);
@@ -4443,6 +4460,7 @@ O contato se identificou como: ${contactName}
             clientId || undefined,
             jid,
             ctx.messages,
+            senderUser?.id,
           );
 
           const resendReply = formatDeterministicSocioReply(
@@ -4569,6 +4587,7 @@ O contato se identificou como: ${contactName}
                 clientId || undefined,
                 jid,
                 ctx.messages,
+                senderUser?.id,
               );
               const resumedReply = formatDeterministicSocioReply(
                 summarizeAgentExecutionResult(requestedAction, resumedResult),
@@ -5055,7 +5074,7 @@ O contato se identificou como: ${contactName}
                 toolResults.push({ role: "tool", tool_call_id: toolCall.id, content: "Ação ignorada por duplicidade recente." });
                 continue;
               }
-              const actionResult = await executeSecretaryAction(acao, args, tenantId, isSocio, clientId || undefined, jid, ctx.messages);
+              const actionResult = await executeSecretaryAction(acao, args, tenantId, isSocio, clientId || undefined, jid, ctx.messages, senderUser?.id);
               setConversationLastExecutedAction(ctx, toolCallFingerprint);
               const verification = verifySecretaryActionResult(acao, actionResult);
               if (acao === "gerar_peca_estudio" && (actionResult.includes("ENVIADA COM SUCESSO") || actionResult.includes("enviado diretamente"))) {
@@ -5161,7 +5180,8 @@ O contato se identificou como: ${contactName}
               isSocio,
               clientId || undefined,
               jid,
-              ctx.messages
+              ctx.messages,
+              senderUser?.id
             );
             aiResponse = formatDeterministicSocioReply(
               summarizeAgentExecutionResult(deterministicAction.acao, actionResult),
@@ -5263,7 +5283,7 @@ O contato se identificou como: ${contactName}
             const result = await executeSecretaryAction(
               "gerar_peca_estudio",
               { acao: "gerar_peca_estudio", templateType, description, clientName: "" },
-              tenantId, isSocio, clientId || undefined, jid, ctx.messages
+              tenantId, isSocio, clientId || undefined, jid, ctx.messages, senderUser?.id
             );
             const sent = result.includes("ENVIADA COM SUCESSO") || result.includes("enviado diretamente");
             if (!sent) {
@@ -5411,7 +5431,7 @@ O contato se identificou como: ${contactName}
           const forcedResult = await executeSecretaryAction(
             "gerar_peca_estudio",
             { acao: "gerar_peca_estudio", templateType, description: message, clientName: "" },
-            tenantId, isSocio, clientId || undefined, jid, ctx.messages
+            tenantId, isSocio, clientId || undefined, jid, ctx.messages, senderUser?.id
           );
           if (forcedResult.includes("ENVIADA COM SUCESSO") || forcedResult.includes("enviado diretamente")) {
             aiResponse = `✅ ${label} gerada e enviada em Word com timbre do escritório.`;

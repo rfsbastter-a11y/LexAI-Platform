@@ -4467,6 +4467,14 @@ ${extractedText.substring(0, 8000)}`;
   // ==================== LEXAI STUDIO - DEFAULT LETTERHEAD ====================
   app.get("/api/studio/default-letterhead", async (req: Request, res: Response) => {
     try {
+      const tenantId = getTenantId(req);
+      const config = await storage.getLetterheadConfig(tenantId);
+      if (config?.logoUrl?.startsWith("data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,")) {
+        return res.json({
+          name: "Papel Timbrado.docx",
+          data: config.logoUrl
+        });
+      }
       const templatePath = path.join(process.cwd(), "public/templates/default_letterhead.docx");
       const fileBuffer = await fs.promises.readFile(templatePath);
       const base64Data = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${fileBuffer.toString("base64")}`;

@@ -7,6 +7,7 @@ interface StudioGenerateParams {
   templateType: string;
   attorney?: string;
   attorneys?: string[];
+  userId?: number;
   systemContext?: string;
   files?: Array<{
     name: string;
@@ -2615,9 +2616,11 @@ NUNCA inverta a lógica do caso. NUNCA escreva o recorrente errado. O diagnósti
     .replace(/Brasília,?\s*nesta data\.?/gi, `Brasília, ${brasiliaDate}.`)
     .replace(/<blockquote(?!\s+style)>/gi, '<blockquote style="margin-left: 4cm;">');
 
+  const actorUserId = params.userId ?? await storage.getFirstUserForTenant(params.tenantId || 1);
+
   await storage.createAiGenerationLog({
     tenantId: params.tenantId || 1,
-    userId: 1,
+    userId: actorUserId,
     generationType: "studio_piece",
     prompt: prompt.substring(0, 500),
     citations: response.citations as any,

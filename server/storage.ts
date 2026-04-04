@@ -73,6 +73,7 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getUsersByTenant(tenantId: number): Promise<User[]>;
+  getFirstUserForTenant(tenantId: number): Promise<number>;
   createUser(data: InsertUser): Promise<User>;
   updateUserPhone(id: number, tenantId: number, phone: string | null): Promise<User | undefined>;
 
@@ -360,6 +361,19 @@ class DatabaseStorage implements IStorage {
 
   async getUsersByTenant(tenantId: number): Promise<User[]> {
     return db.select().from(users).where(eq(users.tenantId, tenantId));
+  }
+
+  async getFirstUserForTenant(tenantId: number): Promise<number> {
+    const [row] = await db
+      .select({ firstUserId: sql<number>`min(${users.id})` })
+      .from(users)
+      .where(eq(users.tenantId, tenantId));
+
+    if (!row?.firstUserId) {
+      throw new Error(`No valid user found for tenant ${tenantId}`);
+    }
+
+    return Number(row.firstUserId);
   }
 
   async createUser(data: InsertUser): Promise<User> {

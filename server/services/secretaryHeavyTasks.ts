@@ -17,7 +17,7 @@ export async function sendGeneratedWordDocument(params: {
   title: string;
   fileName: string;
   contentHtml: string;
-  generateWordWithLetterhead: (contentHtml: string, title: string) => Promise<Buffer | null>;
+  generateWordWithLetterhead: (contentHtml: string, title: string, tenantId: number) => Promise<Buffer | null>;
   generatePlainWord: (contentHtml: string, title: string) => Promise<Buffer>;
   sendDocumentToJid: (
     jid: string,
@@ -28,7 +28,7 @@ export async function sendGeneratedWordDocument(params: {
     tenantId: number,
   ) => Promise<boolean>;
 }) {
-  let wordBuffer = await params.generateWordWithLetterhead(params.contentHtml, params.title);
+  let wordBuffer = await params.generateWordWithLetterhead(params.contentHtml, params.title, params.tenantId);
   let usedFallbackWord = false;
 
   if (!wordBuffer) {
