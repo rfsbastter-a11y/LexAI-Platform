@@ -475,6 +475,25 @@ async function generateWordWithLetterhead(contentHtml: string, title: string, te
     }
     const paragraphs: ParsedPara[] = [];
 
+    const isStructuralBoldLine = (text: string): boolean => {
+      const trimmed = decodeEntities(text || "").replace(/\s+/g, " ").trim();
+      if (!trimmed) return false;
+
+      if (/^(AO JU[IÍ]ZO|AO EXMO|EXCELENT[IÍ]SSIMO|ILMO)/i.test(trimmed)) return true;
+      if (/^(PROCESSO N[°º]|JU[IÍ]ZO:|APELANTE:|APELADO:|R[ÉE]U:|AUTOR:|EXEQUENTE:|EXECUTADO:|REQUERENTE:|REQUERIDO:)/i.test(trimmed)) return true;
+      if (/OAB\/[A-Z]{2}\s*\d/i.test(trimmed) && /^[A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ.\s/-]+OAB\/[A-Z]{2}\s*\d/i.test(trimmed.toUpperCase())) return true;
+
+      const upperCandidate = trimmed
+        .replace(/[0-9]/g, "")
+        .replace(/[^\p{L}\s/:.-]/gu, "")
+        .trim();
+      if (upperCandidate.length >= 4 && upperCandidate === upperCandidate.toUpperCase() && /[A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ]/.test(upperCandidate)) {
+        return true;
+      }
+
+      return false;
+    };
+
     const parseInnerSegments = (inner: string): Array<{ text: string; bold: boolean }> => {
       const brProcessed = inner.replace(/<br\s*\/?>/gi, '\n');
       const segments: Array<{ text: string; bold: boolean }> = [];
@@ -494,6 +513,12 @@ async function generateWordWithLetterhead(contentHtml: string, title: string, te
         const t = decodeEntities(brProcessed.substring(lastIdx).replace(/<[^>]+>/g, ''));
         if (t.trim()) segments.push({ text: t, bold: false });
       }
+
+      const mergedText = segments.map((segment) => segment.text).join(" ").trim();
+      if (segments.length > 0 && isStructuralBoldLine(mergedText)) {
+        return segments.map((segment) => ({ ...segment, bold: true }));
+      }
+
       return segments;
     };
 
@@ -600,7 +625,7 @@ async function generateWordWithLetterhead(contentHtml: string, title: string, te
     }
 
     if (conteudoParagraph) {
-      const baseRPr = conteudoParagraph.rPrContent.replace(/<w:sz[^/]*\/>/g, '').replace(/<w:szCs[^/]*\/>/g, '');
+      const baseRPr = conteudoParagraph.rPrContent;
 
       const makeRuns = (segs: Array<{ text: string; bold: boolean }>): string => {
         let runs = '';
@@ -632,6 +657,8 @@ async function generateWordWithLetterhead(contentHtml: string, title: string, te
       }
 
       xmlContent = xmlContent.replace(conteudoParagraph.fullMatch, ooxmlParts.join(''));
+      xmlContent = xmlContent.replace(/<w:p\b[^>]*>[\s\S]*?<w:t[^>]*>\s*\{CONTEUDO\}\s*<\/w:t>[\s\S]*?<\/w:p>/g, '');
+      xmlContent = xmlContent.replace(/<w:p\b[^>]*>(?:(?!<w:t\b)[\s\S])*?<\/w:p>/g, '');
       zip.file("word/document.xml", xmlContent);
 
       const outputBuffer = zip.generate({ type: "nodebuffer", compression: "DEFLATE" });
