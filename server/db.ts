@@ -95,18 +95,43 @@ pool.query("SELECT current_database(), inet_server_port()").then(async res => {
         content      TEXT NOT NULL,
         source_url   TEXT,
         published_at TIMESTAMP,
+        hash         TEXT UNIQUE,
+        institution  TEXT,
+        tribunal     TEXT,
+        legal_area   TEXT,
+        quality_score INTEGER DEFAULT 5,
         created_at   TIMESTAMP DEFAULT NOW() NOT NULL
       )
     `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS legal_corpus_career_idx ON legal_corpus_documents (career)
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS legal_corpus_source_idx ON legal_corpus_documents (source)
-    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS legal_corpus_career_idx ON legal_corpus_documents (career)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS legal_corpus_doc_type_idx ON legal_corpus_documents (doc_type)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS legal_corpus_hash_idx ON legal_corpus_documents (hash)`);
     console.log("[DB Migration] legal_corpus_documents table ready.");
   } catch (migErr: any) {
     console.error("[DB Migration] legal_corpus_documents migration failed:", migErr.message);
+  }
+
+  // 3b. corpus_embeddings table (vector index for public corpus)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS corpus_embeddings (
+        id              SERIAL PRIMARY KEY,
+        corpus_doc_id   INTEGER NOT NULL REFERENCES legal_corpus_documents(id) ON DELETE CASCADE,
+        doc_type        TEXT NOT NULL,
+        content_preview TEXT,
+        embedding       vector(1536),
+        created_at      TIMESTAMP DEFAULT NOW() NOT NULL,
+        UNIQUE (corpus_doc_id)
+      )
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS corpus_embeddings_vector_idx
+      ON corpus_embeddings USING ivfflat (embedding vector_cosine_ops)
+      WITH (lists = 100)
+    `);
+    console.log("[DB Migration] corpus_embeddings table ready.");
+  } catch (migErr: any) {
+    console.warn("[DB Migration] corpus_embeddings migration skipped:", migErr.message);
   }
 
   // 4. Harvey columns on generated_pieces

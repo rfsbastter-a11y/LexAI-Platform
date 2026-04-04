@@ -9262,5 +9262,38 @@ Regras obrigatórias:
     }
   });
 
+  // ==================== CORPUS PÚBLICO JURÍDICO ====================
+
+  // Busca semântica no corpus público
+  app.post("/api/corpus/search", async (req, res) => {
+    try {
+      const { query, pieceType, topK = 5, minQuality = 5 } = req.body;
+      if (!query) return res.status(400).json({ error: "query é obrigatório" });
+      const { corpusRetrievalService } = await import("./services/corpusRetrieval");
+      const results = await corpusRetrievalService.retrieveSimilarDocuments({
+        queryText: query,
+        pieceType,
+        topK: Math.min(topK, 20),
+        minQuality,
+      });
+      res.json({ results, count: results.length });
+    } catch (error) {
+      console.error("Error in corpus search:", error);
+      res.status(500).json({ error: "Falha na busca do corpus" });
+    }
+  });
+
+  // Estatísticas do corpus público
+  app.get("/api/admin/corpus/stats", async (req, res) => {
+    try {
+      const { corpusRetrievalService } = await import("./services/corpusRetrieval");
+      const stats = await corpusRetrievalService.getStats();
+      res.json(stats);
+    } catch (error) {
+      console.error("Error fetching corpus stats:", error);
+      res.status(500).json({ error: "Falha ao buscar estatísticas do corpus" });
+    }
+  });
+
   return httpServer;
 }

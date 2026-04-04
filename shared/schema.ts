@@ -1163,6 +1163,8 @@ export const whatsappAuthState = pgTable("whatsapp_auth_state", {
 // Documentos públicos da AGU (4 carreiras) e outras fontes para RAG e fine-tuning
 export const legalCorpusDocuments = pgTable("legal_corpus_documents", {
   id: serial("id").primaryKey(),
+  // SHA-256 do texto extraído — deduplicação
+  hash: text("hash").unique(),
   // Carreira AGU: 'advogado_uniao' | 'procurador_federal' | 'pgfn' | 'pgbc'
   career: text("career").notNull(),
   // Entidade específica para Procurador Federal: 'CADE' | 'ANEEL' | 'ANP' | 'INSS' etc.
@@ -1176,6 +1178,11 @@ export const legalCorpusDocuments = pgTable("legal_corpus_documents", {
   content: text("content").notNull(),
   sourceUrl: text("source_url"),
   publishedAt: timestamp("published_at"),
+  // Campos adicionados pela ingestão via SerpAPI
+  institution: text("institution"),
+  tribunal: text("tribunal"),
+  legalArea: text("legal_area"),
+  qualityScore: integer("quality_score"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

@@ -65,18 +65,34 @@ interface StudioGenerateResult {
   let contextBuilder = `TIPO DE PEÇA: ${templateType}\nDATA DE HOJE (Brasília): ${brasiliaDate}\nLOCAL: Brasília/DF\n\nINSTRUÇÕES DO USUÁRIO:\n${prompt}\n\n`;
 
   // ================================================================
-  // HARVEY TECHNIQUE: Semantic RAG — inject similar approved pieces
+  // HARVEY TECHNIQUE: Dual Semantic RAG
+  // 1. Peças aprovadas do próprio escritório (piece_embeddings)
+  // 2. Corpus público externo (corpus_embeddings — AGU/PGFN/tribunais)
+  // Ambas rodam em paralelo para não adicionar latência
   // ================================================================
   if (ragEnabled && tenantId) {
     try {
-      const { embeddingService } = await import("./embeddingService");
-      const similarPieces = await embeddingService.retrieveSimilarPieces({
-        tenantId,
-        queryText: prompt,
-        pieceType: templateType,
-        topK: 3,
-      });
+      const [{ embeddingService }, { corpusRetrievalService }] = await Promise.all([
+        import("./embeddingService"),
+        import("./corpusRetrieval"),
+      ]);
 
+      const [similarPieces, corpusDocs] = await Promise.all([
+        embeddingService.retrieveSimilarPieces({
+          tenantId,
+          queryText: prompt,
+          pieceType: templateType,
+          topK: 3,
+        }).catch(() => []),
+        corpusRetrievalService.retrieveSimilarDocuments({
+          queryText: prompt,
+          pieceType: templateType,
+          topK: 2,
+          minQuality: 6,
+        }).catch(() => []),
+      ]);
+
+      // ── Peças do escritório ──
       if (similarPieces.length > 0) {
         ragContextUsed = similarPieces.map(p => ({
           pieceId: p.pieceId,
@@ -84,7 +100,6 @@ interface StudioGenerateResult {
           pieceType: p.pieceType,
         }));
 
-        // Cap total RAG context at 4500 chars to stay within token budget
         let ragCharsUsed = 0;
         const ragMaxChars = 4500;
         const ragExamples: string[] = [];
@@ -93,22 +108,45 @@ interface StudioGenerateResult {
           const preview = similarPieces[i].contentText.substring(0, 1500);
           if (ragCharsUsed + preview.length > ragMaxChars) break;
           ragExamples.push(
-            `[EXEMPLO APROVADO ${i + 1}] Similaridade: ${(similarPieces[i].similarity * 100).toFixed(0)}%\n${preview}`
+            `[EXEMPLO ${i + 1}] Similaridade: ${(similarPieces[i].similarity * 100).toFixed(0)}%\n${preview}`
           );
           ragCharsUsed += preview.length;
         }
 
         if (ragExamples.length > 0) {
-          contextBuilder += `\n=== PEÇAS APROVADAS SIMILARES — REFERÊNCIA INTERNA DO ESCRITÓRIO ===\n`;
-          contextBuilder += `Use como referência de qualidade, profundidade argumentativa e estilo. `;
-          contextBuilder += `NÃO copie fatos, nomes ou dados das partes — adapte apenas estrutura e lógica jurídica.\n\n`;
+          contextBuilder += `\n=== PEÇAS APROVADAS DO ESCRITÓRIO — REFERÊNCIA INTERNA ===\n`;
+          contextBuilder += `Use como modelo de qualidade e estilo. NÃO copie fatos ou dados das partes.\n\n`;
           contextBuilder += ragExamples.join("\n---\n");
           contextBuilder += `\n=== FIM DAS REFERÊNCIAS INTERNAS ===\n\n`;
-          console.log(`[Studio RAG] Injected ${ragExamples.length} similar pieces (${ragCharsUsed} chars) for tenant ${tenantId}`);
+          console.log(`[Studio RAG-interno] ${ragExamples.length} peças similares injetadas (${ragCharsUsed} chars)`);
+        }
+      }
+
+      // ── Corpus público (AGU/PGFN/tribunais) ──
+      if (corpusDocs.length > 0) {
+        const corpusExamples: string[] = [];
+        let corpusCharsUsed = 0;
+        const corpusMaxChars = 3000;
+
+        for (const doc of corpusDocs) {
+          const origin = [doc.institution, doc.tribunal].filter(Boolean).join(" / ") || doc.career;
+          const preview = doc.contentPreview.substring(0, 1200);
+          if (corpusCharsUsed + preview.length > corpusMaxChars) break;
+          corpusExamples.push(
+            `[REFERÊNCIA EXTERNA — ${origin.toUpperCase()}] Similaridade: ${(doc.similarity * 100).toFixed(0)}%\n${preview}`
+          );
+          corpusCharsUsed += preview.length;
+        }
+
+        if (corpusExamples.length > 0) {
+          contextBuilder += `\n=== REFERÊNCIAS DO CORPUS PÚBLICO (AGU/PGFN/TRIBUNAIS) ===\n`;
+          contextBuilder += `Peças de órgãos públicos como referência de linguagem e fundamentação jurídica.\n\n`;
+          contextBuilder += corpusExamples.join("\n---\n");
+          contextBuilder += `\n=== FIM DO CORPUS PÚBLICO ===\n\n`;
+          console.log(`[Studio RAG-corpus] ${corpusExamples.length} docs públicos injetados (${corpusCharsUsed} chars)`);
         }
       }
     } catch (ragErr: any) {
-      // RAG failure must never block generation
       console.warn("[Studio RAG] Retrieval failed (non-fatal):", ragErr.message);
     }
   }
