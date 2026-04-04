@@ -17,7 +17,8 @@ import {
   GraduationCap, Gavel, Check, Upload, Image, FolderOpen, Stamp, 
   ChevronDown, ChevronUp, File, AlertTriangle, Lightbulb, Eye, EyeOff, PanelLeftClose, PanelLeft,
   ExternalLink, Share2, Mic, MicOff, Briefcase, ClipboardList, Maximize2, Minimize2, Calculator,
-  Copy, ClipboardCheck, User, Users, Building2, MapPin, Wand2, Undo2, Shield, GripHorizontal
+  Copy, ClipboardCheck, User, Users, Building2, MapPin, Wand2, Undo2, Shield, GripHorizontal,
+  CheckCircle2, ThumbsUp
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -33,6 +34,8 @@ interface GeneratedPiece {
   pieceType: string;
   contentHtml: string;
   createdAt: string;
+  humanApproved?: boolean;
+  approvedAt?: string;
 }
 
 interface DocumentTemplate {
@@ -679,6 +682,25 @@ export default function StudioPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/studio/pieces"] });
       setSelectedPiece(null);
+    },
+  });
+
+  const approvePieceMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/studio/pieces/${id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      });
+      if (!res.ok) throw new Error("Falha ao aprovar peça");
+      return res.json();
+    },
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/studio/pieces"] });
+      setSelectedPiece((prev) => prev ? { ...prev, humanApproved: true } : prev);
+      toast({ title: "Peça aprovada para o RAG", description: "Esta peça será usada para treinar futuras gerações." });
+    },
+    onError: () => {
+      toast({ title: "Erro ao aprovar", description: "Tente novamente.", variant: "destructive" });
     },
   });
 
@@ -3694,8 +3716,8 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                         </p>
                       </div>
                       <div className="flex gap-2">
-                        <Button 
-                          variant="outline" 
+                        <Button
+                          variant="outline"
                           size="sm"
                           onClick={() => handleExportWord(selectedPiece.contentHtml, selectedPiece.title)}
                           data-testid="btn-export-word-history"
@@ -3703,8 +3725,8 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                           <FileDown className="w-4 h-4 mr-2" />
                           Word
                         </Button>
-                        <Button 
-                          variant="outline" 
+                        <Button
+                          variant="outline"
                           size="sm"
                           onClick={() => handleShareWhatsApp(selectedPiece.contentHtml, selectedPiece.title)}
                           data-testid="btn-share-whatsapp"
@@ -3712,8 +3734,34 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                           <MessageSquare className="w-4 h-4 mr-2" />
                           WhatsApp
                         </Button>
-                        <Button 
-                          variant="destructive" 
+                        {selectedPiece.humanApproved ? (
+                          <Button variant="outline" size="sm" disabled className="text-green-600 border-green-300">
+                            <CheckCircle2 className="w-4 h-4 mr-2 text-green-600" />
+                            Aprovada para IA
+                          </Button>
+                        ) : (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => approvePieceMutation.mutate(selectedPiece.id)}
+                                  disabled={approvePieceMutation.isPending}
+                                  data-testid="btn-approve-piece"
+                                >
+                                  <ThumbsUp className="w-4 h-4 mr-2" />
+                                  {approvePieceMutation.isPending ? "Aprovando..." : "Aprovar para IA"}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>Marca esta peça como boa e a usa para melhorar gerações futuras</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                        <Button
+                          variant="destructive"
                           size="sm"
                           onClick={() => deletePieceMutation.mutate(selectedPiece.id)}
                           disabled={deletePieceMutation.isPending}
