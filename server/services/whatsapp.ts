@@ -753,6 +753,13 @@ export const whatsappService = {
           const msgId = msg.key.id;
           if (msgId && processedMessageIds.has(msgId)) continue;
           if (msgId) {
+            const existingMessage = await storage.getWhatsappMessageByMessageId(activeTenantId, msgId);
+            if (existingMessage) {
+              console.log(`[WhatsApp] Skipping duplicate upsert for messageId=${msgId}, type=${m.type}`);
+              continue;
+            }
+          }
+          if (msgId) {
             processedMessageIds.add(msgId);
             if (processedMessageIds.size > 500) {
               const arr = Array.from(processedMessageIds);

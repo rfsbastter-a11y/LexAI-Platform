@@ -96,14 +96,13 @@ async function findBestEntityNameInText(
 async function inferDeterministicSocioAction(
   tenantId: number,
   message: string,
-  recentHistory: string,
+  _recentHistory: string,
 ): Promise<{ acao: string; args: any; reason: string } | null> {
   const raw = (message || "").trim();
   if (!raw) return null;
 
-  const combined = `${raw}\n${recentHistory || ""}`;
   const m = normalizeForMatch(raw);
-  const full = normalizeForMatch(combined);
+  const full = normalizeForMatch(raw);
 
   if (/^\/peca\b/.test(m)) {
     const payload = raw.replace(/^\/pe[cç]a\b\s*/i, "").trim();
@@ -156,7 +155,7 @@ async function inferDeterministicSocioAction(
   const reportRequest = !isRejectionMessage(raw) && /(relatorio|relatório|resumo executivo|status|panorama)/.test(full);
   if (reportRequest) {
     if (/devedor|executado|reu|réu/.test(full) && /documento/.test(full)) {
-      const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
+      const debtorName = await findBestEntityNameInText(tenantId, raw, "debtor");
       if (debtorName) {
         return {
           acao: "listar_documentos_devedor",
@@ -166,7 +165,7 @@ async function inferDeterministicSocioAction(
       }
     }
     if (/devedor|executado|reu|réu/.test(full)) {
-      const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
+      const debtorName = await findBestEntityNameInText(tenantId, raw, "debtor");
       if (debtorName) {
         return {
           acao: "relatorio_devedor",
@@ -176,7 +175,7 @@ async function inferDeterministicSocioAction(
       }
     }
     if (/cliente/.test(full)) {
-      const clientName = await findBestEntityNameInText(tenantId, combined, "client");
+      const clientName = await findBestEntityNameInText(tenantId, raw, "client");
       if (clientName) {
         return {
           acao: "gerar_relatorio_cliente",
@@ -221,8 +220,8 @@ async function inferDeterministicSocioAction(
   const processCreateRequest = /(cadastre|cadastrar|crie|criar|registre|registrar|abra|abrir|novo).*(processo)/.test(full);
   if (processCreateRequest) {
     const caseNumberMatch = raw.match(/\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/);
-    const clientName = await findBestEntityNameInText(tenantId, combined, "client");
-    const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
+    const clientName = await findBestEntityNameInText(tenantId, raw, "client");
+    const debtorName = await findBestEntityNameInText(tenantId, raw, "debtor");
     return {
       acao: "cadastrar_processo",
       args: {
@@ -254,7 +253,7 @@ async function inferDeterministicSocioAction(
 
   const contractCreateRequest = /(cadastre|cadastrar|crie|criar|registre|registrar).*(contrato)/.test(full);
   if (contractCreateRequest) {
-    const clientName = await findBestEntityNameInText(tenantId, combined, "client");
+    const clientName = await findBestEntityNameInText(tenantId, raw, "client");
     return {
       acao: "cadastrar_contrato",
       args: {
@@ -803,6 +802,9 @@ function summarizeAgentExecutionResult(action: string, rawResult: string): strin
   if (action === "gerar_peca_estudio") {
     const labelMatch = text.match(/📋\s*([^\n]+)/);
     const label = labelMatch?.[1]?.trim() || "Peça Jurídica";
+    if (/não consegui gerar|não foi possível gerar|erro interno ao gerar a peça|erro na conexão com o studio/i.test(text)) {
+      return `⚠️ Não consegui gerar a ${label}. Tente novamente em instantes.`;
+    }
     if (/ENVIADA COM SUCESSO|enviado diretamente/i.test(text)) {
       return `✅ ${label} gerada e enviada em Word via WhatsApp.`;
     }
@@ -847,6 +849,41 @@ function extractPendingSecretaryRequest(pendingAction: unknown): {
       ? audit.actorType
       : undefined,
   };
+}
+
+function isDocumentResendRequest(message: string): boolean {
+  const normalized = normalizeForMatch(message);
+  if (!normalized) return false;
+
+  return [
+    /mande em word/,
+    /me mande em word/,
+    /traga aqui/,
+    /me mande aqui/,
+    /manda o arquivo/,
+    /envie o arquivo/,
+    /quero em word/,
+    /me envia em word/,
+    /reenvie/,
+    /reenvie/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+async function findRecentGeneratedDocumentAction(tenantId: number, jid: string): Promise<{
+  requestedAction: string;
+  requestedArgs: Record<string, any>;
+} | null> {
+  const recentActions = await storage.getSecretaryActionsByJid(tenantId, jid);
+  for (const action of recentActions) {
+    const pendingRequest = extractPendingSecretaryRequest(action.pendingAction);
+    if (!pendingRequest.requestedAction || !pendingRequest.requestedArgs) continue;
+    if (pendingRequest.requestedAction !== "gerar_peca_estudio" && pendingRequest.requestedAction !== "gerar_contrato") continue;
+    return {
+      requestedAction: pendingRequest.requestedAction,
+      requestedArgs: pendingRequest.requestedArgs,
+    };
+  }
+  return null;
 }
 
 
@@ -3384,6 +3421,7 @@ async function executeSecretaryAction(
           await new Promise(r => setTimeout(r, 2000 * pieceAttempt));
         }
         try {
+          console.log(`[Secretary] gerar_peca_estudio: attempt ${pieceAttempt + 1}/${MAX_PECA_RETRIES + 1}, pieceType=${pieceType}, promptLength=${prompt.length}, openaiKeyConfigured=${Boolean(process.env.AI_INTEGRATIONS_OPENAI_API_KEY)}`);
           let documentContext = "";
           if (conversationMessages && conversationMessages.length > 0) {
             const docMessages = conversationMessages.filter(m =>
@@ -3523,6 +3561,7 @@ async function executeSecretaryAction(
             return validationError;
           }
           const fullPrompt = pieceBrief.fullPrompt;
+          console.log(`[Secretary] gerar_peca_estudio: prepared prompt for ${pieceLabel} with fullPromptLength=${fullPrompt.length}, sourceDocumentCount=${pieceBrief.documentCount}`);
           console.log(`[Secretary] Piece briefing prepared with ${pieceBrief.documentCount} extracted document(s) for ${pieceLabel}.`);
 
           const combinedText = (prompt + " " + (args.description || "")).toLowerCase();
@@ -3541,6 +3580,7 @@ async function executeSecretaryAction(
             systemContext: systemCtx || undefined,
             tenantId,
           });
+          console.log(`[Secretary] gerar_peca_estudio: generateStudioPiece completed for ${pieceType}, hasContent=${Boolean(studioResult.contentHtml)}, contentLength=${studioResult.contentHtml?.length || 0}`);
 
           let pieceContent = studioResult.contentHtml || "";
           if (!pieceContent) throw new Error("Studio retornou conteúdo vazio para a peça — retentando...");
@@ -3686,6 +3726,7 @@ async function executeSecretaryAction(
                 caption,
                 tenantId
               );
+              console.log(`[Secretary] gerar_peca_estudio: sendDocumentToJid result for piece ${savedPiece.id}: docSent=${docSent}, usedFallbackWord=${usedFallbackWord}, fileName=${pieceFileName}`);
             } catch (docErr) {
               console.error("[Secretary] Error generating/sending piece Word doc:", docErr);
             }
@@ -3700,7 +3741,7 @@ async function executeSecretaryAction(
           return `✅ PEÇA GERADA! Salva no Studio (ID: ${savedPiece.id}).\n⚠️ FALHA AO ENVIAR O ARQUIVO WORD. Para reenviar, chame gerar_peca_estudio novamente com os mesmos parâmetros.\nINSTRUÇÃO CRÍTICA PARA RESPOSTA AO SÓCIO: NÃO reproduza o texto da peça no chat. Informe apenas que houve falha no envio do Word e que pode solicitar novamente para reenviar.`;
         } catch (pieceErr: any) {
           lastPieceErr = pieceErr;
-          console.error(`[Secretary] gerar_peca_estudio attempt ${pieceAttempt + 1} failed:`, pieceErr?.message || pieceErr);
+          console.error(`[Secretary] gerar_peca_estudio attempt ${pieceAttempt + 1} failed for pieceType=${pieceType}, promptLength=${prompt.length}:`, pieceErr?.message || pieceErr);
           if (pieceAttempt < MAX_PECA_RETRIES) {
             continue;
           }
@@ -3844,8 +3885,6 @@ INSTRUÇÕES:
             prompt: `Contrato para ${partyName}. ${desc}`,
           });
 
-          const plainText = contractHtml.replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
-
           let docSent = false;
           if (jid) {
             try {
@@ -3870,9 +3909,11 @@ INSTRUÇÕES:
             }
           }
 
-          const preview = plainText.substring(0, 1500);
-          const sendStatus = docSent ? "O documento Word com papel timbrado foi enviado diretamente nesta conversa." : "O documento está disponível no LexAI Studio para download.";
-          return `✅ CONTRATO GERADO COM SUCESSO!\n\n📄 ${contractTitle}\nID: ${savedContract.id}\nSalvo no LexAI Studio para edição e download.\n${sendStatus}\n\n--- PRÉVIA ---\n${preview}${plainText.length > 1500 ? "\n\n[...documento completo disponível no Studio]" : ""}\n\nNÃO inclua links na resposta. ${docSent ? "O documento Word JÁ FOI ENVIADO automaticamente." : "Informe que está disponível no Studio."}`;
+          if (docSent) {
+            return `✅ CONTRATO GERADO COM SUCESSO!\n\n📄 ${contractTitle}\nID: ${savedContract.id}\nSalvo no LexAI Studio para edição.\nO documento Word com papel timbrado foi enviado diretamente nesta conversa.\n\nINSTRUÇÃO CRÍTICA PARA RESPOSTA AO SÓCIO: Informe APENAS que o contrato foi gerado e enviado em Word. NÃO reproduza cláusulas, prévia, texto contratual ou trechos do documento no chat.`;
+          }
+
+          return `✅ CONTRATO GERADO COM SUCESSO!\n\n📄 ${contractTitle}\nID: ${savedContract.id}\nSalvo no LexAI Studio para edição e download.\n⚠️ Houve falha no envio automático do Word via WhatsApp.\n\nINSTRUÇÃO CRÍTICA PARA RESPOSTA AO SÓCIO: Informe APENAS que o contrato foi gerado no Studio e que houve falha no envio do Word. NÃO reproduza cláusulas, prévia, texto contratual ou trechos do documento no chat.`;
         } catch (contractErr) {
           console.error("[Secretary] Error generating contract:", contractErr);
           return "Erro ao gerar o contrato. Tente novamente em alguns instantes.";
@@ -4266,6 +4307,72 @@ O contato se identificou como: ${contactName}
       const { isSocio, socioName } = actorContext;
       if (isSocio) console.log(`[Secretary] ✅ SÓCIO IDENTIFICADO: ${senderUser?.name} (role: ${senderUser?.role}) via JID: ${jid}`);
 
+      if (isSocio && isDocumentResendRequest(message)) {
+        const recentDocumentAction = await findRecentGeneratedDocumentAction(tenantId, jid);
+        if (recentDocumentAction) {
+          const resendResult = await executeSecretaryAction(
+            recentDocumentAction.requestedAction,
+            {
+              ...recentDocumentAction.requestedArgs,
+              confirmed: true,
+            },
+            tenantId,
+            true,
+            clientId || undefined,
+            jid,
+            ctx.messages,
+          );
+
+          const resendReply = formatDeterministicSocioReply(
+            summarizeAgentExecutionResult(recentDocumentAction.requestedAction, resendResult),
+            recentDocumentAction.requestedAction,
+            isFirstMessage,
+            message,
+            socioName,
+          );
+
+          appendMessageToConversationContext(ctx, { role: "assistant", content: resendReply });
+          await saveMessageToDB(jid, tenantId, "assistant", resendReply);
+
+          if (config.mode === "auto") {
+            await sendMessageInChunks(jid, resendReply, tenantId);
+            await createSecretaryAuditLog({
+              tenantId,
+              jid,
+              contactName,
+              actionType: `deterministic_${recentDocumentAction.requestedAction}`,
+              description: `Reenvio imediato do último documento gerado: ${recentDocumentAction.requestedAction}`,
+              status: "completed",
+              actorType: "socio",
+              executionMode: config.mode,
+              pendingAction: {
+                requestedAction: recentDocumentAction.requestedAction,
+                requestedArgs: recentDocumentAction.requestedArgs,
+                fallbackReason: "reenvio_documento_imediato",
+              },
+            });
+          } else {
+            await createSecretaryAuditLog({
+              tenantId,
+              jid,
+              contactName,
+              actionType: `deterministic_${recentDocumentAction.requestedAction}`,
+              description: `Rascunho de reenvio imediato: ${recentDocumentAction.requestedAction}`,
+              status: "pending_approval",
+              draftMessage: resendReply,
+              actorType: "socio",
+              executionMode: config.mode,
+              pendingAction: {
+                requestedAction: recentDocumentAction.requestedAction,
+                requestedArgs: recentDocumentAction.requestedArgs,
+                fallbackReason: "reenvio_documento_imediato",
+              },
+            });
+          }
+          return;
+        }
+      }
+
       if (isSocio && isRejectionMessage(message) && isRecentExecutiveReportContext(ctx.messages)) {
         const rejectionReply = formatDeterministicSocioReply(
           "Entendido. Não vou repetir o relatório. O que o senhor precisa agora?",
@@ -4476,7 +4583,11 @@ O contato se identificou como: ${contactName}
                 status: "completed",
                 actorType: "socio",
                 executionMode: config.mode,
-                pendingAction: { fallbackReason: deterministicAction.reason },
+                pendingAction: {
+                  fallbackReason: deterministicAction.reason,
+                  requestedAction: deterministicAction.acao,
+                  requestedArgs: deterministicAction.args,
+                },
               });
             } else {
               await createSecretaryAuditLog({
@@ -4489,7 +4600,11 @@ O contato se identificou como: ${contactName}
                 draftMessage: conciseResponse,
                 actorType: "socio",
                 executionMode: config.mode,
-                pendingAction: { fallbackReason: deterministicAction.reason },
+                pendingAction: {
+                  fallbackReason: deterministicAction.reason,
+                  requestedAction: deterministicAction.acao,
+                  requestedArgs: deterministicAction.args,
+                },
               });
             }
             return;
@@ -4582,7 +4697,10 @@ O contato se identificou como: ${contactName}
                 draftMessage: requiresExplicitApprovalForAction(acao) && args.confirmed !== true ? actionResult : undefined,
                 actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
                 executionMode: config.mode,
-                pendingAction: requiresExplicitApprovalForAction(acao) && args.confirmed !== true ? { requestedAction: acao, requestedArgs: args } : undefined,
+                pendingAction: {
+                  requestedAction: acao,
+                  requestedArgs: args,
+                },
               });
             } catch (actionErr) {
               console.error("[Secretary] Action tool error:", actionErr);
