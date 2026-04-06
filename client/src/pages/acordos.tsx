@@ -402,7 +402,7 @@ export default function AcordosPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `honorarios_${String(reportMonth).padStart(2, "0")}_${reportYear}.xlsx`;
+    a.download = `honorarios_${String(reportMonth).padStart(2, "0")}_${reportYear}.pdf`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -935,7 +935,7 @@ export default function AcordosPage() {
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={handleDownloadReport} data-testid="button-download-report">
-              <Download className="w-4 h-4 mr-2" /> Baixar Excel
+              <Download className="w-4 h-4 mr-2" /> Baixar PDF
             </Button>
             <Button onClick={handleSendReport} disabled={isSending || !reportClientId} data-testid="button-send-report">
               {isSending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
