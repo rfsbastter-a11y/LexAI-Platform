@@ -122,16 +122,17 @@ function buildAgreementReportRow(a: any, debtor: any, monthlyFee: number) {
 
 function isActiveInMonth(a: any, month: number, year: number): boolean {
   if (!a.agreementDate) return false;
-  const agreementDate = new Date(a.agreementDate);
-  if (agreementDate > new Date(year, month - 1, 31)) return false;
-  if (a.isSinglePayment) return agreementDate.getMonth() + 1 === month && agreementDate.getFullYear() === year;
-  if (a.installmentsCount && a.downPaymentDate) {
-    const firstPayment = new Date(a.downPaymentDate);
-    const lastPayment = new Date(firstPayment);
-    lastPayment.setMonth(lastPayment.getMonth() + (a.installmentsCount - 1));
-    const refEnd = new Date(year, month - 1, 31);
-    if (lastPayment < new Date(year, month - 1, 1)) return false;
-    if (firstPayment > refEnd) return false;
+  const agreementDate = new Date(a.agreementDate + "T00:00:00");
+  const targetStart = new Date(year, month - 1, 1);
+  const targetEnd = new Date(year, month, 0);
+  if (agreementDate > targetEnd) return false;
+  if (a.isSinglePayment) {
+    return agreementDate.getMonth() + 1 === month && agreementDate.getFullYear() === year;
+  }
+  if (a.installmentsCount && a.installmentsCount > 0) {
+    const lastPayment = new Date(agreementDate);
+    lastPayment.setMonth(lastPayment.getMonth() + a.installmentsCount - 1);
+    if (lastPayment < targetStart) return false;
   }
   return true;
 }
