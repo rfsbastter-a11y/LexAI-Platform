@@ -8,6 +8,7 @@ import {
   documentTemplates, generatedPieces, letterheadConfigs,
   agendaEvents, whatsappConfig, whatsappSchedule, whatsappMessages,
   secretaryConfig, secretaryActions,
+  agentRuns, agentSteps,
   type InsertTenant, type Tenant,
   type InsertUser, type User,
   type InsertClient, type Client,
@@ -36,6 +37,8 @@ import {
   type InsertWhatsappMessage, type WhatsappMessage,
   type InsertSecretaryConfig, type SecretaryConfig,
   type InsertSecretaryAction, type SecretaryAction,
+  type InsertAgentRun, type AgentRun,
+  type InsertAgentStep, type AgentStep,
   debtors,
   type InsertDebtor, type Debtor,
   negotiations, negotiationContacts, negotiationRounds,
@@ -70,6 +73,7 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getUsersByTenant(tenantId: number): Promise<User[]>;
+  getFirstUserForTenant(tenantId: number): Promise<number>;
   createUser(data: InsertUser): Promise<User>;
   updateUserPhone(id: number, tenantId: number, phone: string | null): Promise<User | undefined>;
 
@@ -232,6 +236,11 @@ export interface IStorage {
   getPendingSecretaryActions(tenantId: number): Promise<SecretaryAction[]>;
   createSecretaryAction(data: InsertSecretaryAction): Promise<SecretaryAction>;
   updateSecretaryAction(id: number, data: Partial<InsertSecretaryAction>): Promise<SecretaryAction>;
+  createAgentRun(data: InsertAgentRun): Promise<AgentRun>;
+  updateAgentRun(id: number, data: Partial<InsertAgentRun>): Promise<AgentRun>;
+  getAgentRun(id: number): Promise<AgentRun | undefined>;
+  createAgentStep(data: InsertAgentStep): Promise<AgentStep>;
+  getAgentSteps(runId: number): Promise<AgentStep[]>;
 
   // Debtors
   getDebtor(id: number): Promise<Debtor | undefined>;
@@ -352,6 +361,19 @@ class DatabaseStorage implements IStorage {
 
   async getUsersByTenant(tenantId: number): Promise<User[]> {
     return db.select().from(users).where(eq(users.tenantId, tenantId));
+  }
+
+  async getFirstUserForTenant(tenantId: number): Promise<number> {
+    const [row] = await db
+      .select({ firstUserId: sql<number>`min(${users.id})` })
+      .from(users)
+      .where(eq(users.tenantId, tenantId));
+
+    if (!row?.firstUserId) {
+      throw new Error(`No valid user found for tenant ${tenantId}`);
+    }
+
+    return Number(row.firstUserId);
   }
 
   async createUser(data: InsertUser): Promise<User> {
@@ -1390,6 +1412,35 @@ class DatabaseStorage implements IStorage {
   async updateSecretaryAction(id: number, data: Partial<InsertSecretaryAction>): Promise<SecretaryAction> {
     const [updated] = await db.update(secretaryActions).set(data).where(eq(secretaryActions.id, id)).returning();
     return updated;
+  }
+
+  async createAgentRun(data: InsertAgentRun): Promise<AgentRun> {
+    const [run] = await db.insert(agentRuns).values(data).returning();
+    return run;
+  }
+
+  async updateAgentRun(id: number, data: Partial<InsertAgentRun>): Promise<AgentRun> {
+    const [updated] = await db.update(agentRuns)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(agentRuns.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getAgentRun(id: number): Promise<AgentRun | undefined> {
+    const [run] = await db.select().from(agentRuns).where(eq(agentRuns.id, id));
+    return run;
+  }
+
+  async createAgentStep(data: InsertAgentStep): Promise<AgentStep> {
+    const [step] = await db.insert(agentSteps).values(data).returning();
+    return step;
+  }
+
+  async getAgentSteps(runId: number): Promise<AgentStep[]> {
+    return db.select().from(agentSteps)
+      .where(eq(agentSteps.runId, runId))
+      .orderBy(desc(agentSteps.startedAt));
   }
 
   // Debtors

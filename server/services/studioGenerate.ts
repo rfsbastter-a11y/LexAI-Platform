@@ -7,6 +7,7 @@ interface StudioGenerateParams {
   templateType: string;
   attorney?: string;
   attorneys?: string[];
+  userId?: number;
   systemContext?: string;
   files?: Array<{
     name: string;
@@ -37,6 +38,174 @@ interface StudioGenerateResult {
   content: string;
   citations: any[];
   tokensUsed: number;
+}
+
+type ChunkedSectionPlanItem = {
+  title: string;
+  objective: string;
+};
+
+function extractJsonBlock(raw: string): string {
+  const fenced = raw.match(/```json\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+  return raw.trim();
+}
+
+function parseChunkedSectionPlan(raw: string): ChunkedSectionPlanItem[] {
+  try {
+    const parsed = JSON.parse(extractJsonBlock(raw));
+    const sections = Array.isArray(parsed?.sections) ? parsed.sections : Array.isArray(parsed) ? parsed : [];
+    return sections
+      .map((section: any) => ({
+        title: String(section?.title || "").trim(),
+        objective: String(section?.objective || "").trim(),
+      }))
+      .filter((section: ChunkedSectionPlanItem) => section.title && section.objective);
+  } catch {
+    return [];
+  }
+}
+
+function getDefaultChunkedSectionPlan(templateType: string): ChunkedSectionPlanItem[] {
+  const appellatePlan: ChunkedSectionPlanItem[] = [
+    { title: "Tempestividade e cabimento", objective: "Demonstrar cabimento, legitimidade recursal e tempestividade com linguagem processual precisa." },
+    { title: "Sintese fatico-processual", objective: "Apresentar cronologia objetiva dos fatos e do andamento processual relevantes ao recurso." },
+    { title: "Razoes para reforma da decisao", objective: "Desenvolver os fundamentos juridicos centrais e atacar os erros da decisao recorrida com profundidade." },
+    { title: "Pedidos recursais", objective: "Fechar com pedido principal, pedidos subsidiarios e requerimentos finais adequados ao recurso." },
+  ];
+
+  const executionPlan: ChunkedSectionPlanItem[] = [
+    { title: "Titulo executivo e cabimento", objective: "Demonstrar liquidez, certeza, exigibilidade e cabimento da via executiva." },
+    { title: "Fatos e inadimplemento", objective: "Narrar o historico obrigacional, inadimplemento e valores relevantes." },
+    { title: "Fundamentos juridicos", objective: "Desenvolver os fundamentos legais do pedido executivo e medidas coercitivas cabiveis." },
+    { title: "Pedidos executivos", objective: "Fechar com citaçao, penhora, SISBAJUD e demais requerimentos pertinentes." },
+  ];
+
+  if (["recurso_apelacao", "recurso_especial", "recurso_extraordinario", "agravo_instrumento", "contrarrazoes"].includes(templateType)) {
+    return appellatePlan;
+  }
+
+  if (["execucao", "cumprimento_sentenca", "acao_monitoria"].includes(templateType)) {
+    return executionPlan;
+  }
+
+  return [
+    { title: "Contexto e admissibilidade", objective: "Introduzir o contexto do caso e os pressupostos processuais relevantes." },
+    { title: "Fundamentacao juridica", objective: "Desenvolver os fundamentos juridicos com profundidade e aderencia ao caso concreto." },
+    { title: "Pedidos finais", objective: "Encerrar com pedidos coerentes, completos e tecnicamente adequados." },
+  ];
+}
+
+async function generateChunkedStudioPiece(params: {
+  templateType: string;
+  strictInstructions: string;
+  userContent: string;
+  outputMaxTokens: number;
+}): Promise<{ content: string; citations: any[]; tokensUsed: number }> {
+  const { templateType, strictInstructions, userContent, outputMaxTokens } = params;
+
+  const outlineResponse = await aiService.chat(
+    [{
+      role: "user",
+      content: `Planeje a peça em seco antes de redigir.
+
+Retorne APENAS JSON válido no formato:
+{
+  "sections": [
+    { "title": "string", "objective": "string" }
+  ]
+}
+
+Regras:
+- Crie entre 3 e 5 seções.
+- Não redija a peça inteira.
+- Para recursos longos, separe admissibilidade, síntese, mérito e pedidos.
+- Para execuções, separe cabimento, fatos, fundamentos e pedidos.
+
+Contexto integral da peça:
+${userContent}`,
+    }],
+    [],
+    {
+      systemPromptOverride: `${strictInstructions}\n\nVocê está na etapa de PLANEJAMENTO. Não escreva a peça. Apenas defina as seções da redação final em JSON.`,
+      maxTokens: 1800,
+      temperature: 0.1,
+    }
+  );
+
+  const sectionPlan = parseChunkedSectionPlan(outlineResponse.content);
+  const effectivePlan = sectionPlan.length > 0 ? sectionPlan : getDefaultChunkedSectionPlan(templateType);
+  const sectionFragments: string[] = [];
+  let totalTokensUsed = outlineResponse.tokensUsed || 0;
+  const allCitations = [...(outlineResponse.citations || [])];
+
+  for (const [index, section] of effectivePlan.entries()) {
+    const sectionResponse = await aiService.chat(
+      [{
+        role: "user",
+        content: `Redija APENAS a seção ${index + 1} da peça final.
+
+SEÇÃO: ${section.title}
+OBJETIVO: ${section.objective}
+
+REGRAS DE REDAÇÃO:
+- Entregue somente o HTML do corpo dessa seção.
+- Não inclua assinatura final.
+- Não repita a peça inteira.
+- Use subtítulo próprio da seção.
+- Seja denso, específico e tecnicamente jurídico.
+
+CONTEXTO INTEGRAL DA PEÇA:
+${userContent}`,
+      }],
+      [],
+      {
+        systemPromptOverride: `${strictInstructions}\n\nVocê está na etapa de REDAÇÃO FRACIONADA. Entregue somente a seção solicitada, em HTML, sem reiniciar a peça inteira.`,
+        maxTokens: Math.min(4500, outputMaxTokens),
+        temperature: 0.1,
+      }
+    );
+
+    sectionFragments.push(sectionResponse.content.trim());
+    totalTokensUsed += sectionResponse.tokensUsed || 0;
+    allCitations.push(...(sectionResponse.citations || []));
+  }
+
+  const sectionBundle = sectionFragments
+    .map((fragment, index) => `<!-- SECTION ${index + 1}: ${effectivePlan[index]?.title || "Sem título"} -->\n${fragment}`)
+    .join("\n\n");
+
+  const finalResponse = await aiService.chat(
+    [{
+      role: "user",
+      content: `Consolide as seções abaixo em uma ÚNICA peça final completa, coesa e contínua.
+
+REGRAS:
+- Preserve o conteúdo jurídico já redigido.
+- Elimine repetições entre seções.
+- Garanta transições suaves.
+- Mantenha assinatura ao final com os placeholders de advogado.
+- Entregue HTML final completo da peça.
+
+SEÇÕES REDIGIDAS:
+${sectionBundle}`,
+    }],
+    [],
+    {
+      systemPromptOverride: `${strictInstructions}\n\nVocê está na etapa de CONSOLIDAÇÃO FINAL. Una as seções em uma peça única, coerente e final.`,
+      maxTokens: Math.min(8000, outputMaxTokens),
+      temperature: 0.1,
+    }
+  );
+
+  totalTokensUsed += finalResponse.tokensUsed || 0;
+  allCitations.push(...(finalResponse.citations || []));
+
+  return {
+    content: finalResponse.content,
+    citations: allCitations,
+    tokensUsed: totalTokensUsed,
+  };
 }
 
   export async function generateStudioPiece(params: StudioGenerateParams): Promise<StudioGenerateResult> {
@@ -2399,15 +2568,22 @@ NUNCA inverta a lógica do caso. NUNCA escreva o recorrente errado. O diagnósti
   }
 
   const isLongFormPiece = ["contrarrazoes", "recurso_apelacao", "recurso_especial", "recurso_extraordinario", "agravo_instrumento"].includes(templateType);
-  const outputMaxTokens = isLongFormPiece ? 32000 : 16000;
+  const outputMaxTokens = isLongFormPiece ? 16000 : 12000;
 
   const response = useGemini
     ? await aiService.chatWithGemini(userContent, strictInstructions)
-    : await aiService.chat(
-        [{ role: "user", content: userContent }],
-        [],
-        { systemPromptOverride: strictInstructions, maxTokens: outputMaxTokens, temperature: 0.1 }
-      );
+    : isLongFormPiece
+      ? await generateChunkedStudioPiece({
+          templateType,
+          strictInstructions,
+          userContent,
+          outputMaxTokens,
+        })
+      : await aiService.chat(
+          [{ role: "user", content: userContent }],
+          [],
+          { systemPromptOverride: strictInstructions, maxTokens: outputMaxTokens, temperature: 0.1 }
+        );
 
   let contentHtml = response.content;
 
@@ -2440,9 +2616,11 @@ NUNCA inverta a lógica do caso. NUNCA escreva o recorrente errado. O diagnósti
     .replace(/Brasília,?\s*nesta data\.?/gi, `Brasília, ${brasiliaDate}.`)
     .replace(/<blockquote(?!\s+style)>/gi, '<blockquote style="margin-left: 4cm;">');
 
+  const actorUserId = params.userId ?? await storage.getFirstUserForTenant(params.tenantId || 1);
+
   await storage.createAiGenerationLog({
     tenantId: params.tenantId || 1,
-    userId: 1,
+    userId: actorUserId,
     generationType: "studio_piece",
     prompt: prompt.substring(0, 500),
     citations: response.citations as any,
@@ -2458,4 +2636,3 @@ NUNCA inverta a lógica do caso. NUNCA escreva o recorrente errado. O diagnósti
       tokensUsed: response.tokensUsed,
     };
   }
-  

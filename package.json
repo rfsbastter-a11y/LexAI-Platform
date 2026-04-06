@@ -9,6 +9,10 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "test:secretary": "tsx script/test-secretary.ts",
+    "eval:secretary": "tsx script/eval-secretary.ts",
+    "db:push:secretary-agent": "tsx script/db-push-secretary-agent.ts",
+    "sync:letterhead": "tsx script/sync-letterhead-from-file.ts",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {

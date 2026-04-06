@@ -25,14 +25,99 @@ import { generateMeetingInsights, generateExecutiveSummary, meetingChat } from "
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+function getMemoryUploadLimitBytes() {
+  const parsedMb = Number(process.env.MAX_MEMORY_UPLOAD_MB || "20");
+  const safeMb = Number.isFinite(parsedMb) && parsedMb > 0 ? parsedMb : 20;
+  return safeMb * 1024 * 1024;
+}
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: getMemoryUploadLimitBytes() } });
+
+function isDevAutoAuthEnabled() {
+  return process.env.NODE_ENV === "development" && process.env.DEV_AUTO_LOGIN === "true";
+}
 
 function getTenantId(req: Request): number {
-  return req.tokenUser?.tenantId || req.session?.user?.tenantId || 1;
+  const tenantId = req.tokenUser?.tenantId || req.session?.user?.tenantId;
+  if (tenantId) return tenantId;
+  if (isDevAutoAuthEnabled()) return 1;
+  throw new Error("Tenant context is required");
 }
 
 function getUserId(req: Request): number {
-  return req.tokenUser?.id || req.session?.user?.id || 0;
+  const userId = req.tokenUser?.id || req.session?.user?.id;
+  if (userId) return userId;
+  if (isDevAutoAuthEnabled()) return 5;
+  throw new Error("User context is required");
+}
+
+function getUserRole(req: Request): string | undefined {
+  return req.tokenUser?.role || req.session?.user?.role;
+}
+
+function requireRoles(...allowedRoles: string[]) {
+  return (req: Request, res: Response, next: any) => {
+    const role = getUserRole(req);
+    if (role && allowedRoles.includes(role)) return next();
+    return res.status(403).json({ error: "Forbidden" });
+  };
+}
+
+function getTenantUploadRoot(tenantId: number): string {
+  return path.resolve(".", "uploads", `tenant_${tenantId}`);
+}
+
+function ensureTenantFileAccess(filePath: string, tenantId: number): string | null {
+  const resolvedPath = path.resolve(filePath);
+  return resolvedPath.startsWith(getTenantUploadRoot(tenantId)) ? resolvedPath : null;
+}
+
+const agreementReportHeaders = [
+  "NOME",
+  "DATA ACORDO",
+  "DÍVIDA ORIGINAL",
+  "PARCELAS",
+  "VALOR ENTRADA",
+  "DATA ENTRADA",
+  "VALOR PRESTAÇÕES",
+  "VENCIMENTO",
+  "% HONORÁRIOS",
+  "HONORÁRIOS",
+  "STATUS HON.",
+  "HONORÁRIOS MÊS",
+  "STATUS",
+  "OBSERVAÇÕES",
+];
+
+const agreementReportColumnWidths = [
+  { wch: 42 }, { wch: 14 }, { wch: 17 }, { wch: 11 },
+  { wch: 15 }, { wch: 14 }, { wch: 16 }, { wch: 12 },
+  { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 16 },
+  { wch: 12 }, { wch: 37 },
+];
+
+function buildAgreementReportRow(a: any, debtor: any, monthlyFee: number) {
+  const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "");
+  const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
+  const feePercent = parseFloat(a.feePercent || "10");
+  const installmentValue = parseFloat(a.installmentValue || "0");
+
+  return [
+    debtor?.name || "",
+    a.agreementDate || "",
+    parseFloat(a.originalDebtValue || "0") || "",
+    installmentsDisplay,
+    parseFloat(a.downPaymentValue || "0") || "",
+    a.downPaymentDate || "",
+    installmentValue || "",
+    dueDayDisplay,
+    `${feePercent}%`,
+    parseFloat(a.feeAmount || "0") || "",
+    a.feeStatus || "pendente",
+    monthlyFee,
+    a.status || "ativo",
+    a.notes || "",
+  ];
 }
 
 const searchRateLimiter = rateLimit({
@@ -194,6 +279,11 @@ export async function registerRoutes(
   app.use('/api', (req, res, next) => {
     if (req.path === '/admin/sync-receive') return next();
     return requireAuth(req, res, next);
+  });
+
+  app.use("/api/admin", (req, res, next) => {
+    if (req.path === "/sync-receive") return next();
+    return requireRoles("admin", "socio")(req, res, next);
   });
   
   // ==================== DASHBOARD ====================
@@ -2520,8 +2610,13 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Nota fiscal não encontrada" });
       }
 
-      if (fs.existsSync(nf.filePath)) {
-        fs.unlinkSync(nf.filePath);
+      const resolvedPath = ensureTenantFileAccess(nf.filePath, tenantId);
+      if (!resolvedPath) {
+        return res.status(403).json({ error: "Acesso negado ao arquivo" });
+      }
+
+      if (fs.existsSync(resolvedPath)) {
+        fs.unlinkSync(resolvedPath);
       }
 
       await storage.deleteNotaFiscal(id);
@@ -4465,8 +4560,16 @@ ${extractedText.substring(0, 8000)}`;
   });
 
   // ==================== LEXAI STUDIO - DEFAULT LETTERHEAD ====================
-  app.get("/api/studio/default-letterhead", async (req: Request, res: Response) => {
+  app.get("/api/studio/default-letterhead", requireAuth, async (req: Request, res: Response) => {
     try {
+      const tenantId = getTenantId(req);
+      const config = await storage.getLetterheadConfig(tenantId);
+      if (config?.logoUrl?.startsWith("data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,")) {
+        return res.json({
+          name: "Papel Timbrado.docx",
+          data: config.logoUrl
+        });
+      }
       const templatePath = path.join(process.cwd(), "public/templates/default_letterhead.docx");
       const fileBuffer = await fs.promises.readFile(templatePath);
       const base64Data = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${fileBuffer.toString("base64")}`;
@@ -4744,7 +4847,7 @@ ${extractedText.substring(0, 8000)}`;
         
         doc.moveTo(72, headerY + 48).lineTo(pageWidth - 72, headerY + 48).lineWidth(0.5).stroke("#333333");
 
-        const footerY = doc.page.height - 50;
+        const footerY = doc.page.height - 66;
         doc.moveTo(72, footerY).lineTo(pageWidth - 72, footerY).lineWidth(0.5).stroke("#333333");
         doc.fontSize(7).font("Helvetica")
           .text("Escritório Marques e Serra - Documento gerado pelo LexAI", 72, footerY + 8, { align: "center", width: pageWidth - 144 });
@@ -6700,8 +6803,12 @@ TÉCNICAS ANTI-DETECÇÃO:
       }
       try {
         const fs = await import("fs");
-        if (doc.filePath && fs.default.existsSync(doc.filePath)) {
-          fs.default.unlinkSync(doc.filePath);
+        const resolvedPath = doc.filePath ? ensureTenantFileAccess(doc.filePath, tenantId) : null;
+        if (doc.filePath && !resolvedPath) {
+          return res.status(403).json({ error: "Access denied to document file" });
+        }
+        if (resolvedPath && fs.default.existsSync(resolvedPath)) {
+          fs.default.unlinkSync(resolvedPath);
         }
       } catch {}
       await storage.deleteDocument(docId);
@@ -6723,13 +6830,17 @@ TÉCNICAS ANTI-DETECÇÃO:
       }
       const fs = await import("fs");
       const path = await import("path");
-      if (!fs.default.existsSync(doc.filePath)) {
+      const resolvedPath = ensureTenantFileAccess(doc.filePath, tenantId);
+      if (!resolvedPath) {
+        return res.status(403).json({ error: "Access denied to document file" });
+      }
+      if (!fs.default.existsSync(resolvedPath)) {
         return res.status(404).json({ error: "File not found on disk" });
       }
-      const fileName = path.default.basename(doc.filePath);
+      const fileName = path.default.basename(resolvedPath);
       res.setHeader("Content-Disposition", `attachment; filename="${doc.title || fileName}"`);
       res.setHeader("Content-Type", doc.mimeType || "application/octet-stream");
-      fs.default.createReadStream(doc.filePath).pipe(res);
+      fs.default.createReadStream(resolvedPath).pipe(res);
     } catch (error) {
       console.error("Error downloading document:", error);
       res.status(500).json({ error: "Failed to download document" });
@@ -7333,7 +7444,7 @@ ${text}`
       const agreementsDir = path.join(".", "agreements");
       if (!fs.existsSync(agreementsDir)) fs.mkdirSync(agreementsDir, { recursive: true });
 
-      const tenantId = (req as any).session?.tenantId || 1;
+      const tenantId = getTenantId(req);
 
       if (agreement.wordBuffer) {
         const wordFilename = agreement.filename.replace(".html", ".docx");
@@ -7384,7 +7495,7 @@ ${text}`
   app.post("/api/negotiations/:id/send-agreement", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      const tenantId = (req as any).session?.tenantId || 1;
+      const tenantId = getTenantId(req);
       const negotiation = await storage.getNegotiation(id);
       if (!negotiation) return res.status(404).json({ error: "Not found" });
 
@@ -7437,7 +7548,7 @@ ${text}`
         const whatsappPhone = contact.whatsapp || contact.phone;
         if (whatsappPhone) {
           const { whatsappService } = await import("./services/whatsapp");
-          const tenantId = (req as any).session?.tenantId || 1;
+          const tenantId = getTenantId(req);
           if (wordBuffer) {
             results.whatsapp = await whatsappService.sendDocument(
               whatsappPhone, wordBuffer, filename,
@@ -8924,9 +9035,9 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const clientName = clientRow?.name || "Cliente";
 
       const rows: any[][] = [
-        [`${clientName.toUpperCase()} – PLANILHA MENSAL DOS HONORÁRIOS – ${monthYear.toUpperCase()}`],
+        [`${clientName.toUpperCase()} - PLANILHA MENSAL DOS HONORARIOS - ${monthYear.toUpperCase()}`],
         [],
-        ["NOME", "DATA ACORDO", "DÍVIDA ORIGINAL", "VALOR ACORDADO", "PARCELAS", "VALOR ENTRADA", "DATA ENTRADA", "VALOR PRESTAÇÕES", "VENCIMENTO", "% HONORÁRIOS", "HONORÁRIOS", "STATUS HON.", "HONORÁRIOS MÊS", "STATUS", "OBSERVAÇÕES"],
+        agreementReportHeaders,
       ];
 
       const targetMonth = month ? parseInt(month as string) : null;
@@ -8934,128 +9045,21 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
 
       for (const a of agreements) {
         const debtor = debtorMap[a.debtorId];
-        const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "");
-        const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
         const feePercent = parseFloat(a.feePercent || "10");
         const installmentValue = parseFloat(a.installmentValue || "0");
         const monthlyFee = targetMonth && targetYear
           ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
           : Math.round(installmentValue * feePercent / 100 * 100) / 100;
 
-        rows.push([
-          debtor?.name || "",
-          a.agreementDate || "",
-          parseFloat(a.originalDebtValue || "0") || "",
-          parseFloat(a.agreedValue || "0") || "",
-          installmentsDisplay,
-          parseFloat(a.downPaymentValue || "0") || "",
-          a.downPaymentDate || "",
-          installmentValue || "",
-          dueDayDisplay,
-          `${feePercent}%`,
-          parseFloat(a.feeAmount || "0") || "",
-          a.feeStatus || "pendente",
-          monthlyFee,
-          a.status || "ativo",
-          a.notes || "",
-        ]);
+        rows.push(buildAgreementReportRow(a, debtor, monthlyFee));
       }
 
-      // Summary row — col 12 = HONORÁRIOS MÊS (0-indexed)
-      const total = rows.slice(3).reduce((sum: number, r: any[]) => sum + (parseFloat(r[12]) || 0), 0);
+      const total = rows.slice(3).reduce((sum: number, r: any[]) => sum + (parseFloat(r[11]) || 0), 0);
       rows.push([]);
-      rows.push(["", "", "", "", "", "", "", "", "", "", "", "TOTAL HONORÁRIOS", Math.round(total * 100) / 100]);
+      rows.push(["", "", "", "", "", "", "", "", "", "", "TOTAL HONORARIOS", Math.round(total * 100) / 100]);
 
       const ws = XLSX.utils.aoa_to_sheet(rows);
-
-      // Style header
-      ws["!cols"] = [
-        { wch: 40 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 10 },
-        { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 14 },
-        { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 35 },
-      ];
-
-      XLSX.utils.book_append_sheet(wb, ws, "Acordos");
-      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-
-      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      res.setHeader("Content-Disposition", `attachment; filename="honorarios_${monthYear.replace("/", "_")}.xlsx"`);
-      res.send(Buffer.from(buf));
-    } catch (error) {
-      console.error("Error generating agreements report:", error);
-      res.status(500).json({ error: "Failed to generate report" });
-    }
-  });
-
-  // Helper (defined outside request handler via closure)
-  function isActiveInMonth(a: any, month: number, year: number): boolean {
-    if (!a.agreementDate) return false;
-    const agreementDate = new Date(a.agreementDate);
-    const refDate = new Date(year, month - 1, 1);
-    if (agreementDate > new Date(year, month - 1, 31)) return false;
-    if (a.isSinglePayment) return agreementDate.getMonth() + 1 === month && agreementDate.getFullYear() === year;
-    // For installments, check if still running
-    if (a.installmentsCount && a.downPaymentDate) {
-      const endDate = new Date(a.downPaymentDate);
-      endDate.setMonth(endDate.getMonth() + (a.installmentsCount - 1));
-      if (refDate > endDate) return false;
-    }
-    return true;
-  }
-
-  // Send report via email and/or WhatsApp
-  app.post("/api/debtor-agreements/report/send", requireAuth, async (req: Request, res: Response) => {
-    try {
-      const tenantId = getTenantId(req);
-      const { clientId, month, year } = req.body;
-      if (!clientId) return res.status(400).json({ error: "clientId is required" });
-      // Normalize any value (array, single string, or undefined) to a flat string array
-      const toStringArray = (v: any): string[] => {
-        if (!v) return [];
-        const arr = Array.isArray(v) ? v : [v];
-        return arr.map((x: any) => (x != null ? String(x).trim() : "")).filter(Boolean);
-      };
-      // Accept both singular (emailTo/whatsappTo) and plural (emailTos/whatsappTos) field names; deduplicate
-      const emailList = [...new Set(toStringArray(req.body.emailTos ?? req.body.emailTo))];
-      const whatsappList = [...new Set(toStringArray(req.body.whatsappTos ?? req.body.whatsappTo))];
-
-      // Build the excel internally
-      let agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId), tenantId);
-      const { debtors: debtorsTable, clients: clientsTable } = await import("@shared/schema");
-      const debtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId)));
-      let debtorMap: Record<number, any> = {};
-      if (debtorIds.length > 0) {
-        const rows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
-        rows.forEach((r: any) => { debtorMap[r.id] = r; });
-      }
-      const [clientRow] = await db.select().from(clientsTable).where(eq(clientsTable.id, parseInt(clientId)));
-
-      const XLSX = await import("xlsx");
-      const wb = XLSX.utils.book_new();
-      const monthYear = month && year ? `${String(month).padStart(2, "0")}/${year}` : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" }).replace("/", "/");
-      const clientName = clientRow?.name || "Cliente";
-      const targetMonth = month ? parseInt(month) : null;
-      const targetYear = year ? parseInt(year) : null;
-
-      const wsRows: any[][] = [
-        [`${clientName.toUpperCase()} – PLANILHA MENSAL DOS HONORÁRIOS – ${monthYear.toUpperCase()}`],
-        [],
-        ["NOME", "DATA ACORDO", "DÍVIDA ORIGINAL", "VALOR ACORDADO", "PARCELAS", "VALOR ENTRADA", "DATA ENTRADA", "VALOR PRESTAÇÕES", "VENCIMENTO", "% HONORÁRIOS", "HONORÁRIOS", "STATUS HON.", "HONORÁRIOS MÊS", "STATUS", "OBSERVAÇÕES"],
-      ];
-
-      for (const a of agreements) {
-        const debtor = debtorMap[a.debtorId];
-        const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "");
-        const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
-        const feePercent = parseFloat(a.feePercent || "10");
-        const installmentValue = parseFloat(a.installmentValue || "0");
-        const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
-          : Math.round(installmentValue * feePercent / 100 * 100) / 100;
-        wsRows.push([debtor?.name || "", a.agreementDate || "", parseFloat(a.originalDebtValue || "0") || "", parseFloat(a.agreedValue || "0") || "", installmentsDisplay, parseFloat(a.downPaymentValue || "0") || "", a.downPaymentDate || "", installmentValue || "", dueDayDisplay, `${feePercent}%`, parseFloat(a.feeAmount || "0") || "", a.feeStatus || "pendente", monthlyFee, a.status || "ativo", a.notes || ""]);
-      }
-
-      const ws = XLSX.utils.aoa_to_sheet(wsRows);
+      ws["!cols"] = agreementReportColumnWidths;
       XLSX.utils.book_append_sheet(wb, ws, "Acordos");
       const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
       const fileName = `honorarios_${monthYear.replace("/", "_")}.xlsx`;

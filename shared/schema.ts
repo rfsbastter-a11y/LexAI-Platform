@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, serial, integer, bigint, boolean, timestamp, decimal, jsonb, date } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, integer, bigint, boolean, timestamp, decimal, jsonb, date, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -463,6 +463,50 @@ export const insertSecretaryActionSchema = createInsertSchema(secretaryActions).
 export type InsertSecretaryAction = z.infer<typeof insertSecretaryActionSchema>;
 export type SecretaryAction = typeof secretaryActions.$inferSelect;
 
+export const agentRuns = pgTable("agent_runs", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  jid: text("jid").notNull(),
+  contactName: text("contact_name"),
+  messageText: text("message_text").notNull(),
+  actorType: text("actor_type").notNull().default("unknown"),
+  intentType: text("intent_type").notNull().default("unknown"),
+  status: text("status").notNull().default("received"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  currentTask: text("current_task"),
+  requestedAction: text("requested_action"),
+  requestedArgs: jsonb("requested_args"),
+  plan: jsonb("plan"),
+  sourcesUsed: jsonb("sources_used"),
+  verification: jsonb("verification"),
+  responsePreview: text("response_preview"),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertAgentRunSchema = createInsertSchema(agentRuns).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAgentRun = z.infer<typeof insertAgentRunSchema>;
+export type AgentRun = typeof agentRuns.$inferSelect;
+
+export const agentSteps = pgTable("agent_steps", {
+  id: serial("id").primaryKey(),
+  runId: integer("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  stepType: text("step_type").notNull(),
+  status: text("status").notNull().default("started"),
+  input: jsonb("input"),
+  output: jsonb("output"),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  finishedAt: timestamp("finished_at"),
+});
+
+export const insertAgentStepSchema = createInsertSchema(agentSteps).omit({ id: true, startedAt: true });
+export type InsertAgentStep = z.infer<typeof insertAgentStepSchema>;
+export type AgentStep = typeof agentSteps.$inferSelect;
+
 // ==================== RELATIONS ====================
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   users: many(users),
@@ -788,10 +832,34 @@ export const insertDebtorAgreementSchema = createInsertSchema(debtorAgreements).
 export type InsertDebtorAgreement = z.infer<typeof insertDebtorAgreementSchema>;
 export type DebtorAgreement = typeof debtorAgreements.$inferSelect;
 
-export const debtorAgreementsRelations = relations(debtorAgreements, ({ one }) => ({
+export const agreementMonthlyPayments = pgTable("agreement_monthly_payments", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  agreementId: integer("agreement_id").notNull().references(() => debtorAgreements.id),
+  month: integer("month").notNull(),
+  year: integer("year").notNull(),
+  paidValue: decimal("paid_value", { precision: 12, scale: 2 }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  agreementMonthYearUnique: unique().on(table.agreementId, table.month, table.year),
+}));
+
+export const insertAgreementMonthlyPaymentSchema = createInsertSchema(agreementMonthlyPayments).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAgreementMonthlyPayment = z.infer<typeof insertAgreementMonthlyPaymentSchema>;
+export type AgreementMonthlyPayment = typeof agreementMonthlyPayments.$inferSelect;
+
+export const debtorAgreementsRelations = relations(debtorAgreements, ({ one, many }) => ({
   tenant: one(tenants, { fields: [debtorAgreements.tenantId], references: [tenants.id] }),
   debtor: one(debtors, { fields: [debtorAgreements.debtorId], references: [debtors.id] }),
   client: one(clients, { fields: [debtorAgreements.clientId], references: [clients.id] }),
+  monthlyPayments: many(agreementMonthlyPayments),
+}));
+
+export const agreementMonthlyPaymentsRelations = relations(agreementMonthlyPayments, ({ one }) => ({
+  tenant: one(tenants, { fields: [agreementMonthlyPayments.tenantId], references: [tenants.id] }),
+  agreement: one(debtorAgreements, { fields: [agreementMonthlyPayments.agreementId], references: [debtorAgreements.id] }),
 }));
 
 // ==================== NEGOTIATIONS ====================

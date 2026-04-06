@@ -3,6 +3,68 @@ import { whatsappService } from "./whatsapp";
 import { emailService } from "./email";
 import { generateAgreement } from "./negotiationAI";
 import { generateStudioPiece } from "./studioGenerate";
+import {
+  describeSecretaryActionCapabilities,
+  describeSecretaryQueryCapabilities,
+  getSecretaryActionNames,
+  getSecretaryQueryNames,
+} from "./secretaryCapabilities";
+import {
+  appendMessageToConversationContext,
+  clearConversationContext,
+  ConversationContext,
+  getOrCreateConversationContext,
+  listActiveConversationJids,
+  setConversationLastAssistantResponse,
+  setConversationLastExecutedAction,
+  setConversationLastUserRequest,
+  setConversationPendingAgentAction,
+} from "./secretaryConversationState";
+import {
+  buildPieceInstructionBrief,
+  validatePieceRequest,
+} from "./secretaryPieceOrchestration";
+import { deriveSecretaryOperationalState, formatOperationalStateForPrompt } from "./secretaryOperationalState";
+import {
+  buildPendingActionResumeMessage,
+  canActorExecuteSecretaryAction,
+  deriveSecretaryActorContext,
+  formatDeterministicSocioReply,
+  isExplicitResumeRequest,
+  isGreetingOnlyMessage,
+} from "./secretaryPolicy";
+import { buildSecretaryAuditPayload, getSecretaryPolicyDecision } from "./secretaryApprovalPolicy";
+import { inferTemplateTypeFromLegalRequestText } from "./secretaryPromptShared";
+import {
+  buildFallbackSecretaryInternalRouting,
+  buildSecretaryIntentRouterSystemPrompt,
+  buildSecretaryIntentRouterUserPrompt,
+  parseSecretaryInternalRoutingResult,
+} from "./secretaryInternalPrompts";
+import {
+  buildFallbackSecretaryPlan,
+  buildSecretaryPlannerSystemPrompt,
+  buildSecretaryPlannerUserPrompt,
+  parseSecretaryPlan,
+  applySecretaryPlanOverrides,
+} from "./secretaryPlanning";
+import { verifySecretaryActionResult } from "./secretaryVerifier";
+import {
+  buildAgentResponsePreview,
+  buildSecretaryIdempotencyKey,
+  safeCreateAgentRun,
+  safeCreateAgentStep,
+  safeUpdateAgentRun,
+} from "./secretaryAgentRuntime";
+import { generateSimpleLegacyPiece, sendGeneratedWordDocument } from "./secretaryHeavyTasks";
+import { runSecretaryJob } from "./secretaryJobRunner";
+import { processLegacySecretaryActions } from "./secretaryLegacyActionHandlers";
+import { archiveSignedAgreementIfMatched, processSecretaryMediaContent } from "./secretaryMediaTasks";
+import {
+  createSecretaryActionTool,
+  createSecretarySystemQueryTool,
+  createSecretaryWebSearchTool,
+} from "./secretaryToolRegistry";
 import { format, addDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import OpenAI from "openai";
@@ -20,26 +82,6 @@ function normalizeAccents(str: string): string {
 
 function normalizeForMatch(str: string): string {
   return normalizeAccents(str || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function inferTemplateTypeFromLegalRequestText(text: string): string {
-  const t = normalizeForMatch(text);
-  if (!t) return "outro";
-
-  if (/contrarrazoes/.test(t)) return "contrarrazoes";
-  if (/agravo de instrumento|agravo/.test(t)) return "agravo_instrumento";
-  if (/recurso de apelacao|apelacao/.test(t)) return "recurso_apelacao";
-  if (/contestacao/.test(t)) return "contestacao";
-  if (/cumprimento de sentenca/.test(t)) return "cumprimento_sentenca";
-  if (/execucao de titulo|execucao extrajudicial|execucao/.test(t)) return "execucao";
-  if (/acao monitoria|monitoria/.test(t)) return "acao_monitoria";
-  if (/habeas corpus/.test(t)) return "habeas_corpus";
-  if (/mandado de seguranca/.test(t)) return "mandado_seguranca";
-  if (/notificacao extrajudicial/.test(t)) return "notificacao_extrajudicial";
-  if (/acordo extrajudicial/.test(t)) return "acordo_extrajudicial";
-  if (/peticao inicial/.test(t)) return "peticao_inicial";
-  if (/peticao|peca juridica|peca processual|recurso|embargo/.test(t)) return "outro";
-  return "outro";
 }
 
 async function findBestEntityNameInText(
@@ -80,14 +122,13 @@ async function findBestEntityNameInText(
 async function inferDeterministicSocioAction(
   tenantId: number,
   message: string,
-  recentHistory: string,
+  _recentHistory: string,
 ): Promise<{ acao: string; args: any; reason: string } | null> {
   const raw = (message || "").trim();
   if (!raw) return null;
 
-  const combined = `${raw}\n${recentHistory || ""}`;
   const m = normalizeForMatch(raw);
-  const full = normalizeForMatch(combined);
+  const full = normalizeForMatch(raw);
 
   if (/^\/peca\b/.test(m)) {
     const payload = raw.replace(/^\/pe[cç]a\b\s*/i, "").trim();
@@ -116,8 +157,8 @@ async function inferDeterministicSocioAction(
     };
   }
 
-  const pieceRequest = /(faca|faça|gere|elabore|redija|prepare|crie|produza|preciso|quero).*(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo)/.test(full)
-    || /(peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo).*(agora|hoje|ja|já|pra mim)/.test(full);
+  const pieceRequest = /(faca|faça|gere|elabore|redija|prepare|crie|produza|preciso|quero|queria|peco|peço|pedi).*(apelacao|peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo)/.test(full)
+    || /(apelacao|peticao|pe[çc]a|contrarraz|contestacao|recurso|agravo|execu[çc][ãa]o|cumprimento de senten[çc]a|monit[oó]ria|habeas|mandado|embargo).*(agora|hoje|ja|já|pra mim|generica|simples|aqui)/.test(full);
   if (pieceRequest) {
     const templateType = inferTemplateTypeFromLegalRequestText(full);
     return {
@@ -137,10 +178,10 @@ async function inferDeterministicSocioAction(
     };
   }
 
-  const reportRequest = /(relatorio|relatório|resumo executivo|status|panorama)/.test(full);
+  const reportRequest = !isRejectionMessage(raw) && /(relatorio|relatório|resumo executivo|status|panorama)/.test(full);
   if (reportRequest) {
     if (/devedor|executado|reu|réu/.test(full) && /documento/.test(full)) {
-      const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
+      const debtorName = await findBestEntityNameInText(tenantId, raw, "debtor");
       if (debtorName) {
         return {
           acao: "listar_documentos_devedor",
@@ -150,7 +191,7 @@ async function inferDeterministicSocioAction(
       }
     }
     if (/devedor|executado|reu|réu/.test(full)) {
-      const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
+      const debtorName = await findBestEntityNameInText(tenantId, raw, "debtor");
       if (debtorName) {
         return {
           acao: "relatorio_devedor",
@@ -160,7 +201,7 @@ async function inferDeterministicSocioAction(
       }
     }
     if (/cliente/.test(full)) {
-      const clientName = await findBestEntityNameInText(tenantId, combined, "client");
+      const clientName = await findBestEntityNameInText(tenantId, raw, "client");
       if (clientName) {
         return {
           acao: "gerar_relatorio_cliente",
@@ -173,6 +214,190 @@ async function inferDeterministicSocioAction(
       acao: "gerar_relatorio_executivo",
       args: { acao: "gerar_relatorio_executivo", description: "relatório executivo solicitado por sócio" },
       reason: "relatorio_executivo_default",
+    };
+  }
+
+  const toIsoDate = (value: string): string => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const br = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (br) return `${br[3]}-${br[2]}-${br[1]}`;
+    return value;
+  };
+
+  const scheduleRequest = /(agende|agendar|marque|marcar).*(reuniao|reuni[aã]o|audiencia|audi[eê]ncia|compromisso)/.test(full)
+    || /(reuniao|reuni[aã]o|audiencia|audi[eê]ncia|compromisso).*(amanha|amanh[aã]|hoje|\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2})/.test(full);
+  if (scheduleRequest) {
+    const dateMatch = raw.match(/\b\d{4}-\d{2}-\d{2}\b|\b\d{2}\/\d{2}\/\d{4}\b/);
+    const timeMatches = raw.match(/\b\d{1,2}:\d{2}\b/g) || [];
+    return {
+      acao: "agendar_compromisso",
+      args: {
+        acao: "agendar_compromisso",
+        title: raw,
+        date: dateMatch ? toIsoDate(dateMatch[0]) : "",
+        timeStart: timeMatches[0] || "",
+        timeEnd: timeMatches[1] || "",
+        description: raw,
+      },
+      reason: "pedido_natural_agendamento",
+    };
+  }
+
+  const processCreateRequest = /(cadastre|cadastrar|crie|criar|registre|registrar|abra|abrir|novo).*(processo)/.test(full);
+  if (processCreateRequest) {
+    const caseNumberMatch = raw.match(/\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/);
+    const clientName = await findBestEntityNameInText(tenantId, raw, "client");
+    const debtorName = await findBestEntityNameInText(tenantId, raw, "debtor");
+    return {
+      acao: "cadastrar_processo",
+      args: {
+        acao: "cadastrar_processo",
+        caseNumber: caseNumberMatch?.[0] || "",
+        clientName: clientName || "",
+        debtorName: debtorName || "",
+        title: raw,
+        description: raw,
+      },
+      reason: "pedido_natural_cadastro_processo",
+    };
+  }
+
+  const processUpdateRequest = /(atualize|atualizar|altere|alterar|mude|mudar).*(processo)/.test(full);
+  if (processUpdateRequest) {
+    const caseNumberMatch = raw.match(/\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/);
+    return {
+      acao: "atualizar_processo",
+      args: {
+        acao: "atualizar_processo",
+        caseNumber: caseNumberMatch?.[0] || "",
+        title: raw,
+        description: raw,
+      },
+      reason: "pedido_natural_atualizacao_processo",
+    };
+  }
+
+  const contractCreateRequest = /(cadastre|cadastrar|crie|criar|registre|registrar).*(contrato)/.test(full);
+  if (contractCreateRequest) {
+    const clientName = await findBestEntityNameInText(tenantId, raw, "client");
+    return {
+      acao: "cadastrar_contrato",
+      args: {
+        acao: "cadastrar_contrato",
+        clientName: clientName || "",
+        description: raw,
+      },
+      reason: "pedido_natural_cadastro_contrato",
+    };
+  }
+
+  const deadlineCreateRequest = /(cadastre|cadastrar|crie|criar|registre|registrar).*(prazo)/.test(full);
+  if (deadlineCreateRequest) {
+    const caseNumberMatch = raw.match(/\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/);
+    const dateMatch = raw.match(/\b\d{4}-\d{2}-\d{2}\b|\b\d{2}\/\d{2}\/\d{4}\b/);
+    return {
+      acao: "cadastrar_prazo",
+      args: {
+        acao: "cadastrar_prazo",
+        caseNumber: caseNumberMatch?.[0] || "",
+        dueDate: dateMatch ? toIsoDate(dateMatch[0]) : "",
+        title: raw,
+        description: raw,
+      },
+      reason: "pedido_natural_cadastro_prazo",
+    };
+  }
+
+  return null;
+}
+
+async function inferDeterministicSystemQuery(
+  tenantId: number,
+  message: string,
+  recentHistory: string,
+): Promise<{ queryType: string; params: any; reason: string } | null> {
+  const raw = (message || "").trim();
+  if (!raw) return null;
+
+  const combined = `${raw}\n${recentHistory || ""}`;
+  const full = normalizeForMatch(combined);
+
+  if (/(devedor|devedores|executado|executados)/.test(full) && /(lista|listar|quais|quantos)/.test(full)) {
+    return { queryType: "lista_devedores", params: { tipo_consulta: "lista_devedores" }, reason: "consulta_devedores" };
+  }
+
+  if (/(documento|documentos|arquivo|arquivos|anexo|anexos)/.test(full)) {
+    const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
+    const clientName = await findBestEntityNameInText(tenantId, combined, "client");
+    return {
+      queryType: "documentos",
+      params: { tipo_consulta: "documentos", nome_cliente: clientName || "", debtorName: debtorName || "" },
+      reason: "consulta_documentos",
+    };
+  }
+
+  if (/(acordo|acordos|composicao|renegociacao|renegocia[cç][aã]o)/.test(full) && /(devedor|devedores|executado)/.test(full)) {
+    const debtorName = await findBestEntityNameInText(tenantId, combined, "debtor");
+    return {
+      queryType: "acordos_devedores",
+      params: { tipo_consulta: "acordos_devedores", debtorName: debtorName || "" },
+      reason: "consulta_acordos_devedor",
+    };
+  }
+
+  if (/(reuniao|reunioes|reuni[aã]o|reuni[oõ]es|meeting|meetings|copiloto)/.test(full)) {
+    return { queryType: "reunioes", params: { tipo_consulta: "reunioes" }, reason: "consulta_reunioes" };
+  }
+
+  if (/(prospeccao|prospec[cç][aã]o|lead|leads|network|rede|plano comercial|outreach)/.test(full)) {
+    return { queryType: "prospeccao", params: { tipo_consulta: "prospeccao" }, reason: "consulta_prospeccao" };
+  }
+
+  if (/(financeiro|fatura|faturas|receber|inadimplencia|inadimpl[eê]ncia|atraso)/.test(full)) {
+    const clientName = await findBestEntityNameInText(tenantId, combined, "client");
+    return {
+      queryType: "resumo_financeiro",
+      params: { tipo_consulta: "resumo_financeiro", nome_cliente: clientName || "" },
+      reason: "consulta_financeira",
+    };
+  }
+
+  if (/(prazo|prazos|intimacao|intima[cç][aã]o|deadline)/.test(full)) {
+    return { queryType: "prazos_pendentes", params: { tipo_consulta: "prazos_pendentes" }, reason: "consulta_prazos" };
+  }
+
+  if (/(agenda|compromisso|compromissos|audiencia|audi[eê]ncia)/.test(full)) {
+    return { queryType: "agenda", params: { tipo_consulta: "agenda" }, reason: "consulta_agenda" };
+  }
+
+  if (/(contrato|contratos)/.test(full)) {
+    const clientName = await findBestEntityNameInText(tenantId, combined, "client");
+    return {
+      queryType: "contratos",
+      params: { tipo_consulta: "contratos", nome_cliente: clientName || "" },
+      reason: "consulta_contratos",
+    };
+  }
+
+  if (/(negociacao|negociacoes|negocia[cç][aã]o|negocia[cç][oõ]es)/.test(full)) {
+    return { queryType: "negociacoes", params: { tipo_consulta: "negociacoes" }, reason: "consulta_negociacoes" };
+  }
+
+  if (/(processo|processos|andamento|status do processo)/.test(full)) {
+    const clientName = await findBestEntityNameInText(tenantId, combined, "client");
+    return {
+      queryType: "processos_status",
+      params: { tipo_consulta: "processos_status", nome_cliente: clientName || "" },
+      reason: "consulta_processos",
+    };
+  }
+
+  if (/(cliente|clientes)/.test(full)) {
+    const clientName = await findBestEntityNameInText(tenantId, combined, "client");
+    return {
+      queryType: clientName ? "relatorio_cliente" : "lista_clientes",
+      params: { tipo_consulta: clientName ? "relatorio_cliente" : "lista_clientes", nome_cliente: clientName || "" },
+      reason: "consulta_clientes",
     };
   }
 
@@ -197,14 +422,29 @@ async function sendMessageInChunks(jid: string, text: string, tenantId: number):
   }
 }
 
-async function generateWordWithLetterhead(contentHtml: string, title: string): Promise<Buffer | null> {
+function decodeDocxTemplateFromDataUrl(dataUrl?: string | null): Buffer | null {
+  if (!dataUrl) return null;
+  const match = dataUrl.match(/^data:application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document;base64,(.+)$/i);
+  if (!match?.[1]) return null;
   try {
-    const templatePath = path.join(process.cwd(), "public/templates/default_letterhead.docx");
-    if (!fs.existsSync(templatePath)) {
-      console.log("[Secretary] No letterhead template found, falling back to plain docx");
-      return null;
+    return Buffer.from(match[1], "base64");
+  } catch {
+    return null;
+  }
+}
+
+async function generateWordWithLetterhead(contentHtml: string, title: string, tenantId: number): Promise<Buffer | null> {
+  try {
+    const config = await storage.getLetterheadConfig(tenantId);
+    let templateBuffer = decodeDocxTemplateFromDataUrl(config?.logoUrl);
+    if (!templateBuffer) {
+      const templatePath = path.join(process.cwd(), "public/templates/default_letterhead.docx");
+      if (!fs.existsSync(templatePath)) {
+        console.log("[Secretary] No letterhead template found in DB or disk, falling back to plain docx");
+        return null;
+      }
+      templateBuffer = await fs.promises.readFile(templatePath);
     }
-    const templateBuffer = await fs.promises.readFile(templatePath);
 
     const PizZip = (await import("pizzip")).default;
     const Docxtemplater = (await import("docxtemplater")).default;
@@ -235,6 +475,25 @@ async function generateWordWithLetterhead(contentHtml: string, title: string): P
     }
     const paragraphs: ParsedPara[] = [];
 
+    const isStructuralBoldLine = (text: string): boolean => {
+      const trimmed = decodeEntities(text || "").replace(/\s+/g, " ").trim();
+      if (!trimmed) return false;
+
+      if (/^(AO JU[IÍ]ZO|AO EXMO|EXCELENT[IÍ]SSIMO|ILMO)/i.test(trimmed)) return true;
+      if (/^(PROCESSO N[°º]|JU[IÍ]ZO:|APELANTE:|APELADO:|R[ÉE]U:|AUTOR:|EXEQUENTE:|EXECUTADO:|REQUERENTE:|REQUERIDO:)/i.test(trimmed)) return true;
+      if (/OAB\/[A-Z]{2}\s*\d/i.test(trimmed) && /^[A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ.\s/-]+OAB\/[A-Z]{2}\s*\d/i.test(trimmed.toUpperCase())) return true;
+
+      const upperCandidate = trimmed
+        .replace(/[0-9]/g, "")
+        .replace(/[^\p{L}\s/:.-]/gu, "")
+        .trim();
+      if (upperCandidate.length >= 4 && upperCandidate === upperCandidate.toUpperCase() && /[A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ]/.test(upperCandidate)) {
+        return true;
+      }
+
+      return false;
+    };
+
     const parseInnerSegments = (inner: string): Array<{ text: string; bold: boolean }> => {
       const brProcessed = inner.replace(/<br\s*\/?>/gi, '\n');
       const segments: Array<{ text: string; bold: boolean }> = [];
@@ -254,6 +513,12 @@ async function generateWordWithLetterhead(contentHtml: string, title: string): P
         const t = decodeEntities(brProcessed.substring(lastIdx).replace(/<[^>]+>/g, ''));
         if (t.trim()) segments.push({ text: t, bold: false });
       }
+
+      const mergedText = segments.map((segment) => segment.text).join(" ").trim();
+      if (segments.length > 0 && isStructuralBoldLine(mergedText)) {
+        return segments.map((segment) => ({ ...segment, bold: true }));
+      }
+
       return segments;
     };
 
@@ -360,7 +625,7 @@ async function generateWordWithLetterhead(contentHtml: string, title: string): P
     }
 
     if (conteudoParagraph) {
-      const baseRPr = conteudoParagraph.rPrContent.replace(/<w:sz[^/]*\/>/g, '').replace(/<w:szCs[^/]*\/>/g, '');
+      const baseRPr = conteudoParagraph.rPrContent;
 
       const makeRuns = (segs: Array<{ text: string; bold: boolean }>): string => {
         let runs = '';
@@ -392,6 +657,8 @@ async function generateWordWithLetterhead(contentHtml: string, title: string): P
       }
 
       xmlContent = xmlContent.replace(conteudoParagraph.fullMatch, ooxmlParts.join(''));
+      xmlContent = xmlContent.replace(/<w:p\b[^>]*>[\s\S]*?<w:t[^>]*>\s*\{CONTEUDO\}\s*<\/w:t>[\s\S]*?<\/w:p>/g, '');
+      xmlContent = xmlContent.replace(/<w:p\b[^>]*>(?:(?!<w:t\b)[\s\S])*?<\/w:p>/g, '');
       zip.file("word/document.xml", xmlContent);
 
       const outputBuffer = zip.generate({ type: "nodebuffer", compression: "DEFLATE" });
@@ -484,37 +751,6 @@ async function generatePlainWord(contentHtml: string, title: string): Promise<Bu
   return buffer;
 }
 
-interface ConversationContext {
-  messages: { role: "user" | "assistant"; content: string }[];
-  lastActivity: number;
-  clientId?: number;
-  detectedTone?: string;
-}
-
-const conversationContexts = new Map<string, ConversationContext>();
-const CONTEXT_TTL = 24 * 60 * 60 * 1000;
-
-async function loadContextFromDB(jid: string, tenantId: number): Promise<ConversationContext> {
-  try {
-    const conv = await storage.getWhatsAppConversation(tenantId, jid);
-    if (conv) {
-      const dbMessages = await storage.getMessagesByConversation(conv.id);
-      const recent = dbMessages.slice(-30);
-      const ctx: ConversationContext = {
-        messages: recent.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
-        lastActivity: recent.length > 0 ? new Date(recent[recent.length - 1].createdAt).getTime() : Date.now(),
-      };
-      conversationContexts.set(jid, ctx);
-      return ctx;
-    }
-  } catch (e) {
-    console.error("[Secretary] Error loading context from DB:", e);
-  }
-  const ctx: ConversationContext = { messages: [], lastActivity: Date.now() };
-  conversationContexts.set(jid, ctx);
-  return ctx;
-}
-
 async function saveMessageToDB(jid: string, tenantId: number, role: string, content: string): Promise<void> {
   try {
     const conv = await storage.getOrCreateWhatsAppConversation(tenantId, jid);
@@ -524,24 +760,100 @@ async function saveMessageToDB(jid: string, tenantId: number, role: string, cont
   }
 }
 
-function getOrCreateContext(jid: string): ConversationContext {
-  const existing = conversationContexts.get(jid);
-  if (existing && Date.now() - existing.lastActivity < CONTEXT_TTL) {
-    existing.lastActivity = Date.now();
-    return existing;
+async function loadAppealReferenceModelFile(): Promise<Array<{
+  name: string;
+  type: string;
+  data: string;
+  extractedText?: string;
+  isReferenceModel?: boolean;
+}>> {
+  const modelPath = path.join(process.cwd(), "server/templates/models/recurso_apelacao.docx");
+  if (!fs.existsSync(modelPath)) {
+    return [];
   }
-  const ctx: ConversationContext = { messages: [], lastActivity: Date.now() };
-  conversationContexts.set(jid, ctx);
-  return ctx;
+
+  try {
+    const modelBuffer = await fs.promises.readFile(modelPath);
+    const mammoth = await import("mammoth");
+    const extracted = await mammoth.default.extractRawText({ buffer: modelBuffer });
+
+    return [{
+      name: "modelo_apelacao.docx",
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      data: modelBuffer.toString("base64"),
+      extractedText: extracted.value || "",
+      isReferenceModel: true,
+    }];
+  } catch (error) {
+    console.error("[Secretary] Failed to load appeal reference model:", error);
+    return [];
+  }
 }
 
-async function getOrCreateContextWithDB(jid: string, tenantId: number): Promise<ConversationContext> {
-  const existing = conversationContexts.get(jid);
-  if (existing && Date.now() - existing.lastActivity < CONTEXT_TTL) {
-    existing.lastActivity = Date.now();
-    return existing;
-  }
-  return loadContextFromDB(jid, tenantId);
+async function createSecretaryAuditLog(params: {
+  tenantId: number;
+  jid: string;
+  contactName?: string;
+  actionType: string;
+  description: string;
+  status?: string;
+  draftMessage?: string;
+  pendingAction?: unknown;
+  actorType?: "socio" | "client" | "unknown";
+  executionMode?: string;
+}) {
+  const actorType = params.actorType || "unknown";
+  const policy = getSecretaryPolicyDecision(params.actionType);
+  const explicitStatus = params.status;
+  const status = explicitStatus || (policy.requiresHumanApproval ? "pending_approval" : "completed");
+  const draftMessage = params.draftMessage || (status === "pending_approval" ? params.description : undefined);
+
+  return storage.createSecretaryAction({
+    tenantId: params.tenantId,
+    jid: params.jid,
+    contactName: params.contactName,
+    actionType: params.actionType,
+    description: params.description,
+    status,
+    draftMessage,
+    pendingAction: buildSecretaryAuditPayload({
+      actionType: params.actionType,
+      actorType,
+      pendingAction: params.pendingAction,
+      executionMode: params.executionMode,
+    }),
+    timestamp: new Date(),
+  });
+}
+
+function requiresExplicitApprovalForAction(acao: string): boolean {
+  return acao === "enviar_documento_sistema";
+}
+
+function isRejectionMessage(message: string): boolean {
+  const normalized = normalizeForMatch(message);
+  if (!normalized) return false;
+
+  return [
+    /nao quero (isso|nada disso|esse|essa)/,
+    /nao preciso (disso|desse|dessa)/,
+    /nao pedi (isso|isso ai|relatorio|contrato)/,
+    /pare (com|de) (isso|mandar|enviar)/,
+    /para de (mandar|enviar|repetir)/,
+    /chega/,
+    /ja disse/,
+    /quero outra coisa/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isRecentExecutiveReportContext(messages: Array<{ role: string; content: string }>): boolean {
+  const recentAssistantText = messages
+    .filter((message) => message.role === "assistant")
+    .slice(-3)
+    .map((message) => normalizeForMatch(message.content))
+    .join(" ");
+
+  return /relatorio executivo|clientes cadastrados|processos ativos|financeiro|prazos urgentes/.test(recentAssistantText);
 }
 
 function isWithinBusinessHours(config: any): boolean {
@@ -588,13 +900,16 @@ function summarizeAgentExecutionResult(action: string, rawResult: string): strin
   if (action === "gerar_peca_estudio") {
     const labelMatch = text.match(/📋\s*([^\n]+)/);
     const label = labelMatch?.[1]?.trim() || "Peça Jurídica";
+    if (/não consegui gerar|não foi possível gerar|erro interno ao gerar a peça|erro na conexão com o studio/i.test(text)) {
+      return `⚠️ Não consegui gerar a ${label}. Tente novamente em instantes.`;
+    }
     if (/ENVIADA COM SUCESSO|enviado diretamente/i.test(text)) {
       return `✅ ${label} gerada e enviada em Word via WhatsApp.`;
     }
     if (/FALHA AO ENVIAR|falha no envio/i.test(text)) {
       return `⚠️ ${label} gerada no Studio, mas houve falha no envio do Word via WhatsApp. Posso tentar reenviar agora.`;
     }
-    return `✅ ${label} gerada com sucesso.`;
+    return `⚠️ Não confirmei que a ${label} foi salva no Studio nem enviada em Word nesta conversa.`;
   }
 
   if (action === "gerar_contrato") {
@@ -610,6 +925,112 @@ function summarizeAgentExecutionResult(action: string, rawResult: string): strin
 
   return text;
 }
+
+function extractPendingSecretaryRequest(pendingAction: unknown): {
+  requestedAction?: string;
+  requestedArgs?: Record<string, any>;
+  actorType?: "socio" | "client" | "unknown";
+} {
+  if (!pendingAction || typeof pendingAction !== "object") {
+    return {};
+  }
+
+  const payload = pendingAction as Record<string, any>;
+  const audit = payload.audit && typeof payload.audit === "object"
+    ? payload.audit as Record<string, any>
+    : undefined;
+
+  return {
+    requestedAction: typeof payload.requestedAction === "string" ? payload.requestedAction : undefined,
+    requestedArgs: payload.requestedArgs && typeof payload.requestedArgs === "object" ? payload.requestedArgs as Record<string, any> : undefined,
+    actorType: audit?.actorType === "socio" || audit?.actorType === "client" || audit?.actorType === "unknown"
+      ? audit.actorType
+      : undefined,
+  };
+}
+
+function buildActionExecutionFingerprint(action: string, args: Record<string, any>): string {
+  const normalizedArgs = JSON.stringify(args || {}, Object.keys(args || {}).sort());
+  return `${action}::${normalizeForMatch(normalizedArgs)}`;
+}
+
+function buildResponseFingerprint(text: string): string {
+  return normalizeForMatch(text || "");
+}
+
+function shouldSkipDuplicateExecution(
+  ctx: ConversationContext,
+  fingerprint: string,
+  windowMs: number = 120000,
+): boolean {
+  return Boolean(
+    ctx.lastExecutedActionFingerprint &&
+    ctx.lastExecutedActionFingerprint === fingerprint &&
+    ctx.lastExecutedActionAt &&
+    (Date.now() - ctx.lastExecutedActionAt) <= windowMs
+  );
+}
+
+function classifyDocumentResendRequest(message: string): "gerar_peca_estudio" | "gerar_contrato" | null {
+  const normalized = normalizeForMatch(message);
+  if (!normalized) return null;
+
+  const hasExplicitDeliveryRequest = [
+    /mande em word/,
+    /me mande em word/,
+    /manda o arquivo/,
+    /envie o arquivo/,
+    /envie o documento/,
+    /me envie o arquivo/,
+    /me envie o documento/,
+    /manda o word/,
+    /envie em word/,
+    /envie em docx/,
+    /manda em docx/,
+    /me manda o docx/,
+    /me mande o docx/,
+    /reenvie o arquivo/,
+    /reenvie o documento/,
+    /reenvie o word/,
+    /reenvie em word/,
+    /me envia em word/,
+    /reenvie/,
+  ].some((pattern) => pattern.test(normalized));
+
+  if (!hasExplicitDeliveryRequest) return null;
+
+  if (/(contrato|acordo|termo)/.test(normalized)) {
+    return "gerar_contrato";
+  }
+
+  if (/(peti[çc][ãa]o|pe[çc]a|contesta[çc][ãa]o|contrarraz|recurso|apela[çc][ãa]o|agravo|execu[çc][ãa]o|cumprimento|mandado|habeas|monit[oó]ria|embargo)/.test(normalized)) {
+    return "gerar_peca_estudio";
+  }
+
+  return null;
+}
+
+async function findRecentGeneratedDocumentActionForRequest(
+  tenantId: number,
+  jid: string,
+  requestedActionType: "gerar_peca_estudio" | "gerar_contrato",
+): Promise<{
+  requestedAction: string;
+  requestedArgs: Record<string, any>;
+} | null> {
+  const recentActions = await storage.getSecretaryActionsByJid(tenantId, jid);
+  for (const action of recentActions) {
+    const pendingRequest = extractPendingSecretaryRequest(action.pendingAction);
+    if (!pendingRequest.requestedAction || !pendingRequest.requestedArgs) continue;
+    if (pendingRequest.requestedAction !== requestedActionType) continue;
+    return {
+      requestedAction: pendingRequest.requestedAction,
+      requestedArgs: pendingRequest.requestedArgs,
+    };
+  }
+  return null;
+}
+
 
 async function findClientByJid(jid: string, tenantId: number, contactName?: string) {
   const isLid = jid.includes("@lid");
@@ -879,6 +1300,17 @@ async function consultarSistema(queryType: string, params: any, tenantId: number
         }
         return result;
       }
+
+      case "lista_devedores": {
+        if (!isSocio) return "Acesso restrito. Apenas sócios e advogados podem consultar a lista de devedores.";
+        const debtors = await storage.getDebtorsByTenant(tenantId);
+        if (debtors.length === 0) return "Nenhum devedor cadastrado.";
+        let result = `DEVEDORES CADASTRADOS (${debtors.length}):\n`;
+        for (const d of debtors.slice(0, 50)) {
+          result += `- ${d.name} (${d.type}) - Status: ${d.status} - Doc: ${d.document || "N/I"} - Tel: ${d.phone || d.whatsapp || "N/I"}\n`;
+        }
+        return result;
+      }
       
       case "resumo_financeiro": {
         if (!isSocio) {
@@ -1029,9 +1461,91 @@ async function consultarSistema(queryType: string, params: any, tenantId: number
         }
         return result;
       }
-      
+
+      case "documentos": {
+        if (!isSocio && !clientId) return "Não foi possível identificar seu cadastro.";
+
+        let docs: any[] = [];
+        if (isSocio && params.debtorName) {
+          const debtors = await storage.getDebtorsByTenant(tenantId);
+          const foundDebtor = debtors.find((d: any) =>
+            d.name?.toLowerCase().includes(params.debtorName.toLowerCase()) ||
+            params.debtorName.toLowerCase().includes(d.name?.toLowerCase() || "")
+          );
+          if (!foundDebtor) return `Devedor "${params.debtorName}" não encontrado.`;
+          docs = await storage.getDocumentsByDebtor(foundDebtor.id);
+        } else if (isSocio && params.nome_cliente) {
+          const clients = await storage.getClientsByTenant(tenantId);
+          const foundClient = clients.find((c: any) =>
+            c.name?.toLowerCase().includes(params.nome_cliente.toLowerCase()) ||
+            params.nome_cliente.toLowerCase().includes(c.name?.toLowerCase() || "")
+          );
+          if (!foundClient) return `Cliente "${params.nome_cliente}" não encontrado.`;
+          docs = await storage.getDocumentsByClient(foundClient.id);
+        } else {
+          docs = await storage.getDocumentsByClient(clientId!);
+        }
+
+        if (!docs.length) return "Nenhum documento encontrado.";
+        let result = `DOCUMENTOS (${docs.length}):\n`;
+        for (const doc of docs.slice(0, 20)) {
+          result += `- ${doc.title || "Sem título"} | Tipo: ${doc.type || "N/I"} | Criado em: ${doc.createdAt ? new Date(doc.createdAt).toLocaleDateString("pt-BR") : "N/I"}\n`;
+        }
+        return result;
+      }
+
+      case "acordos_devedores": {
+        if (!isSocio) return "Acesso restrito a sócios e advogados.";
+        let agreements = await storage.getDebtorAgreementsByTenant(tenantId);
+        if (params.debtorName) {
+          const debtors = await storage.getDebtorsByTenant(tenantId);
+          const foundDebtor = debtors.find((d: any) =>
+            d.name?.toLowerCase().includes(params.debtorName.toLowerCase()) ||
+            params.debtorName.toLowerCase().includes(d.name?.toLowerCase() || "")
+          );
+          if (!foundDebtor) return `Devedor "${params.debtorName}" não encontrado.`;
+          agreements = await storage.getDebtorAgreementsByDebtor(foundDebtor.id, tenantId);
+        }
+        if (!agreements.length) return "Nenhum acordo de devedor encontrado.";
+        let result = `ACORDOS DE DEVEDORES (${agreements.length}):\n`;
+        for (const ag of agreements.slice(0, 20)) {
+          result += `- #${ag.id} | Data: ${ag.agreementDate} | Valor acordado: R$ ${ag.agreedValue || "N/I"} | Status: ${ag.status} | Honorários: ${ag.feeStatus}\n`;
+        }
+        return result;
+      }
+
+      case "reunioes": {
+        if (!isSocio) return "Acesso restrito a sócios e advogados.";
+        const meetings = await storage.getMeetingsByTenant(tenantId);
+        if (!meetings.length) return "Nenhuma reunião cadastrada.";
+        let result = `REUNIÕES (${meetings.length}):\n`;
+        for (const meeting of meetings.slice(0, 20)) {
+          result += `- ${meeting.title} | Plataforma: ${meeting.platform} | Status: ${meeting.status}`;
+          if (meeting.startedAt) result += ` | Início: ${new Date(meeting.startedAt).toLocaleString("pt-BR")}`;
+          result += "\n";
+        }
+        return result;
+      }
+
+      case "prospeccao": {
+        if (!isSocio) return "Acesso restrito a sócios e advogados.";
+        const [plans, leads, network] = await Promise.all([
+          storage.getProspectionPlansByTenant(tenantId),
+          storage.getProspectionLeadsByTenant(tenantId),
+          storage.getNetworkContactsByTenant(tenantId),
+        ]);
+        let result = `PROSPECÇÃO:\n- Planos: ${plans.length}\n- Leads: ${leads.length}\n- Contatos de rede: ${network.length}\n`;
+        if (plans.length > 0) {
+          result += `\nPLANOS RECENTES:\n`;
+          for (const plan of plans.slice(0, 10)) {
+            result += `- ${plan.title} | Status: ${plan.status || "N/I"}\n`;
+          }
+        }
+        return result;
+      }
+
       default:
-        return "Tipo de consulta não reconhecido. Consultas disponíveis: relatorio_cliente, lista_clientes, resumo_financeiro, prazos_pendentes, processos_status, agenda, contratos, negociacoes.";
+        return `Tipo de consulta não reconhecido. Consultas disponíveis: ${getSecretaryQueryNames().join(", ")}.`;
     }
   } catch (error) {
     console.error("[Secretary] consultarSistema error:", error);
@@ -1113,190 +1627,7 @@ async function searchWeb(query: string): Promise<string> {
   return "Pesquisa web não disponível no momento.";
 }
 
-async function processMediaContent(
-  mediaType: string,
-  base64Data: string,
-  fileName?: string,
-  mimetype?: string
-): Promise<string> {
-  try {
-    if (mediaType === "image") {
-      const visionResponse = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Descreva detalhadamente o conteúdo desta imagem. Se contiver texto, transcreva-o integralmente. Se for um documento, extraia todas as informações relevantes." },
-              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Data}` } },
-            ],
-          },
-        ],
-        max_tokens: 2000,
-      });
-      return visionResponse.choices[0]?.message?.content || "[Não foi possível analisar a imagem]";
-    }
-
-    if (mediaType === "audio") {
-      const audioBuffer = Buffer.from(base64Data, "base64");
-      const audioMime = (mimetype || "audio/ogg; codecs=opus").split(";")[0].trim();
-      console.log(`[Secretary] Transcribing audio: ${audioBuffer.length} bytes, mime: ${audioMime}`);
-
-      const transcribeModels = ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"];
-      for (const model of transcribeModels) {
-        try {
-          const { toFile } = await import("openai");
-          const ext = audioMime.includes("ogg") ? "ogg" : audioMime.includes("mp4") ? "m4a" : audioMime.includes("mpeg") ? "mp3" : "ogg";
-          const file = await toFile(audioBuffer, `audio.${ext}`, { type: audioMime });
-
-          console.log(`[Secretary] Sending to ${model}, file: audio.${ext}, size: ${audioBuffer.length}...`);
-          const transcription = await openai.audio.transcriptions.create({
-            file,
-            model,
-            language: "pt",
-          });
-
-          const text = transcription.text || "";
-          console.log(`[Secretary] ${model} transcription: "${text.substring(0, 150)}"`);
-          if (text.trim()) return text.trim();
-        } catch (err: any) {
-          console.error(`[Secretary] ${model} transcription failed: ${err?.message || err}`);
-        }
-      }
-
-      try {
-        console.log(`[Secretary] Trying GPT-4o chat completions with input_audio fallback...`);
-        const b64Audio = base64Data;
-        const audioFormat = audioMime.includes("ogg") ? "ogg" : audioMime.includes("mp3") ? "mp3" : audioMime.includes("wav") ? "wav" : "ogg";
-        const chatResponse = await openai.chat.completions.create({
-          model: "gpt-4o",
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "Transcreva exatamente o que é dito neste áudio em português brasileiro. Retorne APENAS a transcrição literal, sem explicações, sem aspas, sem prefixos." },
-                {
-                  type: "input_audio" as any,
-                  input_audio: {
-                    data: b64Audio,
-                    format: audioFormat,
-                  },
-                } as any,
-              ],
-            },
-          ],
-        });
-
-        const text = chatResponse.choices[0]?.message?.content || "";
-        console.log(`[Secretary] GPT-4o audio chat transcription: "${text.substring(0, 150)}"`);
-        if (text.trim()) return text.trim();
-      } catch (chatErr: any) {
-        console.error(`[Secretary] GPT-4o audio chat fallback failed: ${chatErr?.message || chatErr}`);
-      }
-
-      console.error("[Secretary] Audio transcription: all methods failed. Returning failure signal.");
-    return "__MEDIA_FAILED__:audio";
-    }
-
-    if (mediaType === "document") {
-      const docBuffer = Buffer.from(base64Data, "base64");
-      const ext = (fileName || "").toLowerCase();
-      const mime = (mimetype || "").toLowerCase();
-
-      if (ext.endsWith(".pdf") || mime.includes("pdf")) {
-        let pdfText = "";
-        try {
-          const { PDFParse } = await import("pdf-parse");
-          const parser = new (PDFParse as any)({ data: docBuffer });
-          await parser.load();
-          const result = await parser.getText();
-          pdfText = (typeof result === "string" ? result : result?.text || "") as string;
-          pdfText = pdfText.trim();
-        } catch (e) {
-          console.error("[Secretary] PDF parse error:", e);
-        }
-
-        if (pdfText && pdfText.length > 50) {
-          return pdfText.substring(0, 8000);
-        }
-
-        console.log(`[Secretary] PDF text too short (${pdfText.length} chars), trying Gemini OCR fallback...`);
-        try {
-          const { GoogleGenAI } = await import("@google/genai");
-          const geminiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-          if (geminiKey) {
-            const genAI = new GoogleGenAI({
-              apiKey: geminiKey,
-              ...(process.env.AI_INTEGRATIONS_GEMINI_BASE_URL ? { httpOptions: { baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL } } : {}),
-            });
-            const ocrResult = await genAI.models.generateContent({
-              model: "gemini-2.5-pro",
-              contents: [
-                { role: "user", parts: [
-                  { text: "Extraia TODO o texto visível deste documento PDF digitalizado. Transcreva cada informação: nomes, CPF, CNPJ, RG, endereços, valores, datas, números de documentos. Retorne APENAS o texto extraído, sem explicações." },
-                  { inlineData: { mimeType: "application/pdf", data: base64Data } },
-                ]}
-              ],
-            });
-            const ocrText = ocrResult.text || "";
-            if (ocrText.length > 20) {
-              console.log(`[Secretary] Gemini OCR extracted ${ocrText.length} chars from PDF`);
-              return ocrText.substring(0, 8000);
-            }
-          }
-        } catch (ocrErr) {
-          console.error("[Secretary] Gemini OCR fallback error:", ocrErr);
-        }
-
-        if (!pdfText || pdfText.length <= 50) {
-          console.error("[Secretary] PDF extraction: all methods failed. Returning failure signal.");
-          return "__MEDIA_FAILED__:pdf";
-        }
-
-        return pdfText.substring(0, 8000);
-      }
-
-      if (ext.endsWith(".docx") || mime.includes("wordprocessingml")) {
-        try {
-          const mammoth = await import("mammoth");
-          const result = await mammoth.extractRawText({ buffer: docBuffer });
-          return result.value?.substring(0, 8000) || "[Documento Word vazio]";
-        } catch (e) {
-          console.error("[Secretary] DOCX parse error:", e);
-          return "[Não foi possível extrair texto do Word]";
-        }
-      }
-
-      if (ext.endsWith(".txt") || ext.endsWith(".csv") || mime.includes("text")) {
-        return docBuffer.toString("utf-8").substring(0, 5000);
-      }
-
-      if (ext.endsWith(".jpg") || ext.endsWith(".jpeg") || ext.endsWith(".png") || mime.includes("image")) {
-        const visionResponse = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [{
-            role: "user",
-            content: [
-              { type: "text", text: "Transcreva todo o texto visível nesta imagem de documento. Extraia todas as informações relevantes." },
-              { type: "image_url", image_url: { url: `data:${mime || "image/jpeg"};base64,${base64Data}` } },
-            ],
-          }],
-          max_tokens: 2000,
-        });
-        return visionResponse.choices[0]?.message?.content || "[Não foi possível analisar o documento]";
-      }
-
-      return `[Documento recebido: ${fileName || "arquivo"} - formato não suportado para extração]`;
-    }
-
-    return `[Mídia do tipo ${mediaType} recebida]`;
-  } catch (error) {
-    console.error("[Secretary] Media processing error:", error);
-    return `[Erro ao processar mídia: ${(error as Error).message}]`;
-  }
-}
-
-async function buildSystemPrompt(tenantId: number, customPrompt: string, clientContext: string, tonePreference: string, isFirstMessage: boolean = false, isKnownClient: boolean = false, clientName: string = "", isSocio: boolean = false, socioName: string = "", contactName: string = ""): Promise<string> {
+async function buildSystemPrompt(tenantId: number, customPrompt: string, clientContext: string, operationalContext: string, tonePreference: string, isFirstMessage: boolean = false, isKnownClient: boolean = false, clientName: string = "", isSocio: boolean = false, socioName: string = "", contactName: string = ""): Promise<string> {
   const firmContext = await gatherFirmContext(tenantId);
 
   let toneInstructions = "";
@@ -1330,7 +1661,8 @@ async function buildSystemPrompt(tenantId: number, customPrompt: string, clientC
     const drTitle = firstName ? `Dr. ${firstName}` : "Doutor";
     greetingInstructions = `
 SAUDAÇÃO OBRIGATÓRIA (primeira mensagem de um SÓCIO/ADVOGADO do escritório):
-- Inicie com: "Olá, ${drTitle}! Como posso ajudá-lo?"
+- Inicie com uma saudação breve ao sócio se identificando como do escritório, por exemplo: "Olá, ${drTitle}! Aqui é do escritório Marques & Serra Sociedade de Advogados."
+- Se a própria primeira mensagem já contiver um pedido objetivo, EXECUTE ou RESPONDA ao pedido logo após a saudação, sem fazer a pergunta "Como posso ajudá-lo?"
 - Trate com respeito mas sem formalidade excessiva - ele é seu chefe/colega
 - NÃO repita esta saudação nas próximas mensagens da conversa`;
   } else if (isSocio) {
@@ -1339,7 +1671,7 @@ SAUDAÇÃO: Esta NÃO é a primeira mensagem da conversa com o sócio. Vá diret
   } else if (isFirstMessage && !isKnownClient) {
     greetingInstructions = `
 SAUDAÇÃO OBRIGATÓRIA (esta é a PRIMEIRA mensagem deste contato):
-- Inicie sua resposta com: "Olá! Aqui é do escritório Marques e Serra, em que posso ajudá-lo(a)?"
+- Inicie sua resposta com: "Olá! Aqui é do escritório Marques & Serra Sociedade de Advogados. Em que posso ajudá-lo(a)?"
 - Após a saudação, responda ao conteúdo da mensagem se houver
 - NÃO repita esta saudação nas próximas mensagens da conversa`;
   } else if (isFirstMessage && isKnownClient) {
@@ -1354,7 +1686,7 @@ SAUDAÇÃO OBRIGATÓRIA (esta é a PRIMEIRA mensagem deste contato):
     })();
     greetingInstructions = `
 SAUDAÇÃO OBRIGATÓRIA (primeira mensagem de um cliente CONHECIDO após um período sem contato):
-- Inicie com: "Olá${nameToGreet ? ` ${nameToGreet}` : ""}! Tudo bem? Aqui é do escritório Marques e Serra. Como posso ajudá-lo(a) hoje?"
+- Inicie com: "Olá${nameToGreet ? ` ${nameToGreet}` : ""}! Tudo bem? Aqui é do escritório Marques & Serra Sociedade de Advogados. Como posso ajudá-lo(a) hoje?"
 - Após a saudação, responda ao conteúdo da mensagem se houver
 - NÃO repita esta saudação nas próximas mensagens da conversa`;
   } else {
@@ -1373,6 +1705,8 @@ Este remetente é um SÓCIO ou ADVOGADO do escritório Marques e Serra. Ele tem 
 - Pode compartilhar dados de qualquer cliente, processo, financeiro
 - Se ele pedir para gerar uma peça/petição/recurso/contestação/contrarrazões/execução ou QUALQUER peça jurídica: chame IMEDIATAMENTE executar_acao com acao="gerar_peca_estudio". NUNCA escreva o conteúdo da peça no chat. NUNCA diga "Um momento" sem chamar a ferramenta.
 - Se ele pedir para gerar um CONTRATO, ACORDO ou TERMO DE RENEGOCIAÇÃO, use executar_acao com acao="gerar_contrato" IMEDIATAMENTE. Não pergunte se tem certeza, não diga que não pode. FAÇA.
+- Se houver documentos, imagens, PDFs, Word ou áudios enviados pelo WhatsApp nesta conversa, trate esse material como FONTE PRIORITÁRIA para preencher fatos, partes, valores, datas e pedidos.
+- Ao gerar peça ou contrato, OBEDEÇA exatamente às orientações do sócio e use os documentos enviados como base. Não simplifique, não ignore anexos e não substitua instruções concretas por texto genérico.
 
 ⚠️ REGRA ABSOLUTA — PEÇAS JURÍDICAS: Qualquer pedido de "fazer contrarrazões", "fazer recurso", "fazer execução", "fazer petição", "elaborar contestação", "preparar agravo", ou qualquer variação → CHAME executar_acao(acao="gerar_peca_estudio") IMEDIATAMENTE. PROIBIDO escrever o texto da peça no chat. PROIBIDO dizer "Um momento, vou preparar" sem chamar a ferramenta na mesma resposta. Se o sócio enviou documentos PDF/Word e pediu uma peça: extraia os dados e chame gerar_peca_estudio com description contendo todos os dados extraídos.
 - Se ele enviar documentos, analise e faça sugestões proativas
@@ -1417,21 +1751,10 @@ CAPACIDADES COMPLETAS (USE LIVREMENTE):
    - "o sócio enviou PDF e pediu contrarrazões baseadas nele" → extraia os dados do PDF e chame executar_acao(acao="gerar_peca_estudio", templateType="contrarrazoes", description="[dados extraídos do PDF]")
    OBRIGATÓRIO: preencha templateType com o tipo EXATO (execucao, cumprimento_sentenca, acao_monitoria, peticao_inicial, contestacao, recurso_apelacao, agravo_instrumento, contrarrazoes, habeas_corpus, mandado_seguranca, acordo_extrajudicial, notificacao_extrajudicial, outro). Preencha clientName e description com TODOS os dados disponíveis.
 10. GERAR CONTRATO/ACORDO: Para contratos de renegociação, termos de composição, acordos extrajudiciais, use executar_acao com acao="gerar_contrato", debtorName e description contendo TODOS os detalhes (valores, parcelas, datas, condições).
-11. ANÁLISE DE MÍDIA: Você recebe automaticamente o conteúdo extraído de imagens (OCR), áudios (transcrição), PDFs e documentos Word. SEMPRE use esses dados concretos ao gerar peças — nunca deixe placeholders quando os dados estão disponíveis nos documentos.
-12. CONSULTAR SISTEMA: Use consultar_sistema para: listar clientes, ver processos, consultar financeiro, prazos pendentes, agenda, contratos e negociações. Sócios acessam TODOS os dados. Clientes só veem seus próprios dados.
+11. ANÁLISE DE MÍDIA: Você recebe automaticamente o conteúdo extraído de imagens (OCR), áudios (transcrição), PDFs e documentos Word enviados no WhatsApp. SEMPRE use esses dados concretos ao gerar peças e contratos. Esses documentos são fonte prioritária na conversa. Nunca deixe placeholders quando os dados estiverem disponíveis nos documentos.
+12. CONSULTAR SISTEMA: Use consultar_sistema para: ${describeSecretaryQueryCapabilities()}. Sócios acessam TODOS os dados. Clientes só veem seus próprios dados.
 13. EXECUTAR AÇÕES NO SISTEMA: Use executar_acao para:
-   - cadastrar_devedor: Cadastrar novo devedor
-   - cadastrar_cliente: Cadastrar novo cliente
-   - atualizar_cliente: ATUALIZAR dados de cliente existente (endereço, telefone, CNPJ, email, notas, representante)
-   - atualizar_devedor: ATUALIZAR dados de devedor existente (endereço, telefone, CPF, email, notas)
-   - vincular_processo: Vincular processo a devedor
-   - gerar_relatorio_cliente: Relatório completo de um cliente
-   - relatorio_devedor: Gerar relatório do estado dos processos de um devedor (movimentações, status, vara, valor). Use debtorName.
-   - listar_documentos_devedor: Listar todos os documentos anexados a um devedor. Use debtorName.
-   - arquivar_documento: Arquivar documento recebido
-   - gerar_contrato: Gerar contrato/acordo/termo de renegociação
-   - gerar_peca_estudio: Gerar QUALQUER peça jurídica (petição, contestação, recurso, etc.)
-   - gerar_relatorio_executivo: Relatório executivo completo do escritório
+${describeSecretaryActionCapabilities()}
 REGRA DE ATUALIZAÇÃO: Quando o sócio enviar documentos (procuração, contrato social, RG/CPF) e pedir para "melhorar o cadastro", "atualizar", "colocar esses dados", use atualizar_cliente ou atualizar_devedor com os dados extraídos do documento.
 14. PORTAL DO CLIENTE VIA WHATSAPP: Clientes podem consultar seus processos, prazos e situação financeira.
 
@@ -1440,6 +1763,7 @@ AUTONOMIA TOTAL - VOCÊ É UM AGENTE DE IA COMPLETO:
 - Quando um sócio pedir QUALQUER coisa, FAÇA imediatamente. Nunca diga "não posso", "não tenho permissão", "entre no sistema".
 - Se as informações estiverem incompletas, PERGUNTE o que falta de forma objetiva e depois FAÇA.
 - Para dúvidas jurídicas, use pesquisar_web. Para dados do escritório, use consultar_sistema. Para ações, use executar_acao.
+- Quando o sócio der um comando objetivo, obedeça o comando. Só pergunte algo se faltar um dado realmente indispensável para executar com segurança.
 - Você pode gerar peças, contratos, relatórios, cadastrar clientes/devedores, consultar qualquer dado.
 - Se o sócio enviar documentos e pedir uma peça, extraia as informações e gere a peça.
 - Eventuais correções serão feitas pelo Dr. Ronald no módulo semi-automático.
@@ -1447,9 +1771,10 @@ AUTONOMIA TOTAL - VOCÊ É UM AGENTE DE IA COMPLETO:
 
 ENVIO DE DOCUMENTOS VIA WHATSAPP — REGRA CRÍTICA:
 - Quando o sistema gerar uma peça/contrato, ele ENVIA o arquivo Word automaticamente por esta conversa.
-- Se o sócio disser "me mande aqui", "manda o arquivo", "envia o documento", "quero o arquivo", "me manda" ou qualquer variação: CHAME gerar_peca_estudio ou gerar_contrato NOVAMENTE com os mesmos dados para regenerar e reenviar. NUNCA diga que não pode enviar.
+- Só reenvie automaticamente um documento quando o sócio pedir EXPLICITAMENTE o arquivo Word/docx e indicar o tipo do documento atual, por exemplo "mande o contrato em Word" ou "reenvie a petição em Word". Pedidos vagos como "manda aqui" ou "traga aqui" NÃO autorizam reaproveitar a última peça/contrato.
 - VOCÊ TEM TOTAL CAPACIDADE DE ENVIAR DOCUMENTOS. Já enviou inúmeros. Jamais diga "não posso enviar documentos diretamente".
 - Se a ferramenta retornar que o envio falhou, diga "Estou gerando novamente para reenviar" e CHAME a ferramenta de geração de novo.
+- EXCEÇÃO DE SEGURANÇA: para reenviar documento já arquivado no sistema por meio de enviar_documento_sistema, peça confirmação humana explícita antes do envio. Só use confirmed=true quando houver autorização expressa.
 
 REGRAS:
 - NUNCA compartilhe dados de outros clientes
@@ -1472,6 +1797,8 @@ CONTEXTO INSUFICIENTE:
 - Quando a mensagem do cliente for vaga, incompleta ou sem contexto suficiente para dar uma resposta adequada, PEÇA MAIS INFORMAÇÕES antes de responder
 - Exemplos: se o cliente diz apenas "quero saber do meu processo" sem especificar qual, pergunte qual processo; se diz "preciso de ajuda" sem detalhar, pergunte com o que exatamente precisa de ajuda
 - Seja educada e objetiva ao pedir mais detalhes, sem parecer interrogativa
+
+${operationalContext}
 
 CLASSIFICAÇÃO DE INTENÇÃO (OBRIGATÓRIO — faça isso antes de agir):
 Antes de responder, classifique internamente a mensagem recebida em uma destas categorias:
@@ -1605,132 +1932,20 @@ FORMATO DE AÇÕES (invisíveis para o cliente, processadas internamente):
 }
 
 async function processActions(response: string, tenantId: number, jid: string, contactName: string, clientId?: number): Promise<string> {
-  let cleanResponse = response;
-
-  cleanResponse = cleanResponse.replace(/\[AÇÃO:PESQUISAR\|[^\]]+\]/g, "").trim();
-
-  const pieceMatch = response.match(/\[AÇÃO:GERAR_PEÇA\|([^|]+)\|([^\]]+)\]/);
-  if (pieceMatch) {
-    const [, pieceType, description] = pieceMatch;
-    console.log(`[Secretary] Piece generation requested: ${pieceType} - ${description}`);
-
-    try {
-      const piecePrompt = `Gere uma ${pieceType} jurídica completa e profissional para o escritório Marques e Serra.
-Advogado responsável: Ronald Ferreira Serra, OAB/DF 23.947.
-Descrição do pedido: ${description}
-Gere o documento completo em formato profissional, com todas as seções necessárias.`;
-
-      const pieceCompletion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: piecePrompt }],
-        max_tokens: 4000,
-        temperature: 0.5,
-      });
-
-      const pieceContent = pieceCompletion.choices[0]?.message?.content || "";
-
-      if (pieceContent) {
-        await storage.createGeneratedPiece({
-          tenantId,
-          title: `${pieceType} - ${description.substring(0, 80)}`,
-          pieceType,
-          contentHtml: pieceContent,
-          prompt: description,
-        });
-
-        await storage.createSecretaryAction({
-          tenantId, jid, contactName,
-          actionType: "gerar_peca",
-          description: `Gerou ${pieceType}: ${description.substring(0, 100)}`,
-          status: "completed",
-          timestamp: new Date(),
-        });
-      }
-    } catch (e) {
-      console.error("[Secretary] Error generating piece:", e);
-    }
-
-    cleanResponse = cleanResponse.replace(/\[AÇÃO:GERAR_PEÇA\|[^\]]+\]/, "").trim();
-  }
-
-  const agendaMatch = response.match(/\[AÇÃO:AGENDAR\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^\]]+)\]/);
-  if (agendaMatch) {
-    const [, date, timeStart, timeEnd, title, responsible] = agendaMatch;
-    try {
-      await storage.createAgendaEvent({
-        tenantId,
-        title: `${title} - ${contactName}`,
-        type: "Reunião",
-        date,
-        timeStart,
-        timeEnd,
-        responsible: responsible || "Dr. Ronald Serra",
-        description: `Agendado via Secretária LexAI para ${contactName}`,
-        sourceType: "secretary",
-        status: "agendado",
-      });
-      await storage.createSecretaryAction({
-        tenantId, jid, contactName,
-        actionType: "agendamento",
-        description: `Agendou reunião: ${title} em ${date} às ${timeStart}`,
-        status: "completed",
-        timestamp: new Date(),
-      });
-    } catch (e) {
-      console.error("[Secretary] Error creating event:", e);
-    }
-    cleanResponse = cleanResponse.replace(/\[AÇÃO:AGENDAR\|[^\]]+\]/, "").trim();
-  }
-
-  const reportMatch = response.match(/\[AÇÃO:RELATÓRIO\|([^|]+)\|([^\]]+)\]/);
-  if (reportMatch) {
-    const [, tipo, descricao] = reportMatch;
-    await storage.createSecretaryAction({
-      tenantId, jid, contactName,
-      actionType: "relatorio",
-      description: `Solicitação de relatório: ${tipo} - ${descricao}`,
-      status: "completed",
-      timestamp: new Date(),
-    });
-    cleanResponse = cleanResponse.replace(/\[AÇÃO:RELATÓRIO\|[^\]]+\]/, "").trim();
-  }
-
-  if (response.includes("[URGENTE]")) {
-    await storage.createSecretaryAction({
-      tenantId, jid, contactName,
-      actionType: "urgencia",
-      description: `Mensagem urgente detectada de ${contactName}`,
-      status: "needs_attention",
-      timestamp: new Date(),
-    });
-    cleanResponse = cleanResponse.replace("[URGENTE]", "").trim();
-  }
-
-  let noteMatch: RegExpExecArray | null;
-  const noteRegex = /\[NOTA:([^\]]+)\]/g;
-  while ((noteMatch = noteRegex.exec(response)) !== null) {
-    const noteText = noteMatch[1].trim();
-    if (clientId && noteText) {
-      try {
-        const client = await storage.getClient(clientId);
-        if (client) {
-          const existingNotes = client.secretaryNotes || "";
-          const timestamp = format(new Date(), "dd/MM/yyyy HH:mm");
-          const updatedNotes = existingNotes
-            ? `${existingNotes}\n[${timestamp}] ${noteText}`
-            : `[${timestamp}] ${noteText}`;
-          await storage.updateClient(clientId, { secretaryNotes: updatedNotes });
-        }
-      } catch (e) {
-        console.error("[Secretary] Error saving note:", e);
-      }
-    }
-    cleanResponse = cleanResponse.replace(noteMatch[0], "").trim();
-  }
-
-  cleanResponse = formatForWhatsApp(cleanResponse);
-
-  return cleanResponse;
+  return processLegacySecretaryActions({
+    response,
+    tenantId,
+    jid,
+    contactName,
+    clientId,
+    openai,
+    storage,
+    createSecretaryAuditLog,
+    createAgendaEvent: storage.createAgendaEvent.bind(storage),
+    generateSimpleLegacyPiece,
+    formatForWhatsApp,
+    runSecretaryJob,
+  });
 }
 
 function formatForWhatsApp(text: string): string {
@@ -2664,76 +2879,6 @@ async function processNegotiationActions(
   return cleanResponse.trim();
 }
 
-async function checkForSignedAgreement(
-  jid: string,
-  tenantId: number,
-  mediaBase64: string,
-  mediaType: string,
-  mediaFileName?: string,
-  mediaMimetype?: string,
-): Promise<{ negotiationId: number } | null> {
-  try {
-    let phone: string | null = null;
-    if (jid.includes("@lid")) {
-      const lidId = jid.split("@")[0];
-      phone = await resolveLidToPhone(lidId);
-    } else {
-      phone = jid.split("@")[0].replace(/\D/g, "");
-    }
-    if (!phone) return null;
-
-    const phoneVariants = normalizePhoneForComparison(phone);
-    const allNegotiations = await storage.getNegotiationsByTenant(tenantId);
-    const closedNegotiations = allNegotiations.filter((n: any) => n.status === "acordo_fechado");
-
-    for (const negotiation of closedNegotiations) {
-      const contacts = await storage.getNegotiationContacts(negotiation.id);
-      for (const contact of contacts) {
-        const contactPhones: string[] = [];
-        if (contact.whatsapp) contactPhones.push(...normalizePhoneForComparison(contact.whatsapp));
-        if (contact.phone) contactPhones.push(...normalizePhoneForComparison(contact.phone));
-
-        const hasMatch = phoneVariants.some((pv) => contactPhones.includes(pv));
-        if (!hasMatch) continue;
-
-        const signedDir = path.join(".", "agreements", "signed");
-        if (!fs.existsSync(signedDir)) fs.mkdirSync(signedDir, { recursive: true });
-
-        const ext = mediaFileName ? path.extname(mediaFileName) : (mediaType === "image" ? ".jpg" : ".pdf");
-        const signedFileName = `Acordo_Assinado_${contact.name.replace(/\s+/g, "_").slice(0, 20)}_${negotiation.id}_${Date.now()}${ext}`;
-        const signedFilePath = path.join(signedDir, signedFileName);
-
-        const buffer = Buffer.from(mediaBase64, "base64");
-        fs.writeFileSync(signedFilePath, buffer);
-
-        const crypto = await import("crypto");
-        const fileHash = crypto.createHash("md5").update(buffer).digest("hex");
-
-        await storage.createDocument({
-          tenantId,
-          clientId: negotiation.clientId,
-          caseId: negotiation.caseId || null,
-          title: `Acordo Assinado - ${contact.name}`,
-          type: "acordo_assinado",
-          filePath: signedFilePath,
-          fileHash,
-          fileSize: buffer.length,
-          mimeType: mediaMimetype || (mediaType === "image" ? "image/jpeg" : "application/pdf"),
-          aiGenerated: false,
-        });
-
-        await storage.updateNegotiation(negotiation.id, { status: "finalizado" });
-
-        console.log(`[Secretary] Signed agreement archived: ${signedFilePath} for negotiation #${negotiation.id}`);
-        return { negotiationId: negotiation.id };
-      }
-    }
-  } catch (err) {
-    console.error("[Secretary] Error checking for signed agreement:", err);
-  }
-  return null;
-}
-
 async function alertLawyer(tenantId: number, message: string): Promise<void> {
   try {
     const tenantUsers = await storage.getUsersByTenant(tenantId);
@@ -2742,14 +2887,14 @@ async function alertLawyer(tenantId: number, message: string): Promise<void> {
     if (admin) {
       console.log(`[Secretary] Alerting lawyer: ${message.substring(0, 100)}`);
 
-      await storage.createSecretaryAction({
+      await createSecretaryAuditLog({
         tenantId,
         jid: "system",
         contactName: "Sistema LexAI",
         actionType: "alerta_negociacao",
         description: message,
         status: "completed",
-        timestamp: new Date(),
+        actorType: "unknown",
       });
     }
   } catch (e) {
@@ -2768,9 +2913,11 @@ async function handleNegotiationMessage(
   const { negotiation, contact, client, caseData, rounds } = negData;
   const negotiationMode = negotiation.negotiationMode || "semi_automatico";
 
-  const ctx = await getOrCreateContextWithDB(jid, tenantId);
-  ctx.messages.push({ role: "user", content: message });
-  if (ctx.messages.length > 30) ctx.messages = ctx.messages.slice(-30);
+  const ctx = await getOrCreateConversationContext(jid, tenantId, {
+    getWhatsAppConversation: storage.getWhatsAppConversation.bind(storage),
+    getMessagesByConversation: storage.getMessagesByConversation.bind(storage),
+  });
+  appendMessageToConversationContext(ctx, { role: "user", content: message });
   await saveMessageToDB(jid, tenantId, "user", message);
 
   const systemPrompt = buildNegotiatorPrompt(negotiation, contact, client, caseData, rounds, config);
@@ -2791,7 +2938,7 @@ async function handleNegotiationMessage(
 
   aiResponse = await processNegotiationActions(aiResponse, negotiation, contact, tenantId, jid, contactName, client, caseData, rounds);
 
-  ctx.messages.push({ role: "assistant", content: aiResponse });
+  appendMessageToConversationContext(ctx, { role: "assistant", content: aiResponse });
   await saveMessageToDB(jid, tenantId, "assistant", aiResponse);
 
   try {
@@ -2811,21 +2958,21 @@ async function handleNegotiationMessage(
 
   if (negotiationMode === "automatico") {
     await whatsappService.sendToJid(jid, aiResponse, tenantId);
-    await storage.createSecretaryAction({
+    await createSecretaryAuditLog({
       tenantId, jid, contactName,
       actionType: "negociacao_auto",
       description: `[Negociação #${negotiation.id}] Respondeu ao devedor ${contact.name}: "${message.substring(0, 60)}..."`,
       status: "completed",
-      timestamp: new Date(),
+      actorType: "client",
     });
   } else {
-    await storage.createSecretaryAction({
+    await createSecretaryAuditLog({
       tenantId, jid, contactName,
       actionType: "negociacao_pendente",
       description: `[Negociação #${negotiation.id}] Rascunho para devedor ${contact.name}: "${message.substring(0, 60)}..."`,
       status: "pending_approval",
       draftMessage: aiResponse,
-      timestamp: new Date(),
+      actorType: "client",
     });
   }
 }
@@ -2837,16 +2984,19 @@ async function executeSecretaryAction(
   isSocio: boolean,
   clientId?: number,
   jid?: string,
-  conversationMessages?: Array<{ role: string; content: string }>
+  conversationMessages?: Array<{ role: string; content: string }>,
+  actorUserId?: number,
 ): Promise<string> {
-  const requiresSocio = ["cadastrar_devedor", "cadastrar_cliente", "atualizar_cliente", "atualizar_devedor", "vincular_processo", "arquivar_documento", "enviar_documento_sistema", "gerar_contrato", "gerar_peca_estudio", "gerar_relatorio_executivo", "relatorio_devedor", "listar_documentos_devedor"];
-  
-  if (requiresSocio.includes(acao) && !isSocio) {
+  if (!canActorExecuteSecretaryAction(acao, isSocio)) {
     return "Apenas os sócios do escritório podem executar essa ação. Se você é um cliente e precisa de algo, entre em contato com o Dr. Ronald.";
   }
 
   if (acao === "gerar_relatorio_cliente" && !isSocio && !clientId) {
     return "Não foi possível identificar seu cadastro. Entre em contato com o escritório para atualizar seus dados.";
+  }
+
+  if (requiresExplicitApprovalForAction(acao) && args.confirmed !== true) {
+    return "Essa ação exige confirmação humana explícita antes do envio. Confirme o documento e peça novamente com autorização expressa para enviar.";
   }
 
   try {
@@ -3002,6 +3152,182 @@ async function executeSecretaryAction(
         });
 
         return `Processo vinculado com sucesso!\nNúmero: ${caseNumber}\nDevedor: ${debtorV.name}\nProcesso ID: ${newCase.id}`;
+      }
+
+      case "cadastrar_processo": {
+        const caseNumber = args.caseNumber || "";
+        const title = args.title || "";
+        const clientName = args.clientName || "";
+        const debtorName = args.debtorName || "";
+
+        if (!caseNumber || !title || (!clientName && !debtorName)) {
+          return "Preciso do número do processo, do título e do cliente ou devedor vinculado para cadastrar o processo.";
+        }
+
+        let resolvedClientId: number | null = null;
+        let resolvedDebtorName = debtorName || "";
+
+        if (clientName) {
+          const clients = await storage.getClientsByTenant(tenantId);
+          const foundClient = clients.find((c: any) =>
+            c.name?.toLowerCase().includes(clientName.toLowerCase()) ||
+            clientName.toLowerCase().includes(c.name?.toLowerCase() || "")
+          );
+          if (!foundClient) return `Cliente "${clientName}" não encontrado.`;
+          resolvedClientId = foundClient.id;
+        }
+
+        if (!resolvedClientId && debtorName) {
+          const debtors = await storage.getDebtorsByTenant(tenantId);
+          const foundDebtor = debtors.find((d: any) =>
+            d.name?.toLowerCase().includes(debtorName.toLowerCase()) ||
+            debtorName.toLowerCase().includes(d.name?.toLowerCase() || "")
+          );
+          if (!foundDebtor) return `Devedor "${debtorName}" não encontrado.`;
+          resolvedClientId = foundDebtor.clientId;
+          resolvedDebtorName = foundDebtor.name;
+        }
+
+        if (!resolvedClientId) return "Não consegui identificar o cliente responsável por esse processo.";
+
+        const createdCase = await storage.createCase({
+          tenantId,
+          clientId: resolvedClientId,
+          caseNumber,
+          title,
+          caseType: args.caseType || "civil",
+          court: args.court || "TJDFT",
+          subject: args.description || args.subject || "",
+          status: args.status || "ativo",
+          reu: resolvedDebtorName || undefined,
+          vara: args.vara || undefined,
+          caseClass: args.caseClass || undefined,
+        });
+
+        return `Processo cadastrado com sucesso!\nNúmero: ${createdCase.caseNumber}\nTítulo: ${createdCase.title}\nTribunal: ${createdCase.court}\nID: ${createdCase.id}`;
+      }
+
+      case "atualizar_processo": {
+        const caseNumber = args.caseNumber || "";
+        const searchTitle = args.title || "";
+        if (!caseNumber && !searchTitle) {
+          return "Preciso do número do processo ou de um título para localizar o processo e atualizar.";
+        }
+
+        const allCases = await storage.getCasesByTenant(tenantId);
+        const foundCase = allCases.find((c: any) =>
+          (caseNumber && c.caseNumber === caseNumber) ||
+          (searchTitle && (
+            c.title?.toLowerCase().includes(searchTitle.toLowerCase()) ||
+            searchTitle.toLowerCase().includes(c.title?.toLowerCase() || "")
+          ))
+        );
+
+        if (!foundCase) return `Processo "${caseNumber || searchTitle}" não encontrado.`;
+
+        const updateData: any = {};
+        if (args.title && args.title !== foundCase.title) updateData.title = args.title;
+        if (args.status) updateData.status = args.status;
+        if (args.court) updateData.court = args.court;
+        if (args.caseType) updateData.caseType = args.caseType;
+        if (args.caseClass) updateData.caseClass = args.caseClass;
+        if (args.subject || args.description) updateData.subject = args.subject || args.description;
+        if (args.judge) updateData.judge = args.judge;
+        if (args.vara) updateData.vara = args.vara;
+
+        if (Object.keys(updateData).length === 0) {
+          return `Nenhum dado novo foi informado para atualizar o processo ${foundCase.caseNumber}.`;
+        }
+
+        const updatedCase = await storage.updateCase(foundCase.id, updateData, tenantId);
+        return `Processo atualizado com sucesso!\nNúmero: ${updatedCase.caseNumber}\nTítulo: ${updatedCase.title}\nStatus: ${updatedCase.status}`;
+      }
+
+      case "cadastrar_contrato": {
+        const clientName = args.clientName || "";
+        if (!clientName) return "Preciso do nome do cliente para cadastrar o contrato.";
+
+        const clients = await storage.getClientsByTenant(tenantId);
+        const foundClient = clients.find((c: any) =>
+          c.name?.toLowerCase().includes(clientName.toLowerCase()) ||
+          clientName.toLowerCase().includes(c.name?.toLowerCase() || "")
+        );
+        if (!foundClient) return `Cliente "${clientName}" não encontrado.`;
+
+        const today = new Date().toISOString();
+        const createdContract = await storage.createContract({
+          tenantId,
+          clientId: foundClient.id,
+          type: args.documentType || args.type || "honorarios",
+          description: args.description || `Contrato criado pela Secretaria LexAI para ${foundClient.name}`,
+          monthlyValue: args.amount || undefined,
+          startDate: args.startDate ? new Date(args.startDate) : new Date(today),
+          endDate: args.endDate ? new Date(args.endDate) : null,
+          status: args.status || "ativo",
+        });
+
+        return `Contrato cadastrado com sucesso!\nCliente: ${foundClient.name}\nTipo: ${createdContract.type}\nStatus: ${createdContract.status}\nID: ${createdContract.id}`;
+      }
+
+      case "cadastrar_prazo": {
+        const title = args.title || "";
+        const dueDate = args.dueDate || "";
+        if (!title || !dueDate) {
+          return "Preciso do título e da data do prazo no formato YYYY-MM-DD para cadastrar.";
+        }
+
+        let targetCaseId: number | null = null;
+        if (args.caseNumber) {
+          const allCases = await storage.getCasesByTenant(tenantId);
+          const foundCase = allCases.find((c: any) => c.caseNumber === args.caseNumber);
+          if (foundCase) targetCaseId = foundCase.id;
+        }
+
+        const createdDeadline = await storage.createDeadline({
+          tenantId,
+          caseId: targetCaseId,
+          title,
+          description: args.description || "",
+          dueDate: new Date(dueDate),
+          type: args.documentType || "manual",
+          priority: args.priority || "normal",
+          status: args.status || "pendente",
+        });
+
+        return `Prazo cadastrado com sucesso!\nTítulo: ${createdDeadline.title}\nVencimento: ${new Date(createdDeadline.dueDate).toLocaleDateString("pt-BR")}\nID: ${createdDeadline.id}`;
+      }
+
+      case "agendar_compromisso": {
+        const date = args.date || "";
+        const timeStart = args.timeStart || "";
+        const title = args.title || args.description || "";
+        if (!date || !timeStart || !title) {
+          return "Preciso da data (YYYY-MM-DD), horário inicial (HH:MM) e título do compromisso para agendar.";
+        }
+
+        const timeEnd = args.timeEnd || (() => {
+          const [h, m] = String(timeStart).split(":").map((v: string) => Number(v));
+          if (Number.isNaN(h) || Number.isNaN(m)) return "";
+          return `${String((h + 1) % 24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+        })();
+
+        const createdEvent = await storage.createAgendaEvent({
+          tenantId,
+          clientId: null,
+          caseId: null,
+          title,
+          type: args.documentType || "Compromisso",
+          date,
+          timeStart,
+          timeEnd: timeEnd || null,
+          responsible: args.responsible || "Dr. Ronald Serra",
+          description: args.description || "Agendado pela Secretaria LexAI",
+          sourceType: "secretary",
+          sourceId: null,
+          status: args.status || "agendado",
+        });
+
+        return `Compromisso agendado com sucesso!\nTítulo: ${createdEvent.title}\nData: ${createdEvent.date}\nHorário: ${createdEvent.timeStart}${createdEvent.timeEnd ? ` às ${createdEvent.timeEnd}` : ""}`;
       }
 
       case "gerar_relatorio_cliente": {
@@ -3228,8 +3554,8 @@ async function executeSecretaryAction(
           else pieceType = "peticao_inicial";
           console.log(`[Secretary] Auto-detected pieceType from prompt: ${pieceType}`);
         }
-        const partyNameP = args.clientName || args.debtorName || "";
-        const caseNumberP = args.caseNumber || "";
+        let partyNameP = args.clientName || args.debtorName || "";
+        let caseNumberP = args.caseNumber || "";
 
         if (!prompt) return "Preciso da descrição detalhada da peça: tipo, partes envolvidas, fatos, pedidos desejados.";
 
@@ -3241,6 +3567,7 @@ async function executeSecretaryAction(
           await new Promise(r => setTimeout(r, 2000 * pieceAttempt));
         }
         try {
+          console.log(`[Secretary] gerar_peca_estudio: attempt ${pieceAttempt + 1}/${MAX_PECA_RETRIES + 1}, pieceType=${pieceType}, promptLength=${prompt.length}, openaiKeyConfigured=${Boolean(process.env.AI_INTEGRATIONS_OPENAI_API_KEY)}`);
           let documentContext = "";
           if (conversationMessages && conversationMessages.length > 0) {
             const docMessages = conversationMessages.filter(m =>
@@ -3263,6 +3590,30 @@ async function executeSecretaryAction(
           let matchedDebtors: any[] = [];
           const debtorNameFromArgs = args.debtorName || "";
           const promptLower = prompt.toLowerCase();
+          const normalizedPrompt = normalizeForMatch(prompt);
+          const allowsExampleCaseFromSystem = /(qualquer processo|qlq processo|pegue qualquer processo|use qualquer processo|algum processo do sistema|processo aleatorio|processo aleatorio do sistema)/.test(normalizedPrompt);
+
+          if (allowsExampleCaseFromSystem && !caseNumberP && !partyNameP) {
+            const allCases = await storage.getCasesByTenant(tenantId);
+            const exampleCase = allCases.find((item: any) => item.caseNumber && (item.title || item.clientId)) || allCases.find((item: any) => item.caseNumber);
+            if (exampleCase) {
+              caseNumberP = exampleCase.caseNumber || caseNumberP;
+              if (exampleCase.clientId) {
+                const exampleClient = await storage.getClient(exampleCase.clientId, tenantId);
+                if (exampleClient?.name) {
+                  partyNameP = exampleClient.name;
+                }
+              }
+              systemCtx += "=== PROCESSO DE EXEMPLO SELECIONADO DO SISTEMA ===\n";
+              systemCtx += "O sócio autorizou usar qualquer processo real do sistema apenas como modelo interno sem validade.\n";
+              if (exampleCase.caseNumber) systemCtx += `NUMERO DO PROCESSO DE EXEMPLO: ${exampleCase.caseNumber}\n`;
+              if (exampleCase.title) systemCtx += `TITULO DO PROCESSO: ${exampleCase.title}\n`;
+              if (exampleCase.court) systemCtx += `TRIBUNAL/ORGAO: ${exampleCase.court}\n`;
+              if (partyNameP) systemCtx += `PARTE VINCULADA AO PROCESSO: ${partyNameP}\n`;
+              systemCtx += "A peca deve ser tratada explicitamente como MODELO PADRAO SEM VALIDADE, apenas para demonstracao interna.\n\n";
+            }
+          }
+
           if (partyNameP) {
             const allClients = await storage.getClientsByTenant(tenantId);
             const foundClient = allClients.find(c => c.name?.toLowerCase().includes(partyNameP.toLowerCase()));
@@ -3360,7 +3711,28 @@ async function executeSecretaryAction(
           };
           const pieceLabel = pieceTypeLabels[pieceType] || pieceType;
 
-          const fullPrompt = `${prompt}${caseNumberP ? `\nPROCESSO: ${caseNumberP}` : ""}${documentContext ? `\n${documentContext}` : ""}`;
+          const pieceBrief = buildPieceInstructionBrief({
+            userCommand: prompt,
+            pieceType,
+            caseNumber: caseNumberP,
+            clientName: args.clientName || "",
+            debtorName: args.debtorName || "",
+            conversationMessages,
+            systemContext: systemCtx || undefined,
+          });
+          const validationError = validatePieceRequest({
+            pieceType,
+            prompt,
+            caseNumber: caseNumberP,
+            partyName: partyNameP,
+            documentCount: pieceBrief.documentCount,
+          });
+          if (validationError) {
+            return validationError;
+          }
+          const fullPrompt = pieceBrief.fullPrompt;
+          console.log(`[Secretary] gerar_peca_estudio: prepared prompt for ${pieceLabel} with fullPromptLength=${fullPrompt.length}, sourceDocumentCount=${pieceBrief.documentCount}`);
+          console.log(`[Secretary] Piece briefing prepared with ${pieceBrief.documentCount} extracted document(s) for ${pieceLabel}.`);
 
           const combinedText = (prompt + " " + (args.description || "")).toLowerCase();
           const recentMsgs = (conversationMessages || []).filter(m => m.role === "user").slice(-3).map(m => m.content.toLowerCase()).join(" ");
@@ -3369,15 +3741,21 @@ async function executeSecretaryAction(
           const wantsRonald = !wantsBothAttorneys && /ronald/i.test(allText);
           const selectedAttorney = wantsRonald ? "ronald" : "pedro";
           const attorneys = wantsBothAttorneys ? ["pedro", "ronald"] : undefined;
+          const referenceFiles = pieceType === "recurso_apelacao"
+            ? await loadAppealReferenceModelFile()
+            : [];
 
           const studioResult = await generateStudioPiece({
             prompt: fullPrompt,
             templateType: pieceType,
             attorney: selectedAttorney,
             attorneys,
+            files: referenceFiles,
+            userId: actorUserId,
             systemContext: systemCtx || undefined,
             tenantId,
           });
+          console.log(`[Secretary] gerar_peca_estudio: generateStudioPiece completed for ${pieceType}, hasContent=${Boolean(studioResult.contentHtml)}, contentLength=${studioResult.contentHtml?.length || 0}`);
 
           let pieceContent = studioResult.contentHtml || "";
           if (!pieceContent) throw new Error("Studio retornou conteúdo vazio para a peça — retentando...");
@@ -3483,22 +3861,31 @@ async function executeSecretaryAction(
             title: `${pieceLabel} - ${prompt.substring(0, 80)}`,
             pieceType,
             contentHtml: pieceContent,
-            prompt,
+            prompt: fullPrompt,
           });
 
-          await storage.createSecretaryAction({
-            tenantId, jid: jid || "", contactName: "Sócio",
+          await createSecretaryAuditLog({
+            tenantId,
+            jid: jid || "",
+            contactName: "Sócio",
             actionType: "gerar_peca_estudio",
             description: `Gerou ${pieceLabel}: ${prompt.substring(0, 100)}`,
             status: "completed",
-            timestamp: new Date(),
+            actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+            pendingAction: {
+              sourceDocuments: pieceBrief.sourceDocuments,
+              sourceDocumentCount: pieceBrief.documentCount,
+              pieceType,
+              caseNumber: caseNumberP || null,
+              partyName: partyNameP || null,
+            },
           });
 
           let docSent = false;
           let usedFallbackWord = false;
           if (jid) {
             try {
-              let wordBuffer = await generateWordWithLetterhead(pieceContent, `${pieceLabel} - ${savedPiece.id}`);
+              let wordBuffer = await generateWordWithLetterhead(pieceContent, `${pieceLabel} - ${savedPiece.id}`, tenantId);
               if (!wordBuffer) {
                 console.warn(`[Secretary] generateWordWithLetterhead returned null for piece ${savedPiece.id}. Generating plain Word as fallback.`);
                 wordBuffer = await generatePlainWord(pieceContent, `${pieceLabel} - ${savedPiece.id}`);
@@ -3514,6 +3901,7 @@ async function executeSecretaryAction(
                 caption,
                 tenantId
               );
+              console.log(`[Secretary] gerar_peca_estudio: sendDocumentToJid result for piece ${savedPiece.id}: docSent=${docSent}, usedFallbackWord=${usedFallbackWord}, fileName=${pieceFileName}`);
             } catch (docErr) {
               console.error("[Secretary] Error generating/sending piece Word doc:", docErr);
             }
@@ -3528,7 +3916,7 @@ async function executeSecretaryAction(
           return `✅ PEÇA GERADA! Salva no Studio (ID: ${savedPiece.id}).\n⚠️ FALHA AO ENVIAR O ARQUIVO WORD. Para reenviar, chame gerar_peca_estudio novamente com os mesmos parâmetros.\nINSTRUÇÃO CRÍTICA PARA RESPOSTA AO SÓCIO: NÃO reproduza o texto da peça no chat. Informe apenas que houve falha no envio do Word e que pode solicitar novamente para reenviar.`;
         } catch (pieceErr: any) {
           lastPieceErr = pieceErr;
-          console.error(`[Secretary] gerar_peca_estudio attempt ${pieceAttempt + 1} failed:`, pieceErr?.message || pieceErr);
+          console.error(`[Secretary] gerar_peca_estudio attempt ${pieceAttempt + 1} failed for pieceType=${pieceType}, promptLength=${prompt.length}:`, pieceErr?.message || pieceErr);
           if (pieceAttempt < MAX_PECA_RETRIES) {
             continue;
           }
@@ -3672,30 +4060,35 @@ INSTRUÇÕES:
             prompt: `Contrato para ${partyName}. ${desc}`,
           });
 
-          const plainText = contractHtml.replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
-
           let docSent = false;
           if (jid) {
             try {
-              const wordBuffer = await generateWordWithLetterhead(contractHtml, contractTitle);
-              if (wordBuffer) {
-                const safePartyName = partyName.replace(/[^a-zA-ZÀ-ÿ\s]/g, "").trim().replace(/\s+/g, "_") || "Parte";
-                const fileName = `Contrato_Renegociacao_${safePartyName}.docx`;
-                docSent = await whatsappService.sendDocumentToJid(
-                  jid, wordBuffer, fileName,
-                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                  `📄 Contrato de Renegociação - ${partyName}\nGerado por LexAI em ${format(new Date(), "dd/MM/yyyy 'às' HH:mm")}`,
-                  tenantId
-                );
-              }
+              const safePartyName = partyName.replace(/[^a-zA-ZÀ-ÿ\s]/g, "").trim().replace(/\s+/g, "_") || "Parte";
+              const fileName = `Contrato_Renegociacao_${safePartyName}.docx`;
+              const sendResult = await runSecretaryJob({
+                kind: "word_document_delivery",
+                operation: () => sendGeneratedWordDocument({
+                  jid,
+                  tenantId,
+                  title: `Contrato de Renegociação - ${partyName}`,
+                  fileName,
+                  contentHtml: contractHtml,
+                  generateWordWithLetterhead,
+                  generatePlainWord,
+                  sendDocumentToJid: whatsappService.sendDocumentToJid.bind(whatsappService),
+                }),
+              });
+              docSent = sendResult.sent;
             } catch (docErr) {
               console.error("[Secretary] Error generating contract Word doc:", docErr);
             }
           }
 
-          const preview = plainText.substring(0, 1500);
-          const sendStatus = docSent ? "O documento Word com papel timbrado foi enviado diretamente nesta conversa." : "O documento está disponível no LexAI Studio para download.";
-          return `✅ CONTRATO GERADO COM SUCESSO!\n\n📄 ${contractTitle}\nID: ${savedContract.id}\nSalvo no LexAI Studio para edição e download.\n${sendStatus}\n\n--- PRÉVIA ---\n${preview}${plainText.length > 1500 ? "\n\n[...documento completo disponível no Studio]" : ""}\n\nNÃO inclua links na resposta. ${docSent ? "O documento Word JÁ FOI ENVIADO automaticamente." : "Informe que está disponível no Studio."}`;
+          if (docSent) {
+            return `✅ CONTRATO GERADO COM SUCESSO!\n\n📄 ${contractTitle}\nID: ${savedContract.id}\nSalvo no LexAI Studio para edição.\nO documento Word com papel timbrado foi enviado diretamente nesta conversa.\n\nINSTRUÇÃO CRÍTICA PARA RESPOSTA AO SÓCIO: Informe APENAS que o contrato foi gerado e enviado em Word. NÃO reproduza cláusulas, prévia, texto contratual ou trechos do documento no chat.`;
+          }
+
+          return `✅ CONTRATO GERADO COM SUCESSO!\n\n📄 ${contractTitle}\nID: ${savedContract.id}\nSalvo no LexAI Studio para edição e download.\n⚠️ Houve falha no envio automático do Word via WhatsApp.\n\nINSTRUÇÃO CRÍTICA PARA RESPOSTA AO SÓCIO: Informe APENAS que o contrato foi gerado no Studio e que houve falha no envio do Word. NÃO reproduza cláusulas, prévia, texto contratual ou trechos do documento no chat.`;
         } catch (contractErr) {
           console.error("[Secretary] Error generating contract:", contractErr);
           return "Erro ao gerar o contrato. Tente novamente em alguns instantes.";
@@ -3904,43 +4297,31 @@ export const secretaryService = {
     mediaFileName?: string,
     mediaMimetype?: string,
   ): Promise<void> {
+    let agentRun: { id: number } | null = null;
     try {
       const config = await storage.getSecretaryConfig(tenantId);
       if (!config || !config.isActive) return;
 
-      if (!isWithinBusinessHours(config)) {
-        if (config.offHoursMessage) {
-          if (config.mode === "auto") {
-            await whatsappService.sendToJid(jid, config.offHoursMessage, tenantId);
-            await storage.createSecretaryAction({
-              tenantId, jid, contactName,
-              actionType: "fora_horario",
-              description: `Mensagem fora do horário de ${contactName}: "${message.substring(0, 100)}"`,
-              status: "completed",
-              timestamp: new Date(),
-            });
-          } else {
-            await storage.createSecretaryAction({
-              tenantId, jid, contactName,
-              actionType: "fora_horario",
-              description: `Mensagem fora do horário. Rascunho: "${config.offHoursMessage}"`,
-              status: "pending_approval",
-              draftMessage: config.offHoursMessage,
-              timestamp: new Date(),
-            });
-          }
-        }
-        return;
-      }
-
       let enrichedMessage = message;
+      let extractedMediaContent = "";
 
       if (mediaBase64 && mediaType) {
         console.log(`[Secretary] Processing ${mediaType} media from ${contactName}...`);
-        const extractedContent = await processMediaContent(mediaType, mediaBase64, mediaFileName, mediaMimetype);
+        const extractedContent = await runSecretaryJob({
+          kind: "media_processing",
+          operation: () => processSecretaryMediaContent({
+            openai,
+            mediaType,
+            base64Data: mediaBase64,
+            fileName: mediaFileName,
+            mimetype: mediaMimetype,
+          }),
+        });
         if (extractedContent) {
-          if (extractedContent.startsWith("__MEDIA_FAILED__:")) {
-            const failedType = extractedContent.replace("__MEDIA_FAILED__:", "");
+          if (extractedContent.startsWith("__MEDIA_FAILED__:") || extractedContent.startsWith("[Erro ao processar mídia:")) {
+            const failedType = extractedContent.startsWith("__MEDIA_FAILED__:")
+              ? extractedContent.replace("__MEDIA_FAILED__:", "")
+              : mediaType || "arquivo";
             console.error(`[Secretary] Media failed to process: type=${failedType}, fileName=${mediaFileName}`);
             const failMsg = failedType === "audio"
               ? "Não consegui transcrever o áudio enviado. Por favor, tente reenviar ou descreva o conteúdo por texto."
@@ -3948,23 +4329,27 @@ export const secretaryService = {
             if (config.mode === "auto") {
               await whatsappService.sendToJid(jid, failMsg, tenantId);
             } else {
-              await storage.createSecretaryAction({
+              await createSecretaryAuditLog({
                 tenantId, jid, contactName,
                 actionType: "falha_midia",
                 description: `Falha ao processar ${failedType}: ${mediaFileName || "arquivo"}`,
                 status: "pending_approval",
                 draftMessage: failMsg,
-                timestamp: new Date(),
+                actorType: "unknown",
+                executionMode: config.mode,
               });
             }
             return;
           } else if (mediaType === "audio") {
+            extractedMediaContent = extractedContent;
             enrichedMessage = `[Transcrição do áudio enviado]: ${extractedContent}`;
           } else if (mediaType === "image") {
+            extractedMediaContent = extractedContent;
             enrichedMessage = message !== "[Imagem recebida]"
               ? `${message}\n\n[Conteúdo da imagem]: ${extractedContent}`
               : `[Conteúdo da imagem enviada]: ${extractedContent}`;
           } else if (mediaType === "document") {
+            extractedMediaContent = extractedContent;
             const userInstructions = (message && message !== `[Documento: ${mediaFileName}]`) ? message : "";
             enrichedMessage = userInstructions
               ? `${userInstructions}\n\n[Conteúdo do documento "${mediaFileName || 'arquivo'}"]: ${extractedContent.substring(0, 6000)}`
@@ -3974,7 +4359,26 @@ export const secretaryService = {
       }
 
       if (mediaBase64 && (mediaType === "document" || mediaType === "image")) {
-        const signedDoc = await checkForSignedAgreement(jid, tenantId, mediaBase64, mediaType, mediaFileName, mediaMimetype);
+        const signedDoc = await runSecretaryJob({
+          kind: "signed_agreement_archival",
+          operation: () => archiveSignedAgreementIfMatched({
+            jid,
+            tenantId,
+            mediaBase64,
+            mediaType,
+            mediaFileName,
+            mediaMimetype,
+            extractedText: extractedMediaContent,
+            resolveLidToPhone,
+            normalizePhoneForComparison,
+            storage: {
+              getNegotiationsByTenant: storage.getNegotiationsByTenant.bind(storage),
+              getNegotiationContacts: storage.getNegotiationContacts.bind(storage),
+              createDocument: storage.createDocument.bind(storage),
+              updateNegotiation: storage.updateNegotiation.bind(storage),
+            },
+          }),
+        });
         if (signedDoc) {
           console.log(`[Secretary] Signed agreement detected for negotiation #${signedDoc.negotiationId}`);
 
@@ -3987,13 +4391,14 @@ export const secretaryService = {
           if (config.mode === "auto") {
             await whatsappService.sendToJid(jid, confirmMsg, tenantId);
           } else {
-            await storage.createSecretaryAction({
+            await createSecretaryAuditLog({
               tenantId, jid, contactName,
               actionType: "acordo_assinado",
               description: `Documento assinado recebido de ${contactName} - Negociação #${signedDoc.negotiationId}`,
               status: "pending_approval",
               draftMessage: confirmMsg,
-              timestamp: new Date(),
+              actorType: "client",
+              executionMode: config.mode,
             });
           }
 
@@ -4009,10 +4414,40 @@ export const secretaryService = {
         return;
       }
 
-      const ctx = await getOrCreateContextWithDB(jid, tenantId);
+      if (!isWithinBusinessHours(config)) {
+        if (config.offHoursMessage) {
+          if (config.mode === "auto") {
+            await whatsappService.sendToJid(jid, config.offHoursMessage, tenantId);
+            await createSecretaryAuditLog({
+              tenantId, jid, contactName,
+              actionType: "fora_horario",
+              description: `Mensagem fora do horário de ${contactName}: "${message.substring(0, 100)}"`,
+              status: "completed",
+              actorType: "unknown",
+              executionMode: config.mode,
+            });
+          } else {
+            await createSecretaryAuditLog({
+              tenantId, jid, contactName,
+              actionType: "fora_horario",
+              description: `Mensagem fora do horário. Rascunho: "${config.offHoursMessage}"`,
+              status: "pending_approval",
+              draftMessage: config.offHoursMessage,
+              actorType: "unknown",
+              executionMode: config.mode,
+            });
+          }
+        }
+        return;
+      }
+
+      const ctx = await getOrCreateConversationContext(jid, tenantId, {
+        getWhatsAppConversation: storage.getWhatsAppConversation.bind(storage),
+        getMessagesByConversation: storage.getMessagesByConversation.bind(storage),
+      });
       const isFirstMessage = ctx.messages.length === 0;
-      ctx.messages.push({ role: "user", content: enrichedMessage });
-      if (ctx.messages.length > 30) ctx.messages = ctx.messages.slice(-30);
+      setConversationLastUserRequest(ctx, message);
+      appendMessageToConversationContext(ctx, { role: "user", content: enrichedMessage });
       await saveMessageToDB(jid, tenantId, "user", enrichedMessage);
 
       const client = await findClientByJid(jid, tenantId, contactName);
@@ -4045,79 +4480,391 @@ O contato se identificou como: ${contactName}
       }
 
       const senderUser = await findUserByPhone(extractPhoneFromJid(jid), tenantId, jid, contactName);
-      const isSocio = senderUser?.role === "socio" || senderUser?.role === "admin" || senderUser?.role === "advogado";
-      const socioName = isSocio ? (senderUser?.name || senderUser?.email?.split("@")[0] || contactName) : "";
+      const actorContext = deriveSecretaryActorContext({ senderUser, client, contactName });
+      const { isSocio, socioName } = actorContext;
       if (isSocio) console.log(`[Secretary] ✅ SÓCIO IDENTIFICADO: ${senderUser?.name} (role: ${senderUser?.role}) via JID: ${jid}`);
+      agentRun = await safeCreateAgentRun({
+        tenantId,
+        jid,
+        contactName,
+        messageText: enrichedMessage,
+        actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+        idempotencyKey: buildSecretaryIdempotencyKey({
+          tenantId,
+          jid,
+          message: enrichedMessage,
+          mediaType,
+          mediaFileName,
+        }),
+        metadata: {
+          mediaType: mediaType || null,
+          mediaFileName: mediaFileName || null,
+        },
+      });
+
+        const resendActionType = isSocio ? classifyDocumentResendRequest(message) : null;
+        if (isSocio && resendActionType) {
+          const recentDocumentAction = await findRecentGeneratedDocumentActionForRequest(tenantId, jid, resendActionType);
+          if (recentDocumentAction) {
+          const resendFingerprint = buildActionExecutionFingerprint(recentDocumentAction.requestedAction, recentDocumentAction.requestedArgs);
+          if (shouldSkipDuplicateExecution(ctx, resendFingerprint)) {
+            return;
+          }
+          const resendResult = await executeSecretaryAction(
+            recentDocumentAction.requestedAction,
+            {
+              ...recentDocumentAction.requestedArgs,
+              confirmed: true,
+            },
+            tenantId,
+            true,
+            clientId || undefined,
+            jid,
+            ctx.messages,
+            senderUser?.id,
+          );
+
+          const resendReply = formatDeterministicSocioReply(
+            summarizeAgentExecutionResult(recentDocumentAction.requestedAction, resendResult),
+            recentDocumentAction.requestedAction,
+            isFirstMessage,
+            message,
+            socioName,
+          );
+
+          appendMessageToConversationContext(ctx, { role: "assistant", content: resendReply });
+          setConversationLastExecutedAction(ctx, resendFingerprint);
+          setConversationLastAssistantResponse(ctx, buildResponseFingerprint(resendReply));
+          await saveMessageToDB(jid, tenantId, "assistant", resendReply);
+
+          if (config.mode === "auto") {
+            await sendMessageInChunks(jid, resendReply, tenantId);
+            await createSecretaryAuditLog({
+              tenantId,
+              jid,
+              contactName,
+              actionType: `deterministic_${recentDocumentAction.requestedAction}`,
+              description: `Reenvio imediato do último documento gerado: ${recentDocumentAction.requestedAction}`,
+              status: "completed",
+              actorType: "socio",
+              executionMode: config.mode,
+              pendingAction: {
+                requestedAction: recentDocumentAction.requestedAction,
+                requestedArgs: recentDocumentAction.requestedArgs,
+                fallbackReason: "reenvio_documento_imediato",
+              },
+            });
+          } else {
+            await createSecretaryAuditLog({
+              tenantId,
+              jid,
+              contactName,
+              actionType: `deterministic_${recentDocumentAction.requestedAction}`,
+              description: `Rascunho de reenvio imediato: ${recentDocumentAction.requestedAction}`,
+              status: "pending_approval",
+              draftMessage: resendReply,
+              actorType: "socio",
+              executionMode: config.mode,
+              pendingAction: {
+                requestedAction: recentDocumentAction.requestedAction,
+                requestedArgs: recentDocumentAction.requestedArgs,
+                fallbackReason: "reenvio_documento_imediato",
+              },
+            });
+          }
+          return;
+        }
+      }
+
+      if (isSocio && isRejectionMessage(message) && isRecentExecutiveReportContext(ctx.messages)) {
+        const rejectionReply = formatDeterministicSocioReply(
+          "Entendido. Não vou repetir o relatório. O que o senhor precisa agora?",
+          "resposta_auto",
+          isFirstMessage,
+          message,
+          socioName,
+        );
+        appendMessageToConversationContext(ctx, { role: "assistant", content: rejectionReply });
+        await saveMessageToDB(jid, tenantId, "assistant", rejectionReply);
+        if (config.mode === "auto") {
+          await whatsappService.sendToJid(jid, rejectionReply, tenantId);
+        } else {
+          await createSecretaryAuditLog({
+            tenantId, jid, contactName,
+            actionType: "resposta_pendente",
+            description: `Rascunho para rejeição de relatório: "${message.substring(0, 80)}..."`,
+            status: "pending_approval",
+            draftMessage: rejectionReply,
+            actorType: "socio",
+            executionMode: config.mode,
+          });
+        }
+        await createSecretaryAuditLog({
+          tenantId, jid, contactName,
+          actionType: "resposta_auto",
+          description: `Interrompeu repetição após rejeição explícita: "${message.substring(0, 80)}..."`,
+          status: "completed",
+          actorType: "socio",
+          executionMode: config.mode,
+        });
+        return;
+      }
 
       if (isSocio && jid) {
-        const greetingPatterns = /^(oi|olá|ola|bom dia|boa tarde|boa noite|e aí|eai|alô|hello|hey|oi oi|olá!|oi!)[\s!?.]*$/i;
-        const isShortGreeting = greetingPatterns.test(message.trim());
-        if (isShortGreeting) {
-          const pendingAction = await storage.getRecentPendingActionByJid(tenantId, jid, 48);
-          if (pendingAction && pendingAction.pendingAction) {
-            const pa = pendingAction.pendingAction as { type: string; label: string; description?: string };
-            const drName = socioName ? `Dr. ${socioName.split(" ")[0]}` : "Doutor";
-            const resumeMsg = `Olá, ${drName}! Estava tentando gerar ${pa.label || "uma peça jurídica"} que o senhor pediu — quer que eu tente novamente?`;
-            console.log(`[Secretary] PENDING-ACTION RESUME: Found pending action for ${jid}: ${pa.type}. Sending resume prompt.`);
-            await whatsappService.sendToJid(jid, resumeMsg, tenantId);
-            ctx.messages.push({ role: "assistant", content: resumeMsg });
-            await saveMessageToDB(jid, tenantId, "assistant", resumeMsg);
-            return;
+        const isShortGreeting = isGreetingOnlyMessage(message);
+        const explicitResume = isExplicitResumeRequest(message);
+        const pendingAction = await storage.getRecentPendingActionByJid(tenantId, jid, 48);
+
+        if (isShortGreeting && !explicitResume) {
+          const greetingReply = `Olá, Dr. ${socioName.replace(/^(dr|dra|doutor|doutora)\.?\s+/i, "").split(" ")[0] || "Ronald"}! Aqui é do escritório Marques & Serra Sociedade de Advogados. Como posso ajudar?`;
+          const greetingFingerprint = buildResponseFingerprint(greetingReply);
+          if (ctx.lastAssistantResponseFingerprint !== greetingFingerprint) {
+            await whatsappService.sendToJid(jid, greetingReply, tenantId);
+            appendMessageToConversationContext(ctx, { role: "assistant", content: greetingReply });
+            setConversationLastAssistantResponse(ctx, greetingFingerprint);
+            await saveMessageToDB(jid, tenantId, "assistant", greetingReply);
+          }
+          return;
+        }
+
+        if (explicitResume && pendingAction && pendingAction.pendingAction) {
+          const pa = pendingAction.pendingAction as { type?: string; label?: string; description?: string; requestedAction?: string; requestedArgs?: Record<string, any> };
+          const requestedAction = pa.requestedAction || (pa.type ? "gerar_peca_estudio" : undefined);
+          const requestedArgs = pa.requestedArgs || (pa.type ? {
+            acao: "gerar_peca_estudio",
+            templateType: pa.type,
+            description: pa.description || message,
+          } : undefined);
+
+          if (requestedAction && requestedArgs) {
+            const fingerprint = buildActionExecutionFingerprint(requestedAction, requestedArgs);
+            if (!shouldSkipDuplicateExecution(ctx, fingerprint)) {
+              console.log(`[Secretary] EXPLICIT-RESUME: Resuming pending action for ${jid}: ${requestedAction}`);
+              const resumedResult = await executeSecretaryAction(
+                requestedAction,
+                requestedArgs,
+                tenantId,
+                true,
+                clientId || undefined,
+                jid,
+                ctx.messages,
+                senderUser?.id,
+              );
+              const resumedReply = formatDeterministicSocioReply(
+                summarizeAgentExecutionResult(requestedAction, resumedResult),
+                requestedAction,
+                isFirstMessage,
+                message,
+                socioName,
+              );
+              appendMessageToConversationContext(ctx, { role: "assistant", content: resumedReply });
+              setConversationLastExecutedAction(ctx, fingerprint);
+              setConversationLastAssistantResponse(ctx, buildResponseFingerprint(resumedReply));
+              setConversationPendingAgentAction(ctx, null);
+              await saveMessageToDB(jid, tenantId, "assistant", resumedReply);
+              await whatsappService.sendToJid(jid, resumedReply, tenantId);
+              await storage.updateSecretaryAction(pendingAction.id, { status: "completed" });
+              return;
+            }
           }
         }
       }
 
-      const systemPrompt = await buildSystemPrompt(tenantId, config.systemPrompt || "", clientContext, tonePreference, isFirstMessage, !!client, clientName, isSocio, socioName, contactName);
+      const operationalState = deriveSecretaryOperationalState(ctx.messages);
+      const operationalContext = formatOperationalStateForPrompt(operationalState);
+      const recentHistoryTextForRouting = ctx.messages.slice(-8).map(m => m.content).join("\n");
+      const extractedMediaContext = ctx.messages
+        .slice(-8)
+        .filter((m) => m.role === "user" && /\[conte[uú]do do documento extra[ií]do|\[transcri[cç][aã]o|\[ocr/i.test(m.content || ""))
+        .map((m) => m.content)
+        .join("\n");
+
+      let internalRouting = buildFallbackSecretaryInternalRouting({
+        message,
+        isSocio,
+      });
+
+      try {
+        const routingCompletion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0.1,
+          max_tokens: 250,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: buildSecretaryIntentRouterSystemPrompt({
+                isSocio,
+                isKnownClient: actorContext.isKnownClient,
+              }),
+            },
+            {
+              role: "user",
+              content: buildSecretaryIntentRouterUserPrompt({
+                message,
+                recentHistory: recentHistoryTextForRouting,
+                extractedMediaContext,
+              }),
+            },
+          ],
+        });
+
+        const routingRaw = routingCompletion.choices[0]?.message?.content || "";
+        const parsedRouting = parseSecretaryInternalRoutingResult(routingRaw);
+        if (parsedRouting) {
+          internalRouting = parsedRouting;
+        }
+      } catch (routingErr) {
+        console.error("[Secretary] Internal intent routing failed, using fallback:", routingErr);
+      }
+
+      console.log(`[Secretary] Internal routing => intent=${internalRouting.intent}, tool=${internalRouting.recommendedTool}, confidence=${internalRouting.confidence}, clarify=${internalRouting.needsClarification}`);
+      await safeCreateAgentStep({
+        runId: agentRun?.id,
+        tenantId,
+        stepType: "classify",
+        status: "completed",
+        input: { message, recentHistoryTextForRouting },
+        output: internalRouting,
+      });
+      await safeUpdateAgentRun(agentRun?.id, {
+        intentType: internalRouting.intent,
+        status: "classified",
+        metadata: {
+          internalRouting,
+        },
+      });
+
+      let internalPlan = buildFallbackSecretaryPlan({
+        routing: internalRouting,
+        message,
+      });
+
+      try {
+        const plannerCompletion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0.1,
+          max_tokens: 350,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: buildSecretaryPlannerSystemPrompt({
+                routing: internalRouting,
+                isSocio,
+              }),
+            },
+            {
+              role: "user",
+              content: buildSecretaryPlannerUserPrompt({
+                message,
+                recentHistory: recentHistoryTextForRouting,
+                extractedMediaContext,
+              }),
+            },
+          ],
+        });
+
+        const plannerRaw = plannerCompletion.choices[0]?.message?.content || "";
+        const parsedPlan = parseSecretaryPlan(plannerRaw);
+        if (parsedPlan) {
+          internalPlan = applySecretaryPlanOverrides({
+            plan: parsedPlan,
+            routing: internalRouting,
+            message,
+          });
+        }
+      } catch (plannerErr) {
+        console.error("[Secretary] Internal planner failed, using fallback:", plannerErr);
+      }
+
+      internalPlan = applySecretaryPlanOverrides({
+        plan: internalPlan,
+        routing: internalRouting,
+        message,
+      });
+
+      await safeCreateAgentStep({
+        runId: agentRun?.id,
+        tenantId,
+        stepType: "plan",
+        status: "completed",
+        input: internalRouting,
+        output: internalPlan,
+      });
+      await safeUpdateAgentRun(agentRun?.id, {
+        status: "planned",
+        currentTask: internalPlan.summary,
+        requestedAction: internalPlan.actionType || null,
+        plan: internalPlan,
+      });
+
+      if (
+        internalPlan.needsClarification &&
+        internalPlan.clarificationQuestion &&
+        internalRouting.confidence >= 0.75
+      ) {
+        const clarificationReply = isSocio
+          ? formatDeterministicSocioReply(
+            internalPlan.clarificationQuestion,
+            internalPlan.intent === "contract" ? "gerar_contrato" : "gerar_peca_estudio",
+            isFirstMessage,
+            message,
+            socioName,
+          )
+          : internalPlan.clarificationQuestion;
+
+        appendMessageToConversationContext(ctx, { role: "assistant", content: clarificationReply });
+        await saveMessageToDB(jid, tenantId, "assistant", clarificationReply);
+
+        if (config.mode === "auto") {
+          await sendMessageInChunks(jid, clarificationReply, tenantId);
+        }
+
+        await createSecretaryAuditLog({
+          tenantId,
+          jid,
+          contactName,
+          actionType: "resposta_pendente",
+          description: `Pediu esclarecimento objetivo antes de prosseguir: ${internalRouting.intent}`,
+          status: "awaiting_input",
+          draftMessage: clarificationReply,
+          actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+          executionMode: config.mode,
+          pendingAction: {
+            internalRouting,
+            internalPlan,
+          },
+        });
+        await safeUpdateAgentRun(agentRun?.id, {
+          status: "awaiting_input",
+          responsePreview: buildAgentResponsePreview(clarificationReply),
+          plan: internalPlan,
+        });
+        return;
+      }
+
+      const systemPrompt = await buildSystemPrompt(
+        tenantId,
+        config.systemPrompt || "",
+        clientContext,
+        operationalContext,
+        tonePreference,
+        isFirstMessage,
+        actorContext.isKnownClient,
+        actorContext.clientName,
+        isSocio,
+        socioName,
+        contactName,
+      );
 
       const aiMessages: any[] = [
         { role: "system", content: systemPrompt },
         ...ctx.messages,
       ];
 
-      const webSearchTool = {
-        type: "function" as const,
-        function: {
-          name: "pesquisar_web",
-          description: "Pesquisa informações atualizadas na internet. USE SEMPRE para: dúvidas jurídicas, legislação, jurisprudência, artigos de lei, informações que precisam ser precisas e atualizadas. É melhor pesquisar do que responder de memória.",
-          parameters: {
-            type: "object",
-            properties: {
-              query: {
-                type: "string",
-                description: "Termo de busca em português. Ex: 'obrigado soprar bafômetro legislação Brasil CTB'"
-              }
-            },
-            required: ["query"]
-          }
-        }
-      };
-
-      const systemQueryTool = {
-        type: "function" as const,
-        function: {
-          name: "consultar_sistema",
-          description: "Consulta dados do sistema LexAI. Use quando o remetente pedir informações sobre clientes, processos, financeiro, prazos, agenda, contratos ou negociações. Sócios podem acessar todos os dados. Clientes só veem seus próprios dados.",
-          parameters: {
-            type: "object",
-            properties: {
-              tipo_consulta: {
-                type: "string",
-                enum: ["relatorio_cliente", "lista_clientes", "resumo_financeiro", "prazos_pendentes", "processos_status", "agenda", "contratos", "negociacoes"],
-                description: "Tipo de consulta: relatorio_cliente (dados de um cliente), lista_clientes (todos), resumo_financeiro (faturas/valores), prazos_pendentes (deadlines), processos_status (casos judiciais), agenda (compromissos), contratos (contratos vigentes), negociacoes (negociações de acordo)"
-              },
-              nome_cliente: {
-                type: "string",
-                description: "Nome do cliente (para filtrar). Opcional."
-              },
-              data: {
-                type: "string",
-                description: "Data no formato YYYY-MM-DD (para consulta de agenda). Opcional."
-              }
-            },
-            required: ["tipo_consulta"]
-          }
-        }
-      };
+      const webSearchTool = createSecretaryWebSearchTool();
+      const systemQueryTool = createSecretarySystemQueryTool();
 
       const lastUserMsg = (enrichedMessage || "").toLowerCase();
       const originalUserMsg = (message || "").toLowerCase();
@@ -4138,7 +4885,9 @@ O contato se identificou como: ${contactName}
         "pesquisar", "pesquisa", "buscar na web", "buscar na internet",
         "sou obrigado", "posso ser preso",
       ];
-      const shouldForceSearch = searchKeywords.some(kw => lastUserMsg.includes(kw)) || searchKeywords.some(kw => originalUserMsg.includes(kw));
+      const shouldForceSearch = internalPlan.intent === "web_research"
+        || internalRouting.recommendedTool === "pesquisar_web"
+        || searchKeywords.some(kw => lastUserMsg.includes(kw)) || searchKeywords.some(kw => originalUserMsg.includes(kw));
 
       const systemQueryKeywords = [
         "quantos clientes", "lista de clientes", "meus processos", "meus contratos",
@@ -4149,8 +4898,13 @@ O contato se identificou como: ${contactName}
         "relatório", "resumo do escritório", "status do escritório",
         "contratos ativos", "contratos vigentes",
         "como está meu processo", "andamento", "situação financeira",
+        "lista de devedores", "devedores cadastrados", "documentos do devedor",
+        "acordos do devedor", "reuniões", "meetings", "copiloto de reuniões",
+        "prospecção", "leads", "network", "outreach",
       ];
-      const shouldForceSystemQuery = systemQueryKeywords.some(kw => lastUserMsg.includes(kw));
+      const shouldForceSystemQuery = internalPlan.intent === "system_query"
+        || internalRouting.recommendedTool === "consultar_sistema"
+        || systemQueryKeywords.some(kw => lastUserMsg.includes(kw));
 
       const socioActionKeywords = [
         "cadastrar devedor", "novo devedor", "registrar devedor",
@@ -4159,6 +4913,11 @@ O contato se identificou como: ${contactName}
         "melhorar cadastro", "melhore o cadastro", "colocar esses dados",
         "coloque o cel", "coloque o telefone", "coloque o endereço",
         "vincular processo", "número do processo", "processo do devedor",
+        "cadastrar processo", "novo processo", "abrir processo", "criar processo",
+        "atualizar processo", "alterar processo",
+        "cadastrar contrato", "registrar contrato",
+        "cadastrar prazo", "registrar prazo", "novo prazo",
+        "agendar reunião", "marcar reunião", "agendar audiência", "marcar audiência",
         "arquivar documento", "salvar documento", "guardar documento",
         "gerar petição", "gerar peça", "redigir petição", "elaborar petição",
         "fazer petição", "preparar petição", "montar petição",
@@ -4172,6 +4931,7 @@ O contato se identificou como: ${contactName}
         "faça um cumprimento", "cumprimento de sentença",
         "faça uma monitória", "ação monitória", "gerar monitória",
         "faça um agravo", "gerar agravo", "elaborar agravo",
+        "apelação", "apelacao", "fazer apelação", "faça apelação", "faça uma apelação", "quero uma apelação", "gere uma apelação",
         "faça um recurso", "elaborar recurso", "fazer as contrarrazões", "faça as contrarrazões",
         "fazer contrarrazões", "faça contrarrazões", "elaborar contrarrazões", "preparar contrarrazões",
         "faça um embargo", "gerar embargo", "elaborar embargo",
@@ -4188,40 +4948,12 @@ O contato se identificou como: ${contactName}
         "meus prazos", "minhas faturas", "meus documentos",
         "resumo dos meus", "relatório dos meus processos",
       ];
-      const shouldForceAction = (isSocio && (socioActionKeywords.some(kw => originalUserMsg.includes(kw)) || socioActionKeywords.some(kw => lastUserMsg.includes(kw))))
+      const shouldForceAction = Boolean(internalPlan.actionType)
+        || internalRouting.recommendedTool === "executar_acao"
+        || (isSocio && (socioActionKeywords.some(kw => originalUserMsg.includes(kw)) || socioActionKeywords.some(kw => lastUserMsg.includes(kw))))
         || (clientId && (clientReportKeywords.some(kw => originalUserMsg.includes(kw)) || clientReportKeywords.some(kw => lastUserMsg.includes(kw))));
 
-      const executarAcaoTool = {
-        type: "function" as const,
-        function: {
-          name: "executar_acao",
-          description: "Executa ações no sistema LexAI como agente autônomo. Para sócios: cadastrar devedores/clientes, gerar PEÇAS JURÍDICAS (petições, contestações, recursos - use gerar_peca_estudio), gerar CONTRATOS/ACORDOS (use gerar_contrato), gerar RELATÓRIO EXECUTIVO do escritório (use gerar_relatorio_executivo), ENVIAR DOCUMENTOS JÁ ARQUIVADOS no sistema para um contato (use enviar_documento_sistema). Para clientes: gerar relatório dos seus dados. SEMPRE execute imediatamente quando um sócio pedir. NUNCA diga que não pode.",
-          parameters: {
-            type: "object",
-            properties: {
-              acao: {
-                type: "string",
-                enum: ["cadastrar_devedor", "cadastrar_cliente", "atualizar_cliente", "atualizar_devedor", "vincular_processo", "gerar_relatorio_cliente", "relatorio_devedor", "listar_documentos_devedor", "arquivar_documento", "enviar_documento_sistema", "gerar_contrato", "gerar_peca_estudio", "gerar_relatorio_executivo"],
-                description: "Tipo de ação. atualizar_cliente=atualizar dados de cliente existente. atualizar_devedor=atualizar dados de devedor existente. gerar_peca_estudio=gerar peças jurídicas. gerar_contrato=contratos/acordos/termos. gerar_relatorio_executivo=relatório completo. relatorio_devedor=relatório detalhado de processos do devedor. listar_documentos_devedor=lista documentos do devedor. enviar_documento_sistema=buscar e enviar documento já arquivado no sistema para o cliente via WhatsApp."
-              },
-              clientName: { type: "string", description: "Nome do cliente" },
-              debtorName: { type: "string", description: "Nome do devedor ou da parte contrária" },
-              name: { type: "string", description: "Nome (para cadastro de cliente)" },
-              document: { type: "string", description: "CPF ou CNPJ" },
-              phone: { type: "string", description: "Telefone" },
-              email: { type: "string", description: "E-mail" },
-              address: { type: "string", description: "Endereço completo (rua, número, bairro, cidade/UF, CEP)" },
-              notes: { type: "string", description: "Observações/notas adicionais (representante, parentesco, cargo, etc.)" },
-              caseNumber: { type: "string", description: "Número do processo (formato CNJ)" },
-              reportType: { type: "string", description: "Tipo de relatório: geral, processos, financeiro" },
-              documentType: { type: "string", description: "Tipo do documento: procuração, contrato, guia, comprovante, etc." },
-              templateType: { type: "string", description: "OBRIGATÓRIO para gerar_peca_estudio. Tipo exato da peça: execucao (execução de título extrajudicial), cumprimento_sentenca, acao_monitoria, peticao_inicial, contestacao, recurso_apelacao, agravo_instrumento, habeas_corpus, mandado_seguranca, contrarrazoes, acordo_extrajudicial, notificacao_extrajudicial, contrato, termo_acordo, outro. SEMPRE identifique o tipo correto a partir do pedido." },
-              description: { type: "string", description: "Descrição COMPLETA com TODOS os detalhes fornecidos pelo sócio: valores, parcelas, datas, condições, nomes das partes, número do processo, fatos, pedidos, tudo que ele informou. TRANSCREVA os dados concretos dos documentos enviados." },
-            },
-            required: ["acao"]
-          }
-        }
-      };
+      const executarAcaoTool = createSecretaryActionTool();
 
       const allTools = [webSearchTool, systemQueryTool, executarAcaoTool];
 
@@ -4234,14 +4966,19 @@ O contato se identificou como: ${contactName}
             : "auto" as const;
 
       console.log(`[Secretary] tool_choice: ${shouldForceAction ? "FORCED executar_acao" : shouldForceSearch ? "FORCED pesquisar_web" : shouldForceSystemQuery ? "FORCED consultar_sistema" : "auto"} (msg: "${lastUserMsg.substring(0, 60)}")`);
-      if (isSocio) console.log(`[Secretary] Sender identified as sócio/advogado: ${senderUser?.email || senderUser?.username}`);
+      if (isSocio) console.log(`[Secretary] Sender identified as sócio/advogado: ${senderUser?.email || senderUser?.name}`);
 
       // Modo executivo determinístico para sócios: reduz ambiguidade para peça/relatório/contrato.
       // Quando detectado com alta confiança, executa a ação diretamente sem depender de decisão do LLM.
       if (isSocio) {
-        const recentHistoryText = ctx.messages.slice(-8).map(m => m.content).join("\n");
+        const recentHistoryText = internalRouting.shouldIgnoreHistory ? "" : ctx.messages.slice(-8).map(m => m.content).join("\n");
         const deterministicAction = await inferDeterministicSocioAction(tenantId, message, recentHistoryText);
         if (deterministicAction) {
+          const deterministicFingerprint = buildActionExecutionFingerprint(deterministicAction.acao, deterministicAction.args);
+          if (shouldSkipDuplicateExecution(ctx, deterministicFingerprint)) {
+            console.log(`[Secretary] Skipping duplicate deterministic action ${deterministicAction.acao}`);
+            return;
+          }
           console.log(`[Secretary] Deterministic sócio action: ${deterministicAction.acao} (${deterministicAction.reason})`);
           try {
             const actionResult = await executeSecretaryAction(
@@ -4253,24 +4990,55 @@ O contato se identificou como: ${contactName}
               jid,
               ctx.messages
             );
-            const conciseResponse = summarizeAgentExecutionResult(deterministicAction.acao, actionResult);
+            const verification = verifySecretaryActionResult(deterministicAction.acao, actionResult);
+            const conciseResponse = formatDeterministicSocioReply(
+              summarizeAgentExecutionResult(deterministicAction.acao, actionResult),
+              deterministicAction.acao,
+              isFirstMessage,
+              message,
+              socioName,
+            );
 
-            ctx.messages.push({ role: "assistant", content: conciseResponse });
+            appendMessageToConversationContext(ctx, { role: "assistant", content: conciseResponse });
+            setConversationLastExecutedAction(ctx, deterministicFingerprint);
+            setConversationLastAssistantResponse(ctx, buildResponseFingerprint(conciseResponse));
+            setConversationPendingAgentAction(ctx, null);
+            await safeCreateAgentStep({
+              runId: agentRun?.id,
+              tenantId,
+              stepType: "verification",
+              status: verification.finalStatus,
+              input: { action: deterministicAction.acao },
+              output: verification,
+            });
+            await safeUpdateAgentRun(agentRun?.id, {
+              status: verification.finalStatus === "failed" ? "failed" : "completed",
+              requestedAction: deterministicAction.acao,
+              requestedArgs: deterministicAction.args,
+              verification,
+              responsePreview: buildAgentResponsePreview(conciseResponse),
+            });
             await saveMessageToDB(jid, tenantId, "assistant", conciseResponse);
 
             if (config.mode === "auto") {
               await sendMessageInChunks(jid, conciseResponse, tenantId);
-              await storage.createSecretaryAction({
+              await createSecretaryAuditLog({
                 tenantId,
                 jid,
                 contactName,
                 actionType: `deterministic_${deterministicAction.acao}`,
                 description: `Execução determinística (${deterministicAction.reason}): ${deterministicAction.acao}`,
                 status: "completed",
-                timestamp: new Date(),
+                actorType: "socio",
+                executionMode: config.mode,
+                pendingAction: {
+                  fallbackReason: deterministicAction.reason,
+                  requestedAction: deterministicAction.acao,
+                  requestedArgs: deterministicAction.args,
+                },
               });
             } else {
-              await storage.createSecretaryAction({
+              await createSecretaryAuditLog({
                 tenantId,
                 jid,
                 contactName,
@@ -4278,7 +5046,13 @@ O contato se identificou como: ${contactName}
                 description: `Rascunho determinístico (${deterministicAction.reason}): ${deterministicAction.acao}`,
                 status: "pending_approval",
                 draftMessage: conciseResponse,
-                timestamp: new Date(),
+                actorType: "socio",
+                executionMode: config.mode,
+                pendingAction: {
+                  fallbackReason: deterministicAction.reason,
+                  requestedAction: deterministicAction.acao,
+                  requestedArgs: deterministicAction.args,
+                },
               });
             }
             return;
@@ -4316,12 +5090,13 @@ O contato se identificou como: ${contactName}
               const searchResults = await searchWeb(query);
               toolResults.push({ role: "tool", tool_call_id: toolCall.id, content: searchResults });
 
-              await storage.createSecretaryAction({
+              await createSecretaryAuditLog({
                 tenantId, jid, contactName,
                 actionType: "pesquisa_web",
                 description: `Pesquisou: "${query}" - ${searchResults.substring(0, 200)}`,
                 status: "completed",
-                timestamp: new Date(),
+                actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+                executionMode: config.mode,
               });
             } catch (searchErr) {
               console.error("[Secretary] Web search tool error:", searchErr);
@@ -4335,12 +5110,14 @@ O contato se identificou como: ${contactName}
               const systemResult = await consultarSistema(queryType, args, tenantId, isSocio, clientId || undefined);
               toolResults.push({ role: "tool", tool_call_id: toolCall.id, content: systemResult });
 
-              await storage.createSecretaryAction({
+              await createSecretaryAuditLog({
                 tenantId, jid, contactName,
                 actionType: "consulta_sistema",
                 description: `Consultou: ${queryType} - ${systemResult.substring(0, 200)}`,
                 status: "completed",
-                timestamp: new Date(),
+                actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+                executionMode: config.mode,
+                pendingAction: { queryType },
               });
             } catch (queryErr) {
               console.error("[Secretary] System query tool error:", queryErr);
@@ -4352,20 +5129,48 @@ O contato se identificou como: ${contactName}
               const acao = args.acao || "";
               console.log(`[Secretary] AI triggered action: "${acao}" (sócio: ${isSocio})`);
               if (acao === "gerar_peca_estudio") pecaEstudioCalled = true;
-              const actionResult = await executeSecretaryAction(acao, args, tenantId, isSocio, clientId || undefined, jid, ctx.messages);
+              const toolCallFingerprint = buildActionExecutionFingerprint(acao, args);
+              if (shouldSkipDuplicateExecution(ctx, toolCallFingerprint)) {
+                console.log(`[Secretary] Skipping duplicate tool_call action: ${acao}`);
+                toolResults.push({ role: "tool", tool_call_id: toolCall.id, content: "Ação ignorada por duplicidade recente." });
+                continue;
+              }
+              const actionResult = await executeSecretaryAction(acao, args, tenantId, isSocio, clientId || undefined, jid, ctx.messages, senderUser?.id);
+              setConversationLastExecutedAction(ctx, toolCallFingerprint);
+              const verification = verifySecretaryActionResult(acao, actionResult);
               if (acao === "gerar_peca_estudio" && (actionResult.includes("ENVIADA COM SUCESSO") || actionResult.includes("enviado diretamente"))) {
                 pieceGeneratedAndSent = true;
                 const labelMatch = actionResult.match(/📋\s*([^\n]+)/);
                 if (labelMatch) pieceGeneratedLabel = labelMatch[1].trim();
               }
               toolResults.push({ role: "tool", tool_call_id: toolCall.id, content: actionResult });
+              await safeCreateAgentStep({
+                runId: agentRun?.id,
+                tenantId,
+                stepType: "tool_call",
+                status: verification.finalStatus,
+                input: { acao, args },
+                output: { verification, actionResult: actionResult.substring(0, 500) },
+              });
+              await safeUpdateAgentRun(agentRun?.id, {
+                status: verification.finalStatus === "failed" ? "failed" : "executing",
+                requestedAction: acao,
+                requestedArgs: args,
+                verification,
+              });
 
-              await storage.createSecretaryAction({
+              await createSecretaryAuditLog({
                 tenantId, jid, contactName,
                 actionType: `acao_${acao}`,
                 description: `Executou: ${acao} - ${actionResult.substring(0, 200)}`,
-                status: "completed",
-                timestamp: new Date(),
+                status: requiresExplicitApprovalForAction(acao) && args.confirmed !== true ? "pending_approval" : "completed",
+                draftMessage: requiresExplicitApprovalForAction(acao) && args.confirmed !== true ? actionResult : undefined,
+                actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+                executionMode: config.mode,
+                pendingAction: {
+                  requestedAction: acao,
+                  requestedArgs: args,
+                },
               });
             } catch (actionErr) {
               console.error("[Secretary] Action tool error:", actionErr);
@@ -4403,14 +5208,15 @@ O contato se identificou como: ${contactName}
                   const partMsg = parts.length > 1 ? `(${pi + 1}/${parts.length})\n${parts[pi]}` : parts[pi];
                   await whatsappService.sendToJid(jid, partMsg, tenantId);
                 }
-                ctx.messages.push({ role: "assistant", content: aiResponse });
+                appendMessageToConversationContext(ctx, { role: "assistant", content: aiResponse });
                 await saveMessageToDB(jid, tenantId, "assistant", aiResponse);
-                await storage.createSecretaryAction({
+                await createSecretaryAuditLog({
                   tenantId, jid, contactName,
                   actionType: "resposta_auto",
                   description: `Respondeu (${parts.length} partes) a "${message.substring(0, 60)}..."`,
                   status: "completed",
-                  timestamp: new Date(),
+                  actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+                  executionMode: config.mode,
                 });
                 return;
               }
@@ -4421,6 +5227,56 @@ O contato se identificou como: ${contactName}
           }
         } else {
           aiResponse = firstChoice.content || "Desculpe, não consegui processar sua mensagem no momento. Vou verificar com o Dr. Ronald e retorno em breve.";
+        }
+      } else if (shouldForceAction) {
+        console.log(`[Secretary] tool_choice was forced to executar_acao but no tool_calls returned. Trying deterministic fallback...`);
+        try {
+          const recentHistoryText = ctx.messages.slice(-8).map(m => m.content).join("\n");
+          const deterministicAction = await inferDeterministicSocioAction(tenantId, message, recentHistoryText);
+          if (deterministicAction) {
+            const actionResult = await executeSecretaryAction(
+              deterministicAction.acao,
+              deterministicAction.args,
+              tenantId,
+              isSocio,
+              clientId || undefined,
+              jid,
+              ctx.messages,
+              senderUser?.id
+            );
+            aiResponse = formatDeterministicSocioReply(
+              summarizeAgentExecutionResult(deterministicAction.acao, actionResult),
+              deterministicAction.acao,
+              isFirstMessage,
+              message,
+              socioName,
+            );
+          } else {
+            aiResponse = firstChoice?.content || "Preciso de mais alguns dados para executar essa ação corretamente.";
+          }
+        } catch (fallbackActionErr) {
+          console.error("[Secretary] Forced action fallback error:", fallbackActionErr);
+          aiResponse = firstChoice?.content || "Não consegui executar a ação automaticamente.";
+        }
+      } else if (shouldForceSystemQuery) {
+        console.log(`[Secretary] tool_choice was forced to consultar_sistema but no tool_calls returned. Trying deterministic fallback...`);
+        try {
+          const recentHistoryText = ctx.messages.slice(-8).map(m => m.content).join("\n");
+          const deterministicQuery = await inferDeterministicSystemQuery(tenantId, message, recentHistoryText);
+          if (deterministicQuery) {
+            aiResponse = await consultarSistema(
+              deterministicQuery.queryType,
+              deterministicQuery.params,
+              tenantId,
+              isSocio,
+              clientId || undefined
+            );
+          } else {
+            aiResponse = firstChoice?.content || "Preciso de mais contexto para consultar o sistema corretamente.";
+          }
+        } catch (fallbackQueryErr) {
+          console.error("[Secretary] Forced system query fallback error:", fallbackQueryErr);
+          aiResponse = firstChoice?.content || "Não consegui consultar o sistema automaticamente.";
         }
       } else if (shouldForceSearch && firstChoice?.content) {
         console.log(`[Secretary] tool_choice was forced but no tool_calls returned. Calling searchWeb directly...`);
@@ -4488,33 +5344,41 @@ O contato se identificou como: ${contactName}
             const result = await executeSecretaryAction(
               "gerar_peca_estudio",
               { acao: "gerar_peca_estudio", templateType, description, clientName: "" },
-              tenantId, isSocio, clientId || undefined, jid, ctx.messages
+              tenantId, isSocio, clientId || undefined, jid, ctx.messages, senderUser?.id
             );
             const sent = result.includes("ENVIADA COM SUCESSO") || result.includes("enviado diretamente");
             if (!sent) {
-              await storage.createSecretaryAction({
+              setConversationPendingAgentAction(ctx, { type: templateType, label, description: description.substring(0, 200) });
+              await createSecretaryAuditLog({
                 tenantId, jid, contactName, actionType: "peca_prometida_falhou",
                 description: `Prometeu ${label} mas falhou ao entregar — ${result.substring(0, 150)}`,
                 status: "promised",
+                actorType: "socio",
+                executionMode: config.mode,
                 pendingAction: { type: templateType, label, description: description.substring(0, 200) },
-                timestamp: new Date(),
               });
             } else {
-              await storage.createSecretaryAction({
+              setConversationPendingAgentAction(ctx, null);
+              await createSecretaryAuditLog({
                 tenantId, jid, contactName, actionType,
                 description: `Auto-gerou ${label} via ${actionType}`,
-                status: "completed", timestamp: new Date(),
+                status: "completed",
+                actorType: "socio",
+                executionMode: config.mode,
+                pendingAction: { type: templateType, label },
               });
             }
             return { sent, label };
           } catch (err) {
             console.error(`[Secretary] ${actionType} error:`, err);
-            await storage.createSecretaryAction({
+            setConversationPendingAgentAction(ctx, { type: templateType, label, description: description.substring(0, 200) });
+            await createSecretaryAuditLog({
               tenantId, jid, contactName, actionType: "peca_prometida_falhou",
               description: `Prometeu ${label} mas falhou com erro: ${(err as Error).message?.substring(0, 150)}`,
               status: "promised",
+              actorType: "socio",
+              executionMode: config.mode,
               pendingAction: { type: templateType, label, description: description.substring(0, 200) },
-              timestamp: new Date(),
             });
             return { sent: false, label };
           }
@@ -4585,11 +5449,11 @@ O contato se identificou como: ${contactName}
       aiResponse = await processActions(aiResponse, tenantId, jid, contactName, clientId);
 
       const forbiddenPhrasePatterns = [
-        /n[ãa]o\s+(posso|consigo|tenho\s+capacidade\s+de)\s+enviar\s+documentos/i,
-        /n[ãa]o\s+tenho\s+capacidade\s+de\s+enviar/i,
-        /n[ãa]o\s+[eé]\s+poss[ií]vel\s+enviar\s+documentos\s+diretamente/i,
-        /infelizmente.*n[ãa]o.*enviar\s+documentos/i,
-        /sou\s+uma\s+IA.*n[ãa]o.*enviar/i,
+        /n[ãa]o\s+(?:posso|consigo|tenho\s+capacidade\s+de)(?:\s+\w+){0,5}\s+enviar(?:\s+\w+){0,4}\s+(?:documentos?|arquivos?|isso)/i,
+        /n[ãa]o\s+[eé]\s+poss[ií]vel(?:\s+\w+){0,5}\s+enviar/i,
+        /infelizmente.*n[ãa]o.*enviar/i,
+        /sou\s+(?:uma\s+)?(?:ia|inteligencia|assistente|bot).*n[ãa]o.*enviar/i,
+        /(?:enviar|mandar|compartilhar).*(?:diretamente|aqui|por aqui|neste chat)/i,
       ];
       const hasForbiddenPhrase = isSocio && forbiddenPhrasePatterns.some(p => p.test(aiResponse));
       if (hasForbiddenPhrase) {
@@ -4628,7 +5492,7 @@ O contato se identificou como: ${contactName}
           const forcedResult = await executeSecretaryAction(
             "gerar_peca_estudio",
             { acao: "gerar_peca_estudio", templateType, description: message, clientName: "" },
-            tenantId, isSocio, clientId || undefined, jid, ctx.messages
+            tenantId, isSocio, clientId || undefined, jid, ctx.messages, senderUser?.id
           );
           if (forcedResult.includes("ENVIADA COM SUCESSO") || forcedResult.includes("enviado diretamente")) {
             aiResponse = `✅ ${label} gerada e enviada em Word com timbre do escritório.`;
@@ -4639,12 +5503,14 @@ O contato se identificou como: ${contactName}
           console.error("[Secretary] INTERCEPTOR: Forced document generation failed:", forceErr);
           aiResponse = `⚠️ Encontrei uma dificuldade ao gerar a ${label}. Por favor, solicite novamente e tentarei novamente.`;
         }
-        await storage.createSecretaryAction({
+        await createSecretaryAuditLog({
           tenantId, jid, contactName,
           actionType: "interceptor_frase_proibida",
           description: `Resposta proibida interceptada e corrigida para ${label}`,
           status: "completed",
-          timestamp: new Date(),
+          actorType: "socio",
+          executionMode: config.mode,
+          pendingAction: { type: templateType, label },
         });
       }
 
@@ -4656,42 +5522,87 @@ O contato se identificou como: ${contactName}
         }
       }
 
-      ctx.messages.push({ role: "assistant", content: aiResponse });
+      appendMessageToConversationContext(ctx, { role: "assistant", content: aiResponse });
+      setConversationLastAssistantResponse(ctx, buildResponseFingerprint(aiResponse));
+      await safeCreateAgentStep({
+        runId: agentRun?.id,
+        tenantId,
+        stepType: "response",
+        status: "completed",
+        input: { mode: config.mode },
+        output: { aiResponse: buildAgentResponsePreview(aiResponse) },
+      });
+      await safeUpdateAgentRun(agentRun?.id, {
+        status: config.mode === "auto" ? "completed" : "awaiting_approval",
+        responsePreview: buildAgentResponsePreview(aiResponse),
+      });
       await saveMessageToDB(jid, tenantId, "assistant", aiResponse);
 
       if (config.mode === "auto") {
         await whatsappService.sendToJid(jid, aiResponse, tenantId);
-        await storage.createSecretaryAction({
+        await createSecretaryAuditLog({
           tenantId, jid, contactName,
           actionType: "resposta_auto",
           description: `Respondeu automaticamente a "${message.substring(0, 80)}..."`,
           status: "completed",
-          timestamp: new Date(),
+          actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+          executionMode: config.mode,
         });
       } else {
-        await storage.createSecretaryAction({
+        await createSecretaryAuditLog({
           tenantId, jid, contactName,
           actionType: "resposta_pendente",
           description: `Rascunho para "${message.substring(0, 80)}..."`,
           status: "pending_approval",
           draftMessage: aiResponse,
-          timestamp: new Date(),
+          actorType: isSocio ? "socio" : clientId ? "client" : "unknown",
+          executionMode: config.mode,
         });
       }
     } catch (error) {
       console.error("[Secretary] Error processing message:", error);
-      await storage.createSecretaryAction({
+      await safeUpdateAgentRun(agentRun?.id, {
+        status: "failed",
+        errorMessage: (error as Error).message,
+      });
+      await createSecretaryAuditLog({
         tenantId, jid, contactName,
         actionType: "erro",
         description: `Erro ao processar mensagem: ${(error as Error).message}`,
         status: "error",
-        timestamp: new Date(),
+        actorType: "unknown",
       });
     }
   },
 
   async approveDraft(actionId: number, tenantId: number): Promise<boolean> {
     const action = await storage.updateSecretaryAction(actionId, { status: "approved" });
+    const pendingRequest = extractPendingSecretaryRequest(action.pendingAction);
+
+    if (pendingRequest.requestedAction) {
+      const actionResult = await executeSecretaryAction(
+        pendingRequest.requestedAction,
+        {
+          ...(pendingRequest.requestedArgs || {}),
+          confirmed: true,
+        },
+        tenantId,
+        pendingRequest.actorType === "socio",
+        undefined,
+        action.jid,
+      );
+
+      const sent = await whatsappService.sendToJid(action.jid, actionResult, tenantId);
+      if (sent) {
+        await storage.updateSecretaryAction(actionId, {
+          status: "completed",
+          draftMessage: actionResult,
+        });
+        return true;
+      }
+      return false;
+    }
+
     if (action.draftMessage) {
       const sent = await whatsappService.sendToJid(action.jid, action.draftMessage, tenantId);
       if (sent) {
@@ -4707,6 +5618,26 @@ O contato se identificou como: ${contactName}
       status: "approved",
       draftMessage: editedMessage,
     });
+    const pendingRequest = extractPendingSecretaryRequest(action.pendingAction);
+    if (pendingRequest.requestedAction) {
+      const actionResult = await executeSecretaryAction(
+        pendingRequest.requestedAction,
+        {
+          ...(pendingRequest.requestedArgs || {}),
+          confirmed: true,
+        },
+        tenantId,
+        pendingRequest.actorType === "socio",
+        undefined,
+        action.jid,
+      );
+      const sent = await whatsappService.sendToJid(action.jid, actionResult, tenantId);
+      if (sent) {
+        await storage.updateSecretaryAction(actionId, { status: "completed", draftMessage: actionResult });
+        return true;
+      }
+      return false;
+    }
     const sent = await whatsappService.sendToJid(action.jid, editedMessage, tenantId);
     if (sent) {
       await storage.updateSecretaryAction(actionId, { status: "completed" });
@@ -4720,18 +5651,11 @@ O contato se identificou como: ${contactName}
   },
 
   clearContext(jid: string): void {
-    conversationContexts.delete(jid);
+    clearConversationContext(jid);
   },
 
   getActiveContexts(): string[] {
-    const active: string[] = [];
-    const now = Date.now();
-    conversationContexts.forEach((ctx, jid) => {
-      if (now - ctx.lastActivity < CONTEXT_TTL) {
-        active.push(jid);
-      }
-    });
-    return active;
+    return listActiveConversationJids();
   },
 
   async processGroupDocument(
@@ -4746,7 +5670,16 @@ O contato se identificou como: ${contactName}
       const isImage = mimetype.startsWith("image/");
       console.log(`[Secretary-Group] Processing ${isImage ? "image" : "document"} "${fileName}" from group ${groupJid}, sender: ${senderName}`);
 
-      const extractedText = await processMediaContent(isImage ? "image" : "document", base64Data, fileName, mimetype);
+      const extractedText = await runSecretaryJob({
+        kind: "media_processing",
+        operation: () => processSecretaryMediaContent({
+          openai,
+          mediaType: isImage ? "image" : "document",
+          base64Data,
+          fileName,
+          mimetype,
+        }),
+      });
       console.log(`[Secretary-Group] OCR extracted ${extractedText.length} chars from "${fileName}"`);
 
       const allClients = await storage.getClientsByTenant(tenantId);
@@ -4799,14 +5732,14 @@ O contato se identificou como: ${contactName}
             archiveDesc = `Devedor "${classification.name}" criado automaticamente (id=${newDebtor.id}) e documento "${fileName}" arquivado`;
             console.log(`[Secretary-Group] Created new debtor: ${classification.name} (id=${newDebtor.id})`);
 
-            await storage.createSecretaryAction({
+            await createSecretaryAuditLog({
               tenantId,
               jid: groupJid,
               contactName: senderName,
               actionType: "auto_cadastro_devedor",
               description: `Devedor "${classification.name}" criado automaticamente a partir do documento "${fileName}" recebido no grupo WhatsApp`,
               status: "completed",
-              timestamp: new Date(),
+              actorType: "unknown",
             });
           }
         }
@@ -4848,26 +5781,26 @@ O contato se identificou como: ${contactName}
 
       console.log(`[Secretary-Group] Document archived: id=${document.id}, file=${filePath}, client=${targetClientId}, debtor=${targetDebtorId}`);
 
-      await storage.createSecretaryAction({
+      await createSecretaryAuditLog({
         tenantId,
         jid: groupJid,
         contactName: senderName,
         actionType: "auto_arquivo_documento",
         description: archiveDesc,
         status: "completed",
-        timestamp: new Date(),
+        actorType: "unknown",
       });
 
     } catch (error) {
       console.error(`[Secretary-Group] Error processing group document "${fileName}":`, error);
-      await storage.createSecretaryAction({
+      await createSecretaryAuditLog({
         tenantId,
         jid: groupJid,
         contactName: senderName,
         actionType: "auto_arquivo_documento",
         description: `Erro ao arquivar documento "${fileName}": ${(error as Error).message}`,
         status: "failed",
-        timestamp: new Date(),
+        actorType: "unknown",
       });
     }
   },

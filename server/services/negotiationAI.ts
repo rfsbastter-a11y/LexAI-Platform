@@ -1,10 +1,22 @@
 import OpenAI from "openai";
 import type { Negotiation, Case, Client, NegotiationContact, NegotiationRound } from "@shared/schema";
+import { storage } from "../storage";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
+
+function decodeDocxTemplateFromDataUrl(dataUrl?: string | null): Buffer | null {
+  if (!dataUrl) return null;
+  const match = dataUrl.match(/^data:application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document;base64,(.+)$/i);
+  if (!match?.[1]) return null;
+  try {
+    return Buffer.from(match[1], "base64");
+  } catch {
+    return null;
+  }
+}
 
 export async function generateAIAnalysis(
   negotiation: Negotiation,
@@ -325,13 +337,13 @@ ${rounds.map((r, i) => `Rodada ${i + 1}: ${r.type} - R$ ${r.value || "N/A"}`).jo
   try {
     const path = await import("path");
     const fs = await import("fs");
+    const config = await storage.getLetterheadConfig(negotiation.tenantId);
     const templatePath = path.join(process.cwd(), "public/templates/default_letterhead.docx");
-    
-    if (fs.existsSync(templatePath)) {
+    const templateBuffer = decodeDocxTemplateFromDataUrl(config?.logoUrl) || (fs.existsSync(templatePath) ? fs.readFileSync(templatePath) : null);
+
+    if (templateBuffer) {
       const PizZip = (await import("pizzip")).default;
       const Docxtemplater = (await import("docxtemplater")).default;
-      
-      const templateBuffer = fs.readFileSync(templatePath);
       const zip = new PizZip(templateBuffer) as any;
       
       const xmlContent = zip.file("word/document.xml")?.asText() || "";
