@@ -58,6 +58,8 @@ import {
   type InsertProspectionChatMessage, type ProspectionChatMessage,
   debtorAgreements,
   type InsertDebtorAgreement, type DebtorAgreement,
+  agreementMonthlyPayments,
+  type InsertAgreementMonthlyPayment, type AgreementMonthlyPayment,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -249,6 +251,8 @@ export interface IStorage {
   createDebtorAgreement(data: InsertDebtorAgreement): Promise<DebtorAgreement>;
   updateDebtorAgreement(id: number, tenantId: number, data: Partial<InsertDebtorAgreement>): Promise<DebtorAgreement | undefined>;
   deleteDebtorAgreement(id: number, tenantId: number): Promise<void>;
+  getAgreementMonthlyPayments(tenantId: number, clientId: number, month: number, year: number): Promise<AgreementMonthlyPayment[]>;
+  upsertAgreementMonthlyPayments(tenantId: number, items: InsertAgreementMonthlyPayment[]): Promise<void>;
 
   // Negotiations
   getNegotiation(id: number): Promise<Negotiation | undefined>;
@@ -1450,6 +1454,33 @@ class DatabaseStorage implements IStorage {
 
   async deleteDebtorAgreement(id: number, tenantId: number): Promise<void> {
     await db.delete(debtorAgreements).where(and(eq(debtorAgreements.id, id), eq(debtorAgreements.tenantId, tenantId)));
+  }
+
+  // Agreement Monthly Payments
+  async getAgreementMonthlyPayments(tenantId: number, clientId: number, month: number, year: number): Promise<AgreementMonthlyPayment[]> {
+    const rows = await db
+      .select({ amp: agreementMonthlyPayments })
+      .from(agreementMonthlyPayments)
+      .innerJoin(debtorAgreements, eq(agreementMonthlyPayments.agreementId, debtorAgreements.id))
+      .where(and(
+        eq(debtorAgreements.tenantId, tenantId),
+        eq(debtorAgreements.clientId, clientId),
+        eq(agreementMonthlyPayments.month, month),
+        eq(agreementMonthlyPayments.year, year)
+      ));
+    return rows.map(r => r.amp);
+  }
+
+  async upsertAgreementMonthlyPayments(tenantId: number, items: InsertAgreementMonthlyPayment[]): Promise<void> {
+    for (const item of items) {
+      await db
+        .insert(agreementMonthlyPayments)
+        .values(item)
+        .onConflictDoUpdate({
+          target: [agreementMonthlyPayments.agreementId, agreementMonthlyPayments.month, agreementMonthlyPayments.year],
+          set: { paidValue: item.paidValue, notes: item.notes },
+        });
+    }
   }
 
   // Negotiations
