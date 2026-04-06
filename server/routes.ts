@@ -8904,76 +8904,60 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const { clientId, month, year } = req.query;
       if (!clientId) return res.status(400).json({ error: "clientId is required" });
 
-      let agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId as string), tenantId);
+      const agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId as string), tenantId);
 
-      // Enrich with debtor info
+      // Enrich with debtor/client info
       const { debtors: debtorsTable, clients: clientsTable } = await import("@shared/schema");
       const debtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId)));
       let debtorMap: Record<number, any> = {};
       if (debtorIds.length > 0) {
-        const rows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
-        rows.forEach((r: any) => { debtorMap[r.id] = r; });
+        const debtorRows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
+        debtorRows.forEach((r: any) => { debtorMap[r.id] = r; });
       }
       const [clientRow] = await db.select().from(clientsTable).where(eq(clientsTable.id, parseInt(clientId as string)));
+
+      const targetMonth = month ? parseInt(month as string) : null;
+      const targetYear = year ? parseInt(year as string) : null;
+      const monthYear = month && year ? `${String(month).padStart(2, "0")}/${year}` : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" });
+      const clientName = clientRow?.name || "Cliente";
+
+      // Load real monthly payments if month/year provided
+      let paymentMap: Record<number, any> = {};
+      if (targetMonth && targetYear) {
+        const payments = await storage.getAgreementMonthlyPayments(tenantId, parseInt(clientId as string), targetMonth, targetYear);
+        payments.forEach((p: any) => { paymentMap[p.agreementId] = p; });
+      }
+
+      const reportRows = await buildReportRows(agreements, debtorMap, targetMonth, targetYear, paymentMap);
 
       const XLSX = await import("xlsx");
       const wb = XLSX.utils.book_new();
 
-      // Title row
-      const monthYear = month && year ? `${String(month).padStart(2, "0")}/${year}` : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" }).replace("/", "/");
-      const clientName = clientRow?.name || "Cliente";
-
-      const rows: any[][] = [
+      const xlsRows: any[][] = [
         [`${clientName.toUpperCase()} – PLANILHA MENSAL DOS HONORÁRIOS – ${monthYear.toUpperCase()}`],
         [],
-        ["NOME", "DATA ACORDO", "DÍVIDA ORIGINAL", "VALOR ACORDADO", "PARCELAS", "VALOR ENTRADA", "DATA ENTRADA", "VALOR PRESTAÇÕES", "VENCIMENTO", "% HONORÁRIOS", "HONORÁRIOS", "STATUS HON.", "HONORÁRIOS MÊS", "STATUS", "OBSERVAÇÕES"],
+        ["NOME", "DATA ACORDO", "VALOR ACORDADO", "PARCELAS", "VALOR PRESTAÇÕES", "VENCIMENTO", "HONORÁRIOS MÊS", "STATUS"],
       ];
 
-      const targetMonth = month ? parseInt(month as string) : null;
-      const targetYear = year ? parseInt(year as string) : null;
-
-      for (const a of agreements) {
-        const debtor = debtorMap[a.debtorId];
-        const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "");
-        const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
-        const feePercent = parseFloat(a.feePercent || "10");
-        const installmentValue = parseFloat(a.installmentValue || "0");
-        const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
-          : Math.round(installmentValue * feePercent / 100 * 100) / 100;
-
-        rows.push([
-          debtor?.name || "",
-          a.agreementDate || "",
-          parseFloat(a.originalDebtValue || "0") || "",
-          parseFloat(a.agreedValue || "0") || "",
-          installmentsDisplay,
-          parseFloat(a.downPaymentValue || "0") || "",
-          a.downPaymentDate || "",
-          installmentValue || "",
-          dueDayDisplay,
-          `${feePercent}%`,
-          parseFloat(a.feeAmount || "0") || "",
-          a.feeStatus || "pendente",
-          monthlyFee,
-          a.status || "ativo",
-          a.notes || "",
+      for (const row of reportRows) {
+        xlsRows.push([
+          row.name,
+          row.agreementDate,
+          row.agreedValue || "",
+          row.installmentsDisplay,
+          row.installmentValue || "",
+          row.dueDayDisplay,
+          row.monthlyFee,
+          row.status,
         ]);
       }
 
-      // Summary row — col 12 = HONORÁRIOS MÊS (0-indexed)
-      const total = rows.slice(3).reduce((sum: number, r: any[]) => sum + (parseFloat(r[12]) || 0), 0);
-      rows.push([]);
-      rows.push(["", "", "", "", "", "", "", "", "", "", "", "TOTAL HONORÁRIOS", Math.round(total * 100) / 100]);
+      const total = reportRows.reduce((sum, r) => sum + r.monthlyFee, 0);
+      xlsRows.push([]);
+      xlsRows.push(["", "", "", "", "", "TOTAL HONORÁRIOS", Math.round(total * 100) / 100]);
 
-      const ws = XLSX.utils.aoa_to_sheet(rows);
-
-      // Style header
-      ws["!cols"] = [
-        { wch: 40 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 10 },
-        { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 14 },
-        { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 35 },
-      ];
+      const ws = XLSX.utils.aoa_to_sheet(xlsRows);
+      ws["!cols"] = [{ wch: 40 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 12 }];
 
       XLSX.utils.book_append_sheet(wb, ws, "Acordos");
       const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
@@ -8984,6 +8968,47 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     } catch (error) {
       console.error("Error generating agreements report:", error);
       res.status(500).json({ error: "Failed to generate report" });
+    }
+  });
+
+  // Generate PDF report for a client+month
+  app.get("/api/debtor-agreements/report/pdf", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { clientId, month, year } = req.query;
+      if (!clientId) return res.status(400).json({ error: "clientId is required" });
+
+      const agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId as string), tenantId);
+
+      const { debtors: debtorsTable, clients: clientsTable } = await import("@shared/schema");
+      const debtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId)));
+      let debtorMap: Record<number, any> = {};
+      if (debtorIds.length > 0) {
+        const debtorRows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
+        debtorRows.forEach((r: any) => { debtorMap[r.id] = r; });
+      }
+      const [clientRow] = await db.select().from(clientsTable).where(eq(clientsTable.id, parseInt(clientId as string)));
+
+      const targetMonth = month ? parseInt(month as string) : null;
+      const targetYear = year ? parseInt(year as string) : null;
+      const monthYear = month && year ? `${String(month).padStart(2, "0")}/${year}` : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" });
+      const clientName = clientRow?.name || "Cliente";
+
+      let paymentMap: Record<number, any> = {};
+      if (targetMonth && targetYear) {
+        const payments = await storage.getAgreementMonthlyPayments(tenantId, parseInt(clientId as string), targetMonth, targetYear);
+        payments.forEach((p: any) => { paymentMap[p.agreementId] = p; });
+      }
+
+      const reportRows = await buildReportRows(agreements, debtorMap, targetMonth, targetYear, paymentMap);
+      const pdfBuffer = await buildAgreementsPdfBuffer(reportRows, clientName, monthYear);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="honorarios_${monthYear.replace("/", "_")}.pdf"`);
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error("Error generating agreements PDF:", error);
+      res.status(500).json({ error: "Failed to generate PDF report" });
     }
   });
 
@@ -9003,6 +9028,205 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     return true;
   }
 
+  function formatDateBR(date: string | null | undefined): string {
+    if (!date) return "";
+    const d = new Date(date + "T12:00:00");
+    return d.toLocaleDateString("pt-BR");
+  }
+
+  type AgreementReportRow = {
+    name: string;
+    agreementDate: string;
+    agreedValue: number;
+    installmentsDisplay: string;
+    installmentValue: number;
+    dueDayDisplay: string;
+    monthlyFee: number;
+    status: string;
+  };
+
+  async function buildReportRows(
+    agreements: any[],
+    debtorMap: Record<number, any>,
+    targetMonth: number | null,
+    targetYear: number | null,
+    paymentMap: Record<number, any>
+  ): Promise<AgreementReportRow[]> {
+    const result: AgreementReportRow[] = [];
+    for (const a of agreements) {
+      const debtor = debtorMap[a.debtorId];
+      const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "");
+      const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
+      const feePercent = parseFloat(a.feePercent || "10");
+      const installmentValue = parseFloat(a.installmentValue || "0");
+      let monthlyFee = 0;
+
+      const payment = paymentMap[a.id];
+      if (payment !== undefined) {
+        const pv = parseFloat(payment.paidValue || "0");
+        if (pv === 0) continue;
+        monthlyFee = Math.round(pv * feePercent / 100 * 100) / 100;
+      } else {
+        if (targetMonth && targetYear && !isActiveInMonth(a, targetMonth, targetYear)) continue;
+        monthlyFee = Math.round(installmentValue * feePercent / 100 * 100) / 100;
+        if (monthlyFee === 0) continue;
+      }
+
+      result.push({
+        name: debtor?.name || "",
+        agreementDate: formatDateBR(a.agreementDate),
+        agreedValue: parseFloat(a.agreedValue || "0"),
+        installmentsDisplay,
+        installmentValue,
+        dueDayDisplay,
+        monthlyFee,
+        status: a.status || "ativo",
+      });
+    }
+    return result;
+  }
+
+  async function buildAgreementsPdfBuffer(
+    reportRows: AgreementReportRow[],
+    clientName: string,
+    monthYear: string
+  ): Promise<Buffer> {
+    const PDFDocument = (await import("pdfkit")).default;
+    const doc = new PDFDocument({ size: "A4", layout: "landscape", margins: { top: 40, bottom: 40, left: 40, right: 40 }, bufferPages: true });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const pdfReady = new Promise<Buffer>((resolve) => {
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+
+    const margin = 40;
+    const pageWidth = 841.89;
+    const pageHeight = 595.28;
+    const contentWidth = pageWidth - 2 * margin; // ~762
+
+    const colWidths = [200, 80, 90, 60, 90, 70, 90, 82];
+    const colHeaders = ["NOME", "DATA ACORDO", "V. ACORDADO", "PARCELAS", "V. PRESTAÇÃO", "VENCIMENTO", "HON. MÊS", "STATUS"];
+
+    const drawTableHeader = (y: number): number => {
+      doc.save();
+      doc.rect(margin, y, contentWidth, 20).fill("#E8E8E8");
+      doc.restore();
+      doc.fontSize(7).fillColor("#333333").font("Helvetica-Bold");
+      let x = margin;
+      for (let i = 0; i < colHeaders.length; i++) {
+        doc.text(colHeaders[i], x + 3, y + 7, { width: colWidths[i] - 6, lineBreak: false, ellipsis: true });
+        x += colWidths[i];
+      }
+      return y + 20;
+    };
+
+    // Header with logo
+    const logoPath = path.join(process.cwd(), "client/src/assets/images/logo-ms-new.png");
+    let headerEndY = margin;
+    if (fs.existsSync(logoPath)) {
+      try {
+        doc.image(logoPath, margin, margin, { height: 48 });
+      } catch (_e) { /* logo load failed, skip */ }
+      doc.fontSize(13).fillColor("#1a1a1a").font("Helvetica-Bold")
+        .text("Marques & Serra Advogados", margin + 70, margin + 4, { lineBreak: false });
+      doc.fontSize(9).fillColor("#555555").font("Helvetica")
+        .text(`${clientName}  –  ${monthYear}`, margin + 70, margin + 22, { lineBreak: false });
+      headerEndY = margin + 55;
+    } else {
+      doc.fontSize(14).fillColor("#1a1a1a").font("Helvetica-Bold")
+        .text("Marques & Serra Advogados", margin, margin, { lineBreak: false });
+      doc.fontSize(9).fillColor("#555555").font("Helvetica")
+        .text(`${clientName}  –  ${monthYear}`, margin, margin + 18, { lineBreak: false });
+      headerEndY = margin + 38;
+    }
+
+    // Separator
+    doc.moveTo(margin, headerEndY + 4).lineTo(pageWidth - margin, headerEndY + 4).lineWidth(0.5).stroke("#CCCCCC");
+
+    // Title
+    doc.fontSize(10).fillColor("#1a1a1a").font("Helvetica-Bold")
+      .text(`PLANILHA MENSAL DOS HONORÁRIOS – ${monthYear.toUpperCase()}`, margin, headerEndY + 10, { align: "center", width: contentWidth, lineBreak: false });
+
+    let currentY = headerEndY + 30;
+    currentY = drawTableHeader(currentY);
+
+    const rowHeight = 18;
+    const bottomLimit = pageHeight - margin - 20;
+
+    let total = 0;
+    let rowIndex = 0;
+
+    for (const row of reportRows) {
+      if (currentY + rowHeight > bottomLimit) {
+        // Footer on this page
+        doc.fontSize(7).fillColor("#AAAAAA").font("Helvetica")
+          .text(`Emitido em ${new Date().toLocaleDateString("pt-BR")}`, margin, pageHeight - margin - 8, { align: "right", width: contentWidth, lineBreak: false });
+        doc.addPage();
+        currentY = margin;
+        currentY = drawTableHeader(currentY);
+        rowIndex = 0;
+      }
+
+      const bg = rowIndex % 2 === 0 ? "#FFFFFF" : "#F9F9F9";
+      doc.save();
+      doc.rect(margin, currentY, contentWidth, rowHeight).fill(bg);
+      doc.restore();
+
+      doc.fontSize(7).fillColor("#000000").font("Helvetica");
+      let x = margin;
+      const fmtBRL = (n: number) => `R$ ${n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const values = [
+        row.name,
+        row.agreementDate,
+        fmtBRL(row.agreedValue),
+        row.installmentsDisplay,
+        fmtBRL(row.installmentValue),
+        row.dueDayDisplay,
+        fmtBRL(row.monthlyFee),
+        row.status,
+      ];
+      for (let i = 0; i < colWidths.length; i++) {
+        doc.text(values[i], x + 3, currentY + 6, { width: colWidths[i] - 6, lineBreak: false, ellipsis: true });
+        x += colWidths[i];
+      }
+
+      total += row.monthlyFee;
+      currentY += rowHeight;
+      rowIndex++;
+    }
+
+    // Total row
+    if (currentY + rowHeight > bottomLimit) {
+      doc.addPage();
+      currentY = margin;
+    }
+    doc.save();
+    doc.rect(margin, currentY, contentWidth, rowHeight).fill("#E0E0E0");
+    doc.restore();
+    doc.fontSize(8).fillColor("#000000").font("Helvetica-Bold");
+    // "TOTAL HONORÁRIOS" label spans first 6 columns
+    doc.text("TOTAL HONORÁRIOS", margin + 3, currentY + 6, {
+      width: colWidths.slice(0, 6).reduce((s, w) => s + w, 0) - 6,
+      align: "right",
+      lineBreak: false,
+    });
+    // Value in HON. MÊS column
+    let totalX = margin;
+    for (let i = 0; i < 6; i++) totalX += colWidths[i];
+    doc.text(`R$ ${total.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, totalX + 3, currentY + 6, {
+      width: colWidths[6] - 6,
+      lineBreak: false,
+      ellipsis: true,
+    });
+
+    // Footer on last page
+    doc.fontSize(7).fillColor("#AAAAAA").font("Helvetica")
+      .text(`Emitido em ${new Date().toLocaleDateString("pt-BR")}`, margin, pageHeight - margin - 8, { align: "right", width: contentWidth, lineBreak: false });
+
+    doc.end();
+    return pdfReady;
+  }
+
   // Send report via email and/or WhatsApp
   app.post("/api/debtor-agreements/report/send", requireAuth, async (req: Request, res: Response) => {
     try {
@@ -9019,59 +9243,46 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const emailList = [...new Set(toStringArray(req.body.emailTos ?? req.body.emailTo))];
       const whatsappList = [...new Set(toStringArray(req.body.whatsappTos ?? req.body.whatsappTo))];
 
-      // Build the excel internally
-      let agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId), tenantId);
+      // Build report data
+      const agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId), tenantId);
       const { debtors: debtorsTable, clients: clientsTable } = await import("@shared/schema");
       const debtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId)));
       let debtorMap: Record<number, any> = {};
       if (debtorIds.length > 0) {
-        const rows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
-        rows.forEach((r: any) => { debtorMap[r.id] = r; });
+        const debtorRows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
+        debtorRows.forEach((r: any) => { debtorMap[r.id] = r; });
       }
       const [clientRow] = await db.select().from(clientsTable).where(eq(clientsTable.id, parseInt(clientId)));
 
-      const XLSX = await import("xlsx");
-      const wb = XLSX.utils.book_new();
-      const monthYear = month && year ? `${String(month).padStart(2, "0")}/${year}` : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" }).replace("/", "/");
+      const monthYear = month && year ? `${String(month).padStart(2, "0")}/${year}` : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" });
       const clientName = clientRow?.name || "Cliente";
       const targetMonth = month ? parseInt(month) : null;
       const targetYear = year ? parseInt(year) : null;
 
-      const wsRows: any[][] = [
-        [`${clientName.toUpperCase()} – PLANILHA MENSAL DOS HONORÁRIOS – ${monthYear.toUpperCase()}`],
-        [],
-        ["NOME", "DATA ACORDO", "DÍVIDA ORIGINAL", "VALOR ACORDADO", "PARCELAS", "VALOR ENTRADA", "DATA ENTRADA", "VALOR PRESTAÇÕES", "VENCIMENTO", "% HONORÁRIOS", "HONORÁRIOS", "STATUS HON.", "HONORÁRIOS MÊS", "STATUS", "OBSERVAÇÕES"],
-      ];
-
-      for (const a of agreements) {
-        const debtor = debtorMap[a.debtorId];
-        const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "");
-        const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
-        const feePercent = parseFloat(a.feePercent || "10");
-        const installmentValue = parseFloat(a.installmentValue || "0");
-        const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
-          : Math.round(installmentValue * feePercent / 100 * 100) / 100;
-        wsRows.push([debtor?.name || "", a.agreementDate || "", parseFloat(a.originalDebtValue || "0") || "", parseFloat(a.agreedValue || "0") || "", installmentsDisplay, parseFloat(a.downPaymentValue || "0") || "", a.downPaymentDate || "", installmentValue || "", dueDayDisplay, `${feePercent}%`, parseFloat(a.feeAmount || "0") || "", a.feeStatus || "pendente", monthlyFee, a.status || "ativo", a.notes || ""]);
+      let paymentMap: Record<number, any> = {};
+      if (targetMonth && targetYear) {
+        const payments = await storage.getAgreementMonthlyPayments(tenantId, parseInt(clientId), targetMonth, targetYear);
+        payments.forEach((p: any) => { paymentMap[p.agreementId] = p; });
       }
 
-      const ws = XLSX.utils.aoa_to_sheet(wsRows);
-      XLSX.utils.book_append_sheet(wb, ws, "Acordos");
-      const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
-      const fileName = `honorarios_${monthYear.replace("/", "_")}.xlsx`;
+      const reportRows = await buildReportRows(agreements, debtorMap, targetMonth, targetYear, paymentMap);
+
+      // Generate PDF buffer for attachment
+      const pdfBuffer = await buildAgreementsPdfBuffer(reportRows, clientName, monthYear);
+      const fileName = `honorarios_${monthYear.replace("/", "_")}.pdf`;
 
       const results: string[] = [];
-      const htmlBody = `<p>Segue em anexo a planilha de honorários de <strong>${clientName}</strong> referente a <strong>${monthYear}</strong>.</p><p>Atenciosamente,<br>Marques &amp; Serra Advogados</p>`;
+      const htmlBody = `<p>Segue em anexo o relatório de honorários de <strong>${clientName}</strong> referente a <strong>${monthYear}</strong>.</p><p>Atenciosamente,<br>Marques &amp; Serra Advogados</p>`;
 
       for (const to of emailList) {
-        await emailService.sendEmail({ to, subject: `Honorários ${clientName} – ${monthYear}`, html: htmlBody, attachments: [{ filename: fileName, content: buf, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }] });
+        await emailService.sendEmail({ to, subject: `Honorários ${clientName} – ${monthYear}`, html: htmlBody, attachments: [{ filename: fileName, content: pdfBuffer, contentType: "application/pdf" }] });
         if (!results.includes("email")) results.push("email");
       }
 
       if (whatsappList.length > 0) {
         const { whatsappService } = await import("./services/whatsapp");
         for (const to of whatsappList) {
-          await whatsappService.sendDocument(to.replace(/\D/g, ""), buf, fileName, `Honorários ${clientName} – ${monthYear}`, tenantId, true);
+          await whatsappService.sendDocument(to.replace(/\D/g, ""), pdfBuffer, fileName, `Honorários ${clientName} – ${monthYear}`, tenantId, true);
         }
         results.push("whatsapp");
       }
@@ -9080,6 +9291,53 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     } catch (error) {
       console.error("Error sending agreements report:", error);
       res.status(500).json({ error: "Failed to send report" });
+    }
+  });
+
+  // GET monthly payments for a client/month/year
+  app.get("/api/agreement-monthly-payments", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { clientId, month, year } = req.query;
+      if (!clientId || !month || !year) return res.status(400).json({ error: "clientId, month and year are required" });
+      const m = parseInt(month as string);
+      const y = parseInt(year as string);
+      if (isNaN(m) || m < 1 || m > 12) return res.status(400).json({ error: "month must be 1-12" });
+      if (isNaN(y) || y < 2000 || y > 2100) return res.status(400).json({ error: "year must be 2000-2100" });
+      const payments = await storage.getAgreementMonthlyPayments(tenantId, parseInt(clientId as string), m, y);
+      res.json(payments);
+    } catch (error) {
+      console.error("Error fetching monthly payments:", error);
+      res.status(500).json({ error: "Failed to fetch monthly payments" });
+    }
+  });
+
+  // POST batch upsert monthly payments
+  app.post("/api/agreement-monthly-payments/batch", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { clientId, month, year, items } = req.body;
+      if (!clientId || !month || !year) return res.status(400).json({ error: "clientId, month and year are required" });
+      const m = parseInt(month);
+      const y = parseInt(year);
+      if (isNaN(m) || m < 1 || m > 12) return res.status(400).json({ error: "month must be 1-12" });
+      if (isNaN(y) || y < 2000 || y > 2100) return res.status(400).json({ error: "year must be 2000-2100" });
+      if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: "items array required" });
+
+      const toSave = items.map((item: any) => ({
+        tenantId,
+        agreementId: parseInt(item.agreementId),
+        month: m,
+        year: y,
+        paidValue: item.paidValue != null && item.paidValue !== "" ? String(parseFloat(item.paidValue)) : null,
+        notes: item.notes || null,
+      }));
+
+      await storage.upsertAgreementMonthlyPayments(tenantId, toSave);
+      res.json({ success: true, count: toSave.length });
+    } catch (error) {
+      console.error("Error upserting monthly payments:", error);
+      res.status(500).json({ error: "Failed to save monthly payments" });
     }
   });
 

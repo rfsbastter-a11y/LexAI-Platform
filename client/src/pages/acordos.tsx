@@ -49,6 +49,7 @@ import {
   FileText,
   ClipboardPaste,
   X,
+  DollarSign,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
@@ -146,6 +147,14 @@ export default function AcordosPage() {
   const [importPreview, setImportPreview] = useState<any[]>([]);
   const [importSaving, setImportSaving] = useState(false);
 
+  // Payments modal state
+  const [showPayments, setShowPayments] = useState(false);
+  const [paymentMonth, setPaymentMonth] = useState<string>(String(new Date().getMonth() + 1));
+  const [paymentYear, setPaymentYear] = useState<string>(String(new Date().getFullYear()));
+  const [paymentClientId, setPaymentClientId] = useState<string>("");
+  const [paymentEntries, setPaymentEntries] = useState<Record<number, { paidValue: string; notes: string }>>({});
+  const [isSavingPayments, setIsSavingPayments] = useState(false);
+
   // Queries
   const { data: clients = EMPTY } = useQuery<any[]>({
     queryKey: ["/api/clients"],
@@ -208,6 +217,18 @@ export default function AcordosPage() {
     },
   });
 
+  // Monthly payments for payments modal
+  const { data: monthlyPayments = EMPTY } = useQuery<any[]>({
+    queryKey: ["/api/agreement-monthly-payments", paymentClientId, paymentMonth, paymentYear],
+    enabled: showPayments && !!paymentClientId,
+    queryFn: async () => {
+      const params = new URLSearchParams({ clientId: paymentClientId, month: paymentMonth, year: paymentYear });
+      const res = await fetch(`/api/agreement-monthly-payments?${params}`, { headers: getAuthHeaders() });
+      if (!res.ok) return [];
+      return res.json();
+    },
+  });
+
   // Handle URL params — pre-select client/debtor and open form when coming from debtor button
   useEffect(() => {
     if (initializedRef.current) return;
@@ -221,6 +242,22 @@ export default function AcordosPage() {
       setShowForm(true);
     }
   }, [location]);
+
+  // Reset payment entries when client/month/year changes
+  useEffect(() => {
+    setPaymentEntries({});
+  }, [paymentClientId, paymentMonth, paymentYear]);
+
+  // Pre-load existing payment records when data arrives
+  useEffect(() => {
+    if (monthlyPayments.length > 0) {
+      const map: Record<number, { paidValue: string; notes: string }> = {};
+      for (const p of monthlyPayments) {
+        map[p.agreementId] = { paidValue: p.paidValue ?? "", notes: p.notes ?? "" };
+      }
+      setPaymentEntries(prev => ({ ...map, ...prev }));
+    }
+  }, [monthlyPayments]);
 
   // Mutations
   const createMutation = useMutation({
@@ -381,6 +418,56 @@ export default function AcordosPage() {
     URL.revokeObjectURL(url);
   }
 
+  async function handleDownloadReportPdf() {
+    if (!reportClientId) return toast({ title: "Selecione um cliente", variant: "destructive" });
+    const params = new URLSearchParams({ clientId: reportClientId, month: reportMonth, year: reportYear });
+    const res = await fetch(`/api/debtor-agreements/report/pdf?${params}`, { headers: getAuthHeaders() });
+    if (!res.ok) return toast({ title: "Erro ao gerar PDF", variant: "destructive" });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `honorarios_${String(reportMonth).padStart(2, "0")}_${reportYear}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleSavePayments() {
+    if (!paymentClientId) return toast({ title: "Selecione um cliente", variant: "destructive" });
+    const y = parseInt(paymentYear);
+    if (isNaN(y) || y < 2000 || y > 2100) return toast({ title: "Ano inválido (2000–2100)", variant: "destructive" });
+
+    const agreementsForClient = (agreements as any[]).filter(a => String(a.clientId) === paymentClientId && a.status === "ativo");
+    const items = agreementsForClient
+      .filter(a => {
+        const e = paymentEntries[a.id];
+        return e && (e.paidValue.trim() !== "" || e.notes.trim() !== "");
+      })
+      .map(a => {
+        const e = paymentEntries[a.id];
+        return { agreementId: a.id, paidValue: e?.paidValue || null, notes: e?.notes || null };
+      });
+
+    if (items.length === 0) return toast({ title: "Nenhum valor preenchido", variant: "destructive" });
+
+    setIsSavingPayments(true);
+    try {
+      const res = await fetch("/api/agreement-monthly-payments/batch", {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId: parseInt(paymentClientId), month: parseInt(paymentMonth), year: y, items }),
+      });
+      if (!res.ok) throw new Error();
+      queryClient.invalidateQueries({ queryKey: ["/api/agreement-monthly-payments"] });
+      toast({ title: `${items.length} pagamento(s) salvo(s) com sucesso!` });
+      setShowPayments(false);
+    } catch {
+      toast({ title: "Erro ao salvar pagamentos", variant: "destructive" });
+    } finally {
+      setIsSavingPayments(false);
+    }
+  }
+
   async function handleSendReport() {
     if (!reportClientId) return toast({ title: "Selecione um cliente", variant: "destructive" });
     const checkedRecipients = reportRecipients.filter(r => r.checked);
@@ -516,6 +603,9 @@ export default function AcordosPage() {
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => setShowImport(true)} data-testid="button-import-acordos">
               <Upload className="w-4 h-4 mr-2" /> Importar
+            </Button>
+            <Button variant="outline" onClick={() => { setPaymentClientId(selectedClientId !== "all" ? selectedClientId : ""); setShowPayments(true); }} data-testid="button-payments-month">
+              <DollarSign className="w-4 h-4 mr-2" /> Pagamentos do Mês
             </Button>
             <Button variant="outline" onClick={() => { setReportClientId(selectedClientId !== "all" ? selectedClientId : ""); setShowReport(true); }} data-testid="button-report-acordos">
               <FileSpreadsheet className="w-4 h-4 mr-2" /> Relatório Mensal
@@ -909,6 +999,9 @@ export default function AcordosPage() {
             <Button variant="outline" onClick={handleDownloadReport} data-testid="button-download-report">
               <Download className="w-4 h-4 mr-2" /> Baixar Excel
             </Button>
+            <Button variant="outline" onClick={handleDownloadReportPdf} data-testid="button-download-report-pdf">
+              <FileText className="w-4 h-4 mr-2" /> Baixar PDF
+            </Button>
             <Button onClick={handleSendReport} disabled={isSending || !reportClientId} data-testid="button-send-report">
               {isSending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
               Enviar
@@ -1047,6 +1140,117 @@ export default function AcordosPage() {
                 Confirmar Importação ({importPreview.length})
               </Button>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ===== PAGAMENTOS DO MÊS MODAL ===== */}
+      <Dialog open={showPayments} onOpenChange={open => { if (!open) { setShowPayments(false); setPaymentEntries({}); } }}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <DollarSign className="w-5 h-5 text-emerald-600" />
+              Pagamentos do Mês
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-1">
+                <Label>Cliente</Label>
+                <Select value={paymentClientId} onValueChange={setPaymentClientId}>
+                  <SelectTrigger data-testid="select-payment-client">
+                    <SelectValue placeholder="Selecione o cliente" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(clients as any[]).map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>Mês</Label>
+                <Select value={paymentMonth} onValueChange={setPaymentMonth}>
+                  <SelectTrigger data-testid="select-payment-month">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {months.map((m, i) => <SelectItem key={i + 1} value={String(i + 1)}>{m}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>Ano</Label>
+                <Input type="number" value={paymentYear} onChange={e => setPaymentYear(e.target.value)} data-testid="input-payment-year" />
+              </div>
+            </div>
+
+            {!paymentClientId ? (
+              <p className="text-sm text-muted-foreground text-center py-4">Selecione um cliente para ver os acordos ativos.</p>
+            ) : (
+              <div className="border rounded-lg overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-gray-50">
+                      <TableHead>Devedor</TableHead>
+                      <TableHead className="text-right">V. Prestação</TableHead>
+                      <TableHead>Valor Real Pago (R$)</TableHead>
+                      <TableHead>Observações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(agreements as any[])
+                      .filter(a => String(a.clientId) === paymentClientId && a.status === "ativo")
+                      .map(a => (
+                        <TableRow key={a.id}>
+                          <TableCell className="text-sm font-medium">{a.debtorName || a.debtor?.name || `Acordo #${a.id}`}</TableCell>
+                          <TableCell className="text-sm text-right text-muted-foreground">
+                            {a.installmentValue ? formatCurrency(a.installmentValue) : "—"}
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="0,00"
+                              className="w-32"
+                              value={paymentEntries[a.id]?.paidValue ?? ""}
+                              onChange={e => setPaymentEntries(prev => ({
+                                ...prev,
+                                [a.id]: { paidValue: e.target.value, notes: prev[a.id]?.notes ?? "" },
+                              }))}
+                              data-testid={`input-paid-value-${a.id}`}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              placeholder="Observação..."
+                              value={paymentEntries[a.id]?.notes ?? ""}
+                              onChange={e => setPaymentEntries(prev => ({
+                                ...prev,
+                                [a.id]: { paidValue: prev[a.id]?.paidValue ?? "", notes: e.target.value },
+                              }))}
+                              data-testid={`input-payment-notes-${a.id}`}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    {(agreements as any[]).filter(a => String(a.clientId) === paymentClientId && a.status === "ativo").length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-center text-sm text-muted-foreground py-4">
+                          Nenhum acordo ativo para este cliente.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => { setShowPayments(false); setPaymentEntries({}); }}>Cancelar</Button>
+            <Button onClick={handleSavePayments} disabled={isSavingPayments || !paymentClientId} data-testid="button-save-payments">
+              {isSavingPayments ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <DollarSign className="w-4 h-4 mr-2" />}
+              Salvar Pagamentos
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

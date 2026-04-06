@@ -41,6 +41,26 @@ pool.query("SELECT current_database(), inet_server_port()").then(async res => {
   } catch (migErr: any) {
     console.error("[DB Migration] pending_action column migration failed:", migErr.message);
   }
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS agreement_monthly_payments (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+        agreement_id INTEGER NOT NULL REFERENCES debtor_agreements(id) ON DELETE CASCADE,
+        month INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        paid_value DECIMAL(12,2),
+        notes TEXT
+      )
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_amp_agreement_month_year
+      ON agreement_monthly_payments(agreement_id, month, year)
+    `);
+  } catch (migErr: any) {
+    console.error("[DB Migration] agreement_monthly_payments:", migErr.message);
+  }
 }).catch(err => {
   console.error("[DB] Failed to verify database connection:", err.message);
 });

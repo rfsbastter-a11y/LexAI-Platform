@@ -794,6 +794,21 @@ export const debtorAgreementsRelations = relations(debtorAgreements, ({ one }) =
   client: one(clients, { fields: [debtorAgreements.clientId], references: [clients.id] }),
 }));
 
+// ==================== AGREEMENT MONTHLY PAYMENTS ====================
+export const agreementMonthlyPayments = pgTable("agreement_monthly_payments", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  agreementId: integer("agreement_id").notNull().references(() => debtorAgreements.id, { onDelete: "cascade" }),
+  month: integer("month").notNull(),
+  year: integer("year").notNull(),
+  paidValue: decimal("paid_value", { precision: 12, scale: 2 }),
+  notes: text("notes"),
+});
+
+export const insertAgreementMonthlyPaymentSchema = createInsertSchema(agreementMonthlyPayments).omit({ id: true });
+export type InsertAgreementMonthlyPayment = z.infer<typeof insertAgreementMonthlyPaymentSchema>;
+export type AgreementMonthlyPayment = typeof agreementMonthlyPayments.$inferSelect;
+
 // ==================== NEGOTIATIONS ====================
 export const negotiations = pgTable("negotiations", {
   id: serial("id").primaryKey(),
