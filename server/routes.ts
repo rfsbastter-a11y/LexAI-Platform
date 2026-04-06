@@ -120,6 +120,22 @@ function buildAgreementReportRow(a: any, debtor: any, monthlyFee: number) {
   ];
 }
 
+function isActiveInMonth(a: any, month: number, year: number): boolean {
+  if (!a.agreementDate) return false;
+  const agreementDate = new Date(a.agreementDate);
+  if (agreementDate > new Date(year, month - 1, 31)) return false;
+  if (a.isSinglePayment) return agreementDate.getMonth() + 1 === month && agreementDate.getFullYear() === year;
+  if (a.installmentsCount && a.downPaymentDate) {
+    const firstPayment = new Date(a.downPaymentDate);
+    const lastPayment = new Date(firstPayment);
+    lastPayment.setMonth(lastPayment.getMonth() + (a.installmentsCount - 1));
+    const refEnd = new Date(year, month - 1, 31);
+    if (lastPayment < new Date(year, month - 1, 1)) return false;
+    if (firstPayment > refEnd) return false;
+  }
+  return true;
+}
+
 const searchRateLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -9008,7 +9024,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
-  // Generate Excel report for a client+month
+  // Download PDF report for a client+month
   app.get("/api/debtor-agreements/report", requireAuth, async (req: Request, res: Response) => {
     try {
       const tenantId = getTenantId(req);
@@ -9017,31 +9033,66 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
 
       let agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId as string), tenantId);
 
-      // Enrich with debtor info
       const { debtors: debtorsTable, clients: clientsTable } = await import("@shared/schema");
       const debtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId)));
       let debtorMap: Record<number, any> = {};
       if (debtorIds.length > 0) {
-        const rows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
-        rows.forEach((r: any) => { debtorMap[r.id] = r; });
+        const dbRows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
+        dbRows.forEach((r: any) => { debtorMap[r.id] = r; });
       }
       const [clientRow] = await db.select().from(clientsTable).where(eq(clientsTable.id, parseInt(clientId as string)));
 
-      const XLSX = await import("xlsx");
-      const wb = XLSX.utils.book_new();
-
-      // Title row
-      const monthYear = month && year ? `${String(month).padStart(2, "0")}/${year}` : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" }).replace("/", "/");
+      const monthYear = month && year
+        ? `${String(month).padStart(2, "0")}/${year}`
+        : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" });
       const clientName = clientRow?.name || "Cliente";
-
-      const rows: any[][] = [
-        [`${clientName.toUpperCase()} - PLANILHA MENSAL DOS HONORARIOS - ${monthYear.toUpperCase()}`],
-        [],
-        agreementReportHeaders,
-      ];
-
       const targetMonth = month ? parseInt(month as string) : null;
       const targetYear = year ? parseInt(year as string) : null;
+
+      // Build PDF with PDFKit
+      const PDFDocument = (await import("pdfkit")).default;
+      const margin = 40;
+      const pageWidth = 841.89;
+      const pageHeight = 595.28;
+      const contentWidth = pageWidth - margin * 2;
+
+      const colWidths = [200, 90, 75, 105, 82, 105, 105.89];
+      const colHeaders = ["NOME", "DATA ACORDO", "PARCELAS", "V. PRESTAÇÃO", "VENCIMENTO", "HON. MÊS", "STATUS"];
+
+      const doc = new PDFDocument({ size: "A4", layout: "landscape", margins: { top: margin, bottom: margin, left: margin, right: margin }, autoFirstPage: true, bufferPages: true });
+      const chunks: Buffer[] = [];
+      doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+      const pdfReady = new Promise<Buffer>((resolve) => { doc.on("end", () => resolve(Buffer.concat(chunks))); });
+
+      const drawHeader = () => {
+        doc.fontSize(13).fillColor("#1a1a1a").font("Helvetica-Bold")
+          .text("Marques & Serra Advogados", margin, margin, { lineBreak: false });
+        doc.fontSize(9).fillColor("#555555").font("Helvetica")
+          .text(`${clientName}  –  ${monthYear}`, margin, margin + 17, { lineBreak: false });
+        doc.moveTo(margin, margin + 32).lineTo(pageWidth - margin, margin + 32).lineWidth(0.5).strokeColor("#CCCCCC").stroke();
+        doc.fontSize(10).fillColor("#1a1a1a").font("Helvetica-Bold")
+          .text(`PLANILHA MENSAL DE HONORÁRIOS`, margin, margin + 40, { align: "center", width: contentWidth, lineBreak: false });
+      };
+
+      const drawTableHeader = (y: number): number => {
+        doc.save();
+        doc.rect(margin, y, contentWidth, 18).fill("#2563EB");
+        doc.restore();
+        doc.fontSize(7).fillColor("#FFFFFF").font("Helvetica-Bold");
+        let x = margin;
+        for (let i = 0; i < colHeaders.length; i++) {
+          doc.text(colHeaders[i], x + 3, y + 6, { width: colWidths[i] - 6, lineBreak: false });
+          x += colWidths[i];
+        }
+        return y + 18;
+      };
+
+      drawHeader();
+      let currentY = margin + 62;
+      currentY = drawTableHeader(currentY);
+
+      let totalFee = 0;
+      let rowIndex = 0;
 
       for (const a of agreements) {
         const debtor = debtorMap[a.debtorId];
@@ -9050,15 +9101,119 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const monthlyFee = targetMonth && targetYear
           ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
           : Math.round(installmentValue * feePercent / 100 * 100) / 100;
+        totalFee += monthlyFee;
 
-        rows.push(buildAgreementReportRow(a, debtor, monthlyFee));
+        const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "—");
+        const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "—" : "—");
+        const statusLabel = a.status === "ativo" ? "Ativo" : a.status === "encerrado" ? "Encerrado" : a.status || "—";
+        const feeFormatted = monthlyFee > 0 ? `R$ ${monthlyFee.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : "—";
+        const installmentFormatted = installmentValue > 0 ? `R$ ${installmentValue.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : "—";
+
+        const rowHeight = 14;
+        if (currentY + rowHeight > pageHeight - margin - 28) {
+          doc.addPage();
+          drawHeader();
+          currentY = margin + 62;
+          currentY = drawTableHeader(currentY);
+          rowIndex = 0;
+        }
+
+        if (rowIndex % 2 === 1) {
+          doc.save();
+          doc.rect(margin, currentY, contentWidth, rowHeight).fill("#F8FAFC");
+          doc.restore();
+        }
+
+        doc.fontSize(7).fillColor("#1a1a1a").font("Helvetica");
+        const cellValues = [
+          debtor?.name || "—",
+          a.agreementDate ? new Date(a.agreementDate).toLocaleDateString("pt-BR") : "—",
+          installmentsDisplay,
+          installmentFormatted,
+          dueDayDisplay,
+          feeFormatted,
+          statusLabel,
+        ];
+        let x = margin;
+        for (let i = 0; i < cellValues.length; i++) {
+          doc.text(cellValues[i], x + 3, currentY + 4, { width: colWidths[i] - 6, lineBreak: false, ellipsis: true });
+          x += colWidths[i];
+        }
+        currentY += rowHeight;
+        rowIndex++;
       }
 
-      const total = rows.slice(3).reduce((sum: number, r: any[]) => sum + (parseFloat(r[11]) || 0), 0);
-      rows.push([]);
-      rows.push(["", "", "", "", "", "", "", "", "", "", "TOTAL HONORARIOS", Math.round(total * 100) / 100]);
+      // Total footer
+      const footerY = Math.min(currentY + 6, pageHeight - margin - 22);
+      doc.moveTo(margin, footerY).lineTo(pageWidth - margin, footerY).lineWidth(0.5).strokeColor("#CCCCCC").stroke();
+      const totalStr = `R$ ${totalFee.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
+      doc.fontSize(8).fillColor("#1a1a1a").font("Helvetica-Bold")
+        .text(`TOTAL HONORÁRIOS: ${totalStr}`, margin, footerY + 6, { align: "right", width: contentWidth, lineBreak: false });
 
-      const ws = XLSX.utils.aoa_to_sheet(rows);
+      doc.end();
+      const pdfBuffer = await pdfReady;
+
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="honorarios_${monthYear.replace("/", "_")}.pdf"`);
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error("Error generating agreements report:", error);
+      res.status(500).json({ error: "Failed to generate report" });
+    }
+  });
+
+  // Send report via email and/or WhatsApp
+  app.post("/api/debtor-agreements/report/send", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { clientId, month, year } = req.body;
+      if (!clientId) return res.status(400).json({ error: "clientId is required" });
+
+      const toStringArray = (v: any): string[] => {
+        if (!v) return [];
+        const arr = Array.isArray(v) ? v : [v];
+        return arr.map((x: any) => (x != null ? String(x).trim() : "")).filter(Boolean);
+      };
+      const emailList = [...new Set(toStringArray(req.body.emailTos ?? req.body.emailTo))];
+      const whatsappList = [...new Set(toStringArray(req.body.whatsappTos ?? req.body.whatsappTo))];
+
+      let agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId), tenantId);
+      const { debtors: debtorsTable, clients: clientsTable } = await import("@shared/schema");
+      const debtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId)));
+      let debtorMap: Record<number, any> = {};
+      if (debtorIds.length > 0) {
+        const dbRows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
+        dbRows.forEach((r: any) => { debtorMap[r.id] = r; });
+      }
+      const [clientRow] = await db.select().from(clientsTable).where(eq(clientsTable.id, parseInt(clientId)));
+
+      const monthYear = month && year ? `${String(month).padStart(2, "0")}/${year}` : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" });
+      const clientName = clientRow?.name || "Cliente";
+      const targetMonth = month ? parseInt(month) : null;
+      const targetYear = year ? parseInt(year) : null;
+
+      const XLSX = await import("xlsx");
+      const wb = XLSX.utils.book_new();
+      const wsRows: any[][] = [
+        [`${clientName.toUpperCase()} - PLANILHA MENSAL DOS HONORARIOS - ${monthYear.toUpperCase()}`],
+        [],
+        agreementReportHeaders,
+      ];
+      for (const a of agreements) {
+        const debtor = debtorMap[a.debtorId];
+        const feePercent = parseFloat(a.feePercent || "10");
+        const installmentValue = parseFloat(a.installmentValue || "0");
+        const monthlyFee = targetMonth && targetYear
+          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
+          : Math.round(installmentValue * feePercent / 100 * 100) / 100;
+        wsRows.push(buildAgreementReportRow(a, debtor, monthlyFee));
+      }
+      const total = wsRows.slice(3).reduce((sum: number, r: any[]) => sum + (parseFloat(r[11]) || 0), 0);
+      wsRows.push([]);
+      wsRows.push(["", "", "", "", "", "", "", "", "", "", "TOTAL HONORARIOS", Math.round(total * 100) / 100]);
+
+      const ws = XLSX.utils.aoa_to_sheet(wsRows);
       ws["!cols"] = agreementReportColumnWidths;
       XLSX.utils.book_append_sheet(wb, ws, "Acordos");
       const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
