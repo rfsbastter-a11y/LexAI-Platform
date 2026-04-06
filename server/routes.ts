@@ -127,10 +127,18 @@ function isActiveInMonth(a: any, month: number, year: number): boolean {
   const targetEnd = new Date(year, month, 0);
   if (agreementDate > targetEnd) return false;
   if (a.isSinglePayment) {
-    return agreementDate.getMonth() + 1 === month && agreementDate.getFullYear() === year;
+    const payDate = a.downPaymentDate ? new Date(a.downPaymentDate + "T00:00:00") : agreementDate;
+    return payDate.getMonth() + 1 === month && payDate.getFullYear() === year;
   }
   if (a.installmentsCount && a.installmentsCount > 0) {
-    const lastPayment = new Date(agreementDate);
+    let startDate = agreementDate;
+    if (a.downPaymentDate) {
+      const dpDate = new Date(a.downPaymentDate + "T00:00:00");
+      const yearDiff = Math.abs(dpDate.getFullYear() - agreementDate.getFullYear());
+      if (yearDiff <= 10) startDate = dpDate;
+    }
+    if (startDate > targetEnd) return false;
+    const lastPayment = new Date(startDate);
     lastPayment.setMonth(lastPayment.getMonth() + a.installmentsCount - 1);
     if (lastPayment < targetStart) return false;
   }
