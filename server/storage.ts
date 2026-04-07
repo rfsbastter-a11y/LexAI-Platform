@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, or, gte, lte, sql, inArray, isNull, isNotNull } from "drizzle-orm";
+import { eq, desc, and, or, gte, lte, sql, inArray, isNull, isNotNull, asc } from "drizzle-orm";
 import {
   tenants, users, clients, contracts, cases, caseMovements,
   deadlines, documents, invoices, auditLogs, datajudSyncLogs,
@@ -248,7 +248,8 @@ export interface IStorage {
   getDebtorsByTenant(tenantId: number): Promise<Debtor[]>;
   createDebtor(data: InsertDebtor): Promise<Debtor>;
   updateDebtor(id: number, data: Partial<InsertDebtor>): Promise<Debtor>;
-  deleteDebtor(id: number): Promise<void>;
+  deleteDebtor(id: number, tenantId: number): Promise<void>;
+  deleteDebtorsByClient(clientId: number, tenantId: number): Promise<number>;
 
   // Debtor Agreements
   getDebtorAgreement(id: number, tenantId: number): Promise<DebtorAgreement | undefined>;
@@ -1450,11 +1451,15 @@ class DatabaseStorage implements IStorage {
   }
 
   async getDebtorsByClient(clientId: number, tenantId: number): Promise<Debtor[]> {
-    return db.select().from(debtors).where(and(eq(debtors.clientId, clientId), eq(debtors.tenantId, tenantId))).orderBy(desc(debtors.createdAt));
+    return db.select().from(debtors)
+      .where(and(eq(debtors.clientId, clientId), eq(debtors.tenantId, tenantId)))
+      .orderBy(asc(debtors.name), desc(debtors.createdAt));
   }
 
   async getDebtorsByTenant(tenantId: number): Promise<Debtor[]> {
-    return db.select().from(debtors).where(eq(debtors.tenantId, tenantId)).orderBy(desc(debtors.createdAt));
+    return db.select().from(debtors)
+      .where(eq(debtors.tenantId, tenantId))
+      .orderBy(asc(debtors.name), desc(debtors.createdAt));
   }
 
   async createDebtor(data: InsertDebtor): Promise<Debtor> {
@@ -1467,8 +1472,15 @@ class DatabaseStorage implements IStorage {
     return debtor;
   }
 
-  async deleteDebtor(id: number): Promise<void> {
-    await db.delete(debtors).where(eq(debtors.id, id));
+  async deleteDebtor(id: number, tenantId: number): Promise<void> {
+    await db.delete(debtors).where(and(eq(debtors.id, id), eq(debtors.tenantId, tenantId)));
+  }
+
+  async deleteDebtorsByClient(clientId: number, tenantId: number): Promise<number> {
+    const deleted = await db.delete(debtors)
+      .where(and(eq(debtors.clientId, clientId), eq(debtors.tenantId, tenantId)))
+      .returning({ id: debtors.id });
+    return deleted.length;
   }
 
   // Debtor Agreements

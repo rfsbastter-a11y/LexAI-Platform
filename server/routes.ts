@@ -6959,11 +6959,24 @@ TÉCNICAS ANTI-DETECÇÃO:
 
   app.delete("/api/debtors/:id", async (req, res) => {
     try {
-      await storage.deleteDebtor(parseInt(req.params.id));
+      const tenantId = getTenantId(req);
+      await storage.deleteDebtor(parseInt(req.params.id), tenantId);
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting debtor:", error);
       res.status(500).json({ error: "Failed to delete debtor" });
+    }
+  });
+
+  app.delete("/api/clients/:clientId/debtors", async (req, res) => {
+    try {
+      const tenantId = getTenantId(req);
+      const clientId = parseInt(req.params.clientId);
+      const deletedCount = await storage.deleteDebtorsByClient(clientId, tenantId);
+      res.json({ success: true, deletedCount });
+    } catch (error) {
+      console.error("Error deleting client debtors:", error);
+      res.status(500).json({ error: "Failed to delete client debtors" });
     }
   });
 
