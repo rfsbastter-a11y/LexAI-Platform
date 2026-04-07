@@ -9007,6 +9007,21 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
+  // Bulk delete debtor agreements
+  app.post("/api/debtor-agreements/bulk-delete", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { ids } = req.body;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: "ids must be a non-empty array" });
+      }
+      const deleted = await storage.deleteDebtorAgreements(ids.map(Number), tenantId);
+      res.json({ success: true, deleted });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to bulk delete debtor agreements" });
+    }
+  });
+
   // Toggle fee status (one-click: pendente ↔ recebido)
   app.patch("/api/debtor-agreements/:id/fee-status", requireAuth, async (req: Request, res: Response) => {
     try {
