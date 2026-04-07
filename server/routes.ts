@@ -9330,7 +9330,13 @@ Regras obrigatórias:
   // Dispara scraping manual (admin)
   app.post("/api/admin/run-scraping-job", async (req, res) => {
     try {
-      const { maxQueries = 10, pieceTypes, force = true } = req.body || {};
+      const {
+        maxCells = 20,
+        onlyPieceTypes,
+        onlyInstitutions,
+        resultsPerCell = 10,
+        force = true,
+      } = req.body || {};
       const { scrapingJobIsRunning, runScrapingJob } = await import("./services/scrapingJob");
 
       if (scrapingJobIsRunning) {
@@ -9338,14 +9344,34 @@ Regras obrigatórias:
       }
 
       // Responde imediatamente, roda em background
-      res.json({ message: "Scraping job iniciado em background", maxQueries, force });
+      res.json({
+        message: "Scraping job iniciado em background",
+        maxCells,
+        onlyPieceTypes,
+        onlyInstitutions,
+        resultsPerCell,
+      });
 
-      runScrapingJob({ force, maxQueries, pieceTypes }).catch(e =>
+      runScrapingJob({ force, maxCells, onlyPieceTypes, onlyInstitutions, resultsPerCell }).catch(e =>
         console.error("[ScrapingJob] Manual run failed:", e?.message)
       );
     } catch (error) {
       console.error("Error starting scraping job:", error);
       res.status(500).json({ error: "Falha ao iniciar scraping job" });
+    }
+  });
+
+  // Plano de execução (preview sem rodar)
+  app.get("/api/admin/scraping-plan", async (req, res) => {
+    try {
+      const { getScrapingPlan } = await import("./services/scrapingJob");
+      const onlyPieceTypes   = req.query.pieceTypes   ? String(req.query.pieceTypes).split(",")   : undefined;
+      const onlyInstitutions = req.query.institutions ? String(req.query.institutions).split(",") : undefined;
+      const maxCells         = req.query.maxCells ? parseInt(String(req.query.maxCells)) : 50;
+      const plan = getScrapingPlan({ maxCells, onlyPieceTypes, onlyInstitutions });
+      res.json(plan);
+    } catch (error) {
+      res.status(500).json({ error: "Falha ao gerar plano" });
     }
   });
 
