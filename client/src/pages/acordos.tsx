@@ -64,7 +64,7 @@ const formatCurrency = (value: number | string | null | undefined) => {
 };
 
 const formatDate = (date: string | null | undefined) => {
-  if (!date) return "—";
+  if (!date) return "â€”";
   const d = new Date(date + "T12:00:00");
   return d.toLocaleDateString("pt-BR");
 };
@@ -155,6 +155,14 @@ export default function AcordosPage() {
     },
   });
 
+  const { data: contracts = EMPTY } = useQuery<any[]>({
+    queryKey: ["/api/contracts"],
+    queryFn: async () => {
+      const res = await fetch("/api/contracts", { headers: getAuthHeaders() });
+      return res.json();
+    },
+  });
+
   const { data: socios = EMPTY } = useQuery<any[]>({
     queryKey: ["/api/users/socios"],
     queryFn: async () => {
@@ -164,7 +172,7 @@ export default function AcordosPage() {
   });
 
   // Rebuild recipient list when reportClientId or socios change.
-  // Preserves existing checked state for sócios to avoid resetting user choices on data refetch.
+  // Preserves existing checked state for sÃ³cios to avoid resetting user choices on data refetch.
   // Client contacts always reset to checked when a new client is selected.
   useEffect(() => {
     setReportRecipients(prev => {
@@ -183,8 +191,8 @@ export default function AcordosPage() {
       }
       if (reportClientId) {
         const client = (clients as any[]).find(c => String(c.id) === reportClientId);
-        if (client?.email) list.push({ id: "client-email", label: `${client.name} – cliente (e-mail)`, email: client.email, checked: true });
-        if (client?.phone) list.push({ id: "client-wa", label: `${client.name} – cliente (WhatsApp)`, phone: client.phone, checked: true });
+        if (client?.email) list.push({ id: "client-email", label: `${client.name} â€“ cliente (e-mail)`, email: client.email, checked: true });
+        if (client?.phone) list.push({ id: "client-wa", label: `${client.name} â€“ cliente (WhatsApp)`, phone: client.phone, checked: true });
       }
       return list;
     });
@@ -208,7 +216,25 @@ export default function AcordosPage() {
     },
   });
 
-  // Handle URL params — pre-select client/debtor and open form when coming from debtor button
+  const activeContractClients = useMemo(() => {
+    const activeClientIds = new Set(
+      (contracts || [])
+        .filter((contract: any) => (contract.status || "").toLowerCase() === "ativo" && contract.clientId)
+        .map((contract: any) => contract.clientId)
+    );
+
+    return (clients || [])
+      .filter((client: any) => activeClientIds.has(client.id))
+      .sort((a: any, b: any) => String(a.name || "").localeCompare(String(b.name || ""), "pt-BR", { sensitivity: "base" }));
+  }, [clients, contracts]);
+
+  const sortedDebtorsForClient = useMemo(() => {
+    return [...(debtorsForClient.data || EMPTY)].sort((a: any, b: any) =>
+      String(a.name || "").localeCompare(String(b.name || ""), "pt-BR", { sensitivity: "base" })
+    );
+  }, [debtorsForClient.data]);
+
+  // Handle URL params â€” pre-select client/debtor and open form when coming from debtor button
   useEffect(() => {
     if (initializedRef.current) return;
     const params = new URLSearchParams(window.location.search);
@@ -371,7 +397,7 @@ export default function AcordosPage() {
     if (!reportClientId) return toast({ title: "Selecione um cliente", variant: "destructive" });
     const params = new URLSearchParams({ clientId: reportClientId, month: reportMonth, year: reportYear });
     const res = await fetch(`/api/debtor-agreements/report?${params}`, { headers: getAuthHeaders() });
-    if (!res.ok) return toast({ title: "Erro ao gerar relatório", variant: "destructive" });
+    if (!res.ok) return toast({ title: "Erro ao gerar relatÃ³rio", variant: "destructive" });
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -393,7 +419,7 @@ export default function AcordosPage() {
       ...(extraWhatsapp.trim() ? [extraWhatsapp.trim()] : []),
     ];
     if (emailTos.length === 0 && whatsappTos.length === 0) {
-      return toast({ title: "Selecione ao menos um destinatário", variant: "destructive" });
+      return toast({ title: "Selecione ao menos um destinatÃ¡rio", variant: "destructive" });
     }
     setIsSending(true);
     try {
@@ -410,10 +436,10 @@ export default function AcordosPage() {
       });
       if (!res.ok) throw new Error();
       const data = await res.json();
-      toast({ title: `Relatório enviado via ${data.sent.join(" e ")}!` });
+      toast({ title: `RelatÃ³rio enviado via ${data.sent.join(" e ")}!` });
       setShowReport(false);
     } catch {
-      toast({ title: "Erro ao enviar relatório", variant: "destructive" });
+      toast({ title: "Erro ao enviar relatÃ³rio", variant: "destructive" });
     } finally {
       setIsSending(false);
     }
@@ -439,7 +465,7 @@ export default function AcordosPage() {
       setImportPreview(data.records || []);
       toast({ title: `${data.count} acordos detectados` });
     } catch (e: any) {
-      toast({ title: "Erro ao processar importação: " + e.message, variant: "destructive" });
+      toast({ title: "Erro ao processar importaÃ§Ã£o: " + e.message, variant: "destructive" });
     } finally {
       setImportPreviewing(false);
     }
@@ -486,7 +512,7 @@ export default function AcordosPage() {
       setImportPreview([]);
       setImportText("");
       setImportFile(null);
-      const msg = noMatch > 0 ? ` (${noMatch} ignorados por devedor não encontrado)` : "";
+      const msg = noMatch > 0 ? ` (${noMatch} ignorados por devedor nÃ£o encontrado)` : "";
       toast({ title: `${data.created} acordos importados${msg}!` });
     } catch {
       toast({ title: "Erro ao salvar acordos importados", variant: "destructive" });
@@ -496,7 +522,7 @@ export default function AcordosPage() {
   }
 
   const months = [
-    "1 - Janeiro", "2 - Fevereiro", "3 - Março", "4 - Abril",
+    "1 - Janeiro", "2 - Fevereiro", "3 - MarÃ§o", "4 - Abril",
     "5 - Maio", "6 - Junho", "7 - Julho", "8 - Agosto",
     "9 - Setembro", "10 - Outubro", "11 - Novembro", "12 - Dezembro",
   ];
@@ -518,7 +544,7 @@ export default function AcordosPage() {
               <Upload className="w-4 h-4 mr-2" /> Importar
             </Button>
             <Button variant="outline" onClick={() => { setReportClientId(selectedClientId !== "all" ? selectedClientId : ""); setShowReport(true); }} data-testid="button-report-acordos">
-              <FileSpreadsheet className="w-4 h-4 mr-2" /> Relatório Mensal
+              <FileSpreadsheet className="w-4 h-4 mr-2" /> RelatÃ³rio Mensal
             </Button>
             <Button onClick={() => { setEditingId(null); setForm(emptyForm()); setShowForm(true); }} data-testid="button-new-acordo">
               <Plus className="w-4 h-4 mr-2" /> Novo Acordo
@@ -542,7 +568,7 @@ export default function AcordosPage() {
           </Card>
           <Card>
             <CardContent className="pt-5">
-              <p className="text-sm text-muted-foreground">Honorários/Mês (ativos)</p>
+              <p className="text-sm text-muted-foreground">HonorÃ¡rios/MÃªs (ativos)</p>
               <p className="text-3xl font-bold text-blue-600">{formatCurrency(stats.totalHonorarios)}</p>
             </CardContent>
           </Card>
@@ -560,7 +586,7 @@ export default function AcordosPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos os clientes</SelectItem>
-              {clients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+              {activeContractClients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -599,12 +625,13 @@ export default function AcordosPage() {
                     <TableHead>Data Acordo</TableHead>
                     <TableHead>Parcelas</TableHead>
                     <TableHead>Valor Entrada</TableHead>
-                    <TableHead>Valor Prestação</TableHead>
+                    <TableHead>Data Entrada</TableHead>
+                    <TableHead>Valor PrestaÃ§Ã£o</TableHead>
                     <TableHead>Vencimento</TableHead>
-                    <TableHead>Honorários/Mês</TableHead>
+                    <TableHead>HonorÃ¡rios/MÃªs</TableHead>
                     <TableHead>Hon. Status</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Ações</TableHead>
+                    <TableHead className="text-right">AÃ§Ãµes</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -616,12 +643,13 @@ export default function AcordosPage() {
                     const StatusIcon = cfg.icon;
                     return (
                       <TableRow key={a.id} data-testid={`row-acordo-${a.id}`}>
-                        <TableCell className="font-medium">{a.debtorName || "—"}</TableCell>
+                        <TableCell className="font-medium">{a.debtorName || "â€”"}</TableCell>
                         <TableCell>{formatDate(a.agreementDate)}</TableCell>
-                        <TableCell>{a.isSinglePayment ? "ÚNICA" : (a.installmentsCount || "—")}</TableCell>
-                        <TableCell>{a.downPaymentValue ? formatCurrency(a.downPaymentValue) : "—"}</TableCell>
-                        <TableCell>{a.installmentValue ? formatCurrency(a.installmentValue) : "—"}</TableCell>
-                        <TableCell>{a.dueDay ? `Dia ${a.dueDay}` : (a.isSinglePayment ? "—" : "—")}</TableCell>
+                        <TableCell>{a.isSinglePayment ? "ÃšNICA" : (a.installmentsCount || "â€”")}</TableCell>
+                        <TableCell>{a.downPaymentValue ? formatCurrency(a.downPaymentValue) : "â€”"}</TableCell>
+                        <TableCell>{formatDate(a.downPaymentDate)}</TableCell>
+                        <TableCell>{a.installmentValue ? formatCurrency(a.installmentValue) : "â€”"}</TableCell>
+                        <TableCell>{a.dueDay ? `Dia ${a.dueDay}` : (a.isSinglePayment ? "â€”" : "â€”")}</TableCell>
                         <TableCell className="font-semibold text-blue-700">{formatCurrency(monthlyFeeVal)}</TableCell>
                         <TableCell>
                           <button
@@ -680,22 +708,22 @@ export default function AcordosPage() {
                     <SelectValue placeholder="Selecione o cliente" />
                   </SelectTrigger>
                   <SelectContent>
-                    {clients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                    {activeContractClients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1">
                 <Label>Devedor *</Label>
-                {debtorsForClient.data && debtorsForClient.data.length > 0 ? (
+                {sortedDebtorsForClient.length > 0 ? (
                   <Select value={form.debtorId?.toString() || ""} onValueChange={v => {
-                    const d = debtorsForClient.data?.find((x: any) => x.id === parseInt(v));
+                    const d = sortedDebtorsForClient.find((x: any) => x.id === parseInt(v));
                     setForm(f => ({ ...f, debtorId: parseInt(v), debtorName: d?.name || "" }));
                   }}>
                     <SelectTrigger data-testid="select-debtor-form">
                       <SelectValue placeholder="Selecione o devedor" />
                     </SelectTrigger>
                     <SelectContent>
-                      {debtorsForClient.data.map((d: any) => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
+                      {sortedDebtorsForClient.map((d: any) => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 ) : (
@@ -728,7 +756,7 @@ export default function AcordosPage() {
             {/* Valores originais */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
-                <Label>Dívida Original (R$)</Label>
+                <Label>DÃ­vida Original (R$)</Label>
                 <Input placeholder="0,00" value={form.originalDebtValue} onChange={e => setForm(f => ({ ...f, originalDebtValue: e.target.value }))} data-testid="input-original-debt-value" />
               </div>
               <div className="space-y-1">
@@ -740,7 +768,7 @@ export default function AcordosPage() {
             {/* Tipo de pagamento */}
             <div className="flex items-center gap-3">
               <input type="checkbox" id="single-payment" checked={form.isSinglePayment} onChange={e => setForm(f => ({ ...f, isSinglePayment: e.target.checked }))} className="w-4 h-4" data-testid="checkbox-single-payment" />
-              <Label htmlFor="single-payment">Pagamento único (parcela única)</Label>
+              <Label htmlFor="single-payment">Pagamento Ãºnico (parcela Ãºnica)</Label>
             </div>
 
             {/* Entrada */}
@@ -759,7 +787,7 @@ export default function AcordosPage() {
             {!form.isSinglePayment && (
               <div className="grid grid-cols-3 gap-4">
                 <div className="space-y-1">
-                  <Label>Nº de Parcelas</Label>
+                  <Label>NÂº de Parcelas</Label>
                   <Input type="number" placeholder="Ex: 24" value={form.installmentsCount} onChange={e => setForm(f => ({ ...f, installmentsCount: e.target.value }))} data-testid="input-installments-count" />
                 </div>
                 <div className="space-y-1">
@@ -775,29 +803,29 @@ export default function AcordosPage() {
 
             {form.isSinglePayment && (
               <div className="space-y-1">
-                <Label>Valor do Pagamento Único (R$)</Label>
+                <Label>Valor do Pagamento Ãšnico (R$)</Label>
                 <Input placeholder="0,00" value={form.installmentValue} onChange={e => setForm(f => ({ ...f, installmentValue: e.target.value }))} data-testid="input-single-payment-value" />
               </div>
             )}
 
-            {/* Honorários */}
+            {/* HonorÃ¡rios */}
             <div className="grid grid-cols-2 gap-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
               <div className="space-y-1">
-                <Label className="text-blue-800">% Honorários do Escritório</Label>
+                <Label className="text-blue-800">% HonorÃ¡rios do EscritÃ³rio</Label>
                 <Input placeholder="10" value={form.feePercent} onChange={e => setForm(f => ({ ...f, feePercent: e.target.value }))} data-testid="input-fee-percent" />
               </div>
               <div className="space-y-1">
-                <Label className="text-blue-800">Honorários/Mês (calculado)</Label>
+                <Label className="text-blue-800">HonorÃ¡rios/MÃªs (calculado)</Label>
                 <div className="flex items-center h-9 px-3 bg-white border rounded-md text-blue-700 font-semibold">
                   {formatCurrency(monthlyFee)}
                 </div>
               </div>
               <div className="space-y-1">
-                <Label className="text-blue-800">Valor Honorários (R$)</Label>
+                <Label className="text-blue-800">Valor HonorÃ¡rios (R$)</Label>
                 <Input placeholder="Deixar vazio para calcular automaticamente" value={form.feeAmount} onChange={e => setForm(f => ({ ...f, feeAmount: e.target.value }))} data-testid="input-fee-amount" />
               </div>
               <div className="space-y-1">
-                <Label className="text-blue-800">Status Honorários</Label>
+                <Label className="text-blue-800">Status HonorÃ¡rios</Label>
                 <Select value={form.feeStatus} onValueChange={v => setForm(f => ({ ...f, feeStatus: v }))}>
                   <SelectTrigger data-testid="select-fee-status">
                     <SelectValue />
@@ -810,9 +838,9 @@ export default function AcordosPage() {
               </div>
             </div>
 
-            {/* Observações */}
+            {/* ObservaÃ§Ãµes */}
             <div className="space-y-1">
-              <Label>Observações</Label>
+              <Label>ObservaÃ§Ãµes</Label>
               <Textarea placeholder="Ex: A partir de julho, parcela reduz para R$ 345,00" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2} data-testid="textarea-notes" />
             </div>
           </div>
@@ -823,7 +851,7 @@ export default function AcordosPage() {
             </Button>
             <Button onClick={handleSave} disabled={createMutation.isPending || updateMutation.isPending} data-testid="button-save-acordo">
               {(createMutation.isPending || updateMutation.isPending) && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {editingId ? "Salvar Alterações" : "Registrar Acordo"}
+              {editingId ? "Salvar AlteraÃ§Ãµes" : "Registrar Acordo"}
             </Button>
           </div>
         </DialogContent>
@@ -835,7 +863,7 @@ export default function AcordosPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileSpreadsheet className="w-5 h-5 text-green-600" />
-              Relatório Mensal de Honorários
+              RelatÃ³rio Mensal de HonorÃ¡rios
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -846,13 +874,13 @@ export default function AcordosPage() {
                   <SelectValue placeholder="Selecione o cliente" />
                 </SelectTrigger>
                 <SelectContent>
-                  {clients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  {activeContractClients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
-                <Label>Mês</Label>
+                <Label>MÃªs</Label>
                 <Select value={reportMonth} onValueChange={setReportMonth}>
                   <SelectTrigger data-testid="select-report-month">
                     <SelectValue />
@@ -869,7 +897,7 @@ export default function AcordosPage() {
             </div>
 
             <div className="space-y-2 p-3 bg-gray-50 rounded-lg border">
-              <p className="text-sm font-medium text-gray-700">Enviar relatório para:</p>
+              <p className="text-sm font-medium text-gray-700">Enviar relatÃ³rio para:</p>
               {reportRecipients.length > 0 ? (
                 <div className="space-y-2">
                   {reportRecipients.map(r => (
@@ -890,10 +918,10 @@ export default function AcordosPage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-xs text-muted-foreground">Selecione um cliente para ver os destinatários disponíveis.</p>
+                <p className="text-xs text-muted-foreground">Selecione um cliente para ver os destinatÃ¡rios disponÃ­veis.</p>
               )}
               <div className="pt-2 border-t space-y-2">
-                <p className="text-xs font-medium text-gray-600">Destinatário avulso (opcional):</p>
+                <p className="text-xs font-medium text-gray-600">DestinatÃ¡rio avulso (opcional):</p>
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground flex items-center gap-1"><Mail className="w-3 h-3" /> E-mail</Label>
                   <Input type="email" placeholder="email@exemplo.com.br" value={extraEmail} onChange={e => setExtraEmail(e.target.value)} data-testid="input-report-extra-email" />
@@ -934,7 +962,7 @@ export default function AcordosPage() {
                   <SelectValue placeholder="Selecione o cliente" />
                 </SelectTrigger>
                 <SelectContent>
-                  {clients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  {activeContractClients.map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -947,7 +975,7 @@ export default function AcordosPage() {
               </TabsList>
 
               <TabsContent value="text" className="space-y-2 mt-3">
-                <Label className="text-sm text-muted-foreground">Cole o conteúdo da planilha (copiada do Excel/Google Sheets):</Label>
+                <Label className="text-sm text-muted-foreground">Cole o conteÃºdo da planilha (copiada do Excel/Google Sheets):</Label>
                 <Textarea
                   placeholder="Cole aqui a planilha copiada..."
                   value={importText}
@@ -1004,7 +1032,7 @@ export default function AcordosPage() {
             {importPreview.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-gray-700">{importPreview.length} acordos detectados — revise antes de confirmar:</p>
+                  <p className="text-sm font-semibold text-gray-700">{importPreview.length} acordos detectados â€” revise antes de confirmar:</p>
                   <Button size="sm" variant="ghost" onClick={() => setImportPreview([])}><X className="w-4 h-4" /></Button>
                 </div>
                 <div className="overflow-auto max-h-72 border rounded-lg">
@@ -1015,7 +1043,7 @@ export default function AcordosPage() {
                         <TableHead>Data</TableHead>
                         <TableHead>Parcelas</TableHead>
                         <TableHead>Entrada</TableHead>
-                        <TableHead>Prestação</TableHead>
+                        <TableHead>PrestaÃ§Ã£o</TableHead>
                         <TableHead>Dia</TableHead>
                         <TableHead>%</TableHead>
                       </TableRow>
@@ -1025,17 +1053,17 @@ export default function AcordosPage() {
                         <TableRow key={i}>
                           <TableCell className="text-xs font-medium">{r.debtorName}</TableCell>
                           <TableCell className="text-xs">{r.agreementDate}</TableCell>
-                          <TableCell className="text-xs">{r.isSinglePayment ? "ÚNICA" : r.installmentsCount}</TableCell>
-                          <TableCell className="text-xs">{r.downPaymentValue ? formatCurrency(r.downPaymentValue) : "—"}</TableCell>
-                          <TableCell className="text-xs">{r.installmentValue ? formatCurrency(r.installmentValue) : "—"}</TableCell>
-                          <TableCell className="text-xs">{r.dueDay ? `Dia ${r.dueDay}` : "—"}</TableCell>
+                          <TableCell className="text-xs">{r.isSinglePayment ? "ÃšNICA" : r.installmentsCount}</TableCell>
+                          <TableCell className="text-xs">{r.downPaymentValue ? formatCurrency(r.downPaymentValue) : "â€”"}</TableCell>
+                          <TableCell className="text-xs">{r.installmentValue ? formatCurrency(r.installmentValue) : "â€”"}</TableCell>
+                          <TableCell className="text-xs">{r.dueDay ? `Dia ${r.dueDay}` : "â€”"}</TableCell>
                           <TableCell className="text-xs">{r.feePercent}%</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
                 </div>
-                <p className="text-xs text-amber-600">Os devedores serão vinculados pelo nome. Certifique-se que os devedores já estão cadastrados no sistema para este cliente.</p>
+                <p className="text-xs text-amber-600">Os devedores serÃ£o vinculados pelo nome. Certifique-se que os devedores jÃ¡ estÃ£o cadastrados no sistema para este cliente.</p>
               </div>
             )}
           </div>
@@ -1044,7 +1072,7 @@ export default function AcordosPage() {
             {importPreview.length > 0 && (
               <Button onClick={handleImportConfirm} disabled={importSaving || !importClientId} data-testid="button-import-confirm">
                 {importSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
-                Confirmar Importação ({importPreview.length})
+                Confirmar ImportaÃ§Ã£o ({importPreview.length})
               </Button>
             )}
           </div>
