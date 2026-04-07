@@ -4604,7 +4604,7 @@ ${extractedText.substring(0, 8000)}`;
         tenantId,
         ...parsed.data,
       });
-      
+
       await storage.createAuditLog({
         tenantId,
         action: "piece_generated",
@@ -4612,7 +4612,16 @@ ${extractedText.substring(0, 8000)}`;
         entityId: piece.id,
         details: { title: parsed.data.title, pieceType: parsed.data.pieceType },
       });
-      
+
+      // Harvey: índice de embedding fire-and-forget (não bloqueia resposta)
+      // Só indexa se a peça já vier aprovada (raro) — normalmente acontece via /approve
+      if (piece.humanApproved) {
+        import("./services/embeddingService").then(({ embeddingService }) => {
+          embeddingService.upsertPieceEmbeddingForApprovedPiece(piece.id, tenantId)
+            .catch(e => console.warn("[RAG] Auto-embed on save failed:", e?.message));
+        }).catch(() => {});
+      }
+
       res.status(201).json(piece);
     } catch (error) {
       console.error("Error creating piece:", error);
@@ -6038,7 +6047,7 @@ TÉCNICAS ANTI-DETECÇÃO:
         return res.status(400).json({ error: "Invalid search parameters", details: parsed.error.flatten() });
       }
       
-      const results = await legalSearchService.searchDoctrine(parsed.data.query, {
+      const results = await legalSearchService.searchWebDoctrine(parsed.data.query, {
         limit: parsed.data.limit || 10,
       });
       
@@ -9264,6 +9273,29 @@ Regras obrigatórias:
 
   // ==================== CORPUS PÚBLICO JURÍDICO ====================
 
+  // Peças do escritório semanticamente similares (para o painel lateral no Studio)
+  app.post("/api/studio/similar-pieces", async (req, res) => {
+    try {
+      const { query, pieceType, topK = 4 } = req.body;
+      if (!query || query.trim().length < 10) {
+        return res.json({ results: [] });
+      }
+      const tenantId = getTenantId(req);
+      const { embeddingService } = await import("./services/embeddingService");
+      const results = await embeddingService.retrieveSimilarPieces({
+        tenantId,
+        queryText: query,
+        pieceType: pieceType || "",
+        topK: Math.min(topK, 8),
+        similarityThreshold: 0.70,
+      });
+      res.json({ results });
+    } catch (error) {
+      console.error("Error finding similar pieces:", error);
+      res.json({ results: [] }); // silencioso — nunca falha para o cliente
+    }
+  });
+
   // Busca semântica no corpus público
   app.post("/api/corpus/search", async (req, res) => {
     try {
@@ -9292,6 +9324,28 @@ Regras obrigatórias:
     } catch (error) {
       console.error("Error fetching corpus stats:", error);
       res.status(500).json({ error: "Falha ao buscar estatísticas do corpus" });
+    }
+  });
+
+  // Dispara scraping manual (admin)
+  app.post("/api/admin/run-scraping-job", async (req, res) => {
+    try {
+      const { maxQueries = 10, pieceTypes, force = true } = req.body || {};
+      const { scrapingJobIsRunning, runScrapingJob } = await import("./services/scrapingJob");
+
+      if (scrapingJobIsRunning) {
+        return res.status(409).json({ error: "Scraping job já está em execução" });
+      }
+
+      // Responde imediatamente, roda em background
+      res.json({ message: "Scraping job iniciado em background", maxQueries, force });
+
+      runScrapingJob({ force, maxQueries, pieceTypes }).catch(e =>
+        console.error("[ScrapingJob] Manual run failed:", e?.message)
+      );
+    } catch (error) {
+      console.error("Error starting scraping job:", error);
+      res.status(500).json({ error: "Falha ao iniciar scraping job" });
     }
   });
 

@@ -111,6 +111,16 @@ pool.query("SELECT current_database(), inet_server_port()").then(async res => {
     console.error("[DB Migration] legal_corpus_documents migration failed:", migErr.message);
   }
 
+  // 3a. Extra columns for scraping pipeline
+  try {
+    await pool.query(`ALTER TABLE legal_corpus_documents ADD COLUMN IF NOT EXISTS scraped_at TIMESTAMP`);
+    await pool.query(`ALTER TABLE legal_corpus_documents ADD COLUMN IF NOT EXISTS full_content TEXT`);
+    await pool.query(`ALTER TABLE legal_corpus_documents ADD COLUMN IF NOT EXISTS scrape_failed BOOLEAN DEFAULT FALSE`);
+    console.log("[DB Migration] legal_corpus_documents scraping columns ready.");
+  } catch (migErr: any) {
+    console.error("[DB Migration] legal_corpus_documents scraping columns failed:", migErr.message);
+  }
+
   // 3b. corpus_embeddings table (vector index for public corpus)
   try {
     await pool.query(`

@@ -127,6 +127,21 @@ app.use((req, res, next) => {
   startDailyCron(1);
   startSyncSchedule();
 
+  // Harvey: Corpus scraping — toda noite às 3h (Brasília = 6h UTC), janela de 2h
+  try {
+    const cron = await import("node-cron");
+    cron.schedule("0 6 * * *", async () => {
+      console.log("[ScrapingJob] Cron triggered (3h Brasília)");
+      const { runScrapingJob } = await import("./services/scrapingJob");
+      runScrapingJob({ maxQueries: 30 }).catch(e =>
+        console.error("[ScrapingJob] Cron run failed:", e?.message)
+      );
+    }, { timezone: "UTC" });
+    console.log("[ScrapingJob] Cron scheduled: daily at 03:00 Brasília (06:00 UTC)");
+  } catch (e: any) {
+    console.warn("[ScrapingJob] Cron setup failed (non-fatal):", e?.message);
+  }
+
   setTimeout(async () => {
     try {
       const { whatsappService } = await import("./services/whatsapp");

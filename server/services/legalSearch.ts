@@ -506,6 +506,24 @@ IMPORTANTE:
       if (jusBrasilResults.length > 0) sourcesFound.push("JusBrasil");
       if (escavadorResults.length > 0) sourcesFound.push("Escavador");
 
+      // Harvey: auto-ingestão do corpus em background (fire-and-forget)
+      // Resultados dos tribunais têm maior valor — JusBrasil/Escavador: snippet only
+      setImmediate(async () => {
+        try {
+          const { ingestCorpusDocument } = await import("./corpusService");
+          for (const { item, sourceLabel } of uniqueResults.slice(0, 5)) {
+            if (!item.link) continue;
+            ingestCorpusDocument({
+              url: item.link,
+              snippet: item.snippet || "",
+              title: item.title || "",
+              docType: "jurisprudencia",
+              career: "geral",
+            }).catch(() => {});
+          }
+        } catch { /* silencioso */ }
+      });
+
       return {
         query,
         results,

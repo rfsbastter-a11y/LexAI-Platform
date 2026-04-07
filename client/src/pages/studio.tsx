@@ -258,6 +258,11 @@ export default function StudioPage() {
   const [useDefaultLetterhead, setUseDefaultLetterhead] = useState(true);
   const [generatedHtml, setGeneratedHtml] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+
+  // Harvey RAG: painel de peças similares
+  const [similarPieces, setSimilarPieces] = useState<Array<{ pieceId: number | null; pieceType: string; contentText: string; similarity: number }>>([]);
+  const [isFetchingSimilar, setIsFetchingSimilar] = useState(false);
+  const similarDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [instructionText, setInstructionText] = useState("");
   const [pieceTitle, setPieceTitle] = useState("");
 
@@ -3017,7 +3022,32 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                     <div className="flex gap-2">
                       <Textarea
                         value={instructionText}
-                        onChange={(e) => setInstructionText(e.target.value)}
+                        onChange={(e) => {
+                          setInstructionText(e.target.value);
+                          // Harvey: busca peças similares com debounce de 800ms
+                          if (similarDebounceRef.current) clearTimeout(similarDebounceRef.current);
+                          const val = e.target.value;
+                          if (val.trim().length >= 30) {
+                            similarDebounceRef.current = setTimeout(async () => {
+                              setIsFetchingSimilar(true);
+                              try {
+                                const res = await fetch("/api/studio/similar-pieces", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+                                  body: JSON.stringify({ query: val, pieceType: selectedModel, topK: 4 }),
+                                });
+                                if (res.ok) {
+                                  const data = await res.json();
+                                  setSimilarPieces(data.results || []);
+                                }
+                              } catch { /* silencioso */ } finally {
+                                setIsFetchingSimilar(false);
+                              }
+                            }, 800);
+                          } else {
+                            setSimilarPieces([]);
+                          }
+                        }}
                         placeholder="Descreva detalhadamente a peça que deseja gerar. Inclua informações do caso, partes envolvidas, tese a ser defendida..."
                         className="min-h-[100px] resize-none flex-1"
                         data-testid="textarea-instructions"
@@ -3074,6 +3104,27 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                         </TooltipProvider>
                       </div>
                     </div>
+
+                    {/* Harvey RAG: peças aprovadas similares */}
+                    {(similarPieces.length > 0 || isFetchingSimilar) && (
+                      <div className="p-3 bg-green-50 border border-green-200 rounded-lg space-y-2">
+                        <div className="flex items-center gap-2 text-sm font-medium text-green-800">
+                          <CheckCircle2 className="w-4 h-4" />
+                          {isFetchingSimilar ? "Buscando peças similares..." : `${similarPieces.length} peça${similarPieces.length !== 1 ? "s" : ""} aprovada${similarPieces.length !== 1 ? "s" : ""} similar${similarPieces.length !== 1 ? "es" : ""} encontrada${similarPieces.length !== 1 ? "s" : ""}`}
+                          <span className="text-xs font-normal text-green-600 ml-auto">A IA usará como referência</span>
+                        </div>
+                        {similarPieces.map((piece, i) => (
+                          <div key={i} className="flex items-start gap-2 text-xs text-green-700 bg-white rounded p-2 border border-green-100">
+                            <ThumbsUp className="w-3 h-3 mt-0.5 flex-shrink-0 text-green-500" />
+                            <div className="flex-1 min-w-0">
+                              <span className="font-medium">{piece.pieceType}</span>
+                              <span className="text-green-500 ml-2">{(piece.similarity * 100).toFixed(0)}% similar</span>
+                              <p className="text-green-600 truncate mt-0.5">{piece.contentText.replace(/<[^>]+>/g, " ").substring(0, 80)}...</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {(suggestedJurisTerms.length > 0 || suggestedDoctrineTerms.length > 0) && (
                       <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg space-y-2">
