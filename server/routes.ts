@@ -9021,82 +9021,172 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
-  // Generate Excel report for a client+month
+  // Generate PDF report for a client+month
   app.get("/api/debtor-agreements/report", requireAuth, async (req: Request, res: Response) => {
     try {
       const tenantId = getTenantId(req);
       const { clientId, month, year } = req.query;
       if (!clientId) return res.status(400).json({ error: "clientId is required" });
 
-      let agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId as string), tenantId);
-
-      // Enrich with debtor info
+      const agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId as string), tenantId);
       const { debtors: debtorsTable, clients: clientsTable } = await import("@shared/schema");
       const debtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId)));
-      let debtorMap: Record<number, any> = {};
+      const debtorMap: Record<number, any> = {};
+
       if (debtorIds.length > 0) {
-        const rows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
-        rows.forEach((r: any) => { debtorMap[r.id] = r; });
+        const debtorRows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
+        debtorRows.forEach((row: any) => { debtorMap[row.id] = row; });
       }
+
       const [clientRow] = await db.select().from(clientsTable).where(eq(clientsTable.id, parseInt(clientId as string)));
-
-      const XLSX = await import("xlsx");
-      const wb = XLSX.utils.book_new();
-
-      // Title row
-      const monthYear = month && year ? `${String(month).padStart(2, "0")}/${year}` : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" }).replace("/", "/");
+      const monthYear = month && year
+        ? `${String(month).padStart(2, "0")}/${year}`
+        : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" }).replace("/", "/");
       const clientName = clientRow?.name || "Cliente";
-
-      const rows: any[][] = [
-        [`${clientName.toUpperCase()} - PLANILHA MENSAL DOS HONORARIOS - ${monthYear.toUpperCase()}`],
-        [],
-        agreementReportHeaders,
-      ];
-
       const targetMonth = month ? parseInt(month as string) : null;
       const targetYear = year ? parseInt(year as string) : null;
 
-      for (const a of agreements) {
-        const debtor = debtorMap[a.debtorId];
-        const feePercent = parseFloat(a.feePercent || "10");
-        const installmentValue = parseFloat(a.installmentValue || "0");
+      const rows = agreements.map((agreement: any) => {
+        const debtor = debtorMap[agreement.debtorId];
+        const feePercent = parseFloat(agreement.feePercent || "10");
+        const installmentValue = parseFloat(agreement.installmentValue || "0");
         const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
+          ? (isActiveInMonth(agreement, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
           : Math.round(installmentValue * feePercent / 100 * 100) / 100;
 
-        rows.push(buildAgreementReportRow(a, debtor, monthlyFee));
-      }
+        return {
+          debtorName: debtor?.name || "-",
+          agreementDate: agreement.agreementDate ? new Date(`${agreement.agreementDate}T12:00:00`).toLocaleDateString("pt-BR") : "-",
+          installments: agreement.isSinglePayment ? "UNICA" : String(agreement.installmentsCount || "-"),
+          downPaymentValue: agreement.downPaymentValue ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(agreement.downPaymentValue)) : "-",
+          downPaymentDate: agreement.downPaymentDate ? new Date(`${agreement.downPaymentDate}T12:00:00`).toLocaleDateString("pt-BR") : "-",
+          monthlyFee: new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(monthlyFee || 0),
+          monthlyFeeRaw: monthlyFee || 0,
+          status: String(agreement.status || "ativo").toUpperCase(),
+        };
+      });
 
-      const total = rows.slice(3).reduce((sum: number, r: any[]) => sum + (parseFloat(r[11]) || 0), 0);
-      rows.push([]);
-      rows.push(["", "", "", "", "", "", "", "", "", "", "TOTAL HONORARIOS", Math.round(total * 100) / 100]);
+      const totalHonorarios = rows.reduce((sum, row) => sum + row.monthlyFeeRaw, 0);
+      const PDFDocument = (await import("pdfkit")).default;
+      const doc = new PDFDocument({
+        size: "A4",
+        layout: "landscape",
+        margins: { top: 40, bottom: 40, left: 40, right: 40 },
+        bufferPages: true,
+      });
 
-      const ws = XLSX.utils.aoa_to_sheet(rows);
-      ws["!cols"] = agreementReportColumnWidths;
-      XLSX.utils.book_append_sheet(wb, ws, "Acordos");
-      const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
-      const fileName = `honorarios_${monthYear.replace("/", "_")}.xlsx`;
+      const chunks: Buffer[] = [];
+      doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+      const pdfReady = new Promise<Buffer>((resolve) => {
+        doc.on("end", () => resolve(Buffer.concat(chunks)));
+      });
 
-      const results: string[] = [];
-      const htmlBody = `<p>Segue em anexo a planilha de honorários de <strong>${clientName}</strong> referente a <strong>${monthYear}</strong>.</p><p>Atenciosamente,<br>Marques &amp; Serra Advogados</p>`;
+      const left = 40;
+      const right = doc.page.width - 40;
+      const contentWidth = right - left;
+      const headerHeight = 64;
+      const footerHeight = 34;
+      const tableHeaderHeight = 24;
+      const rowHeight = 22;
+      const footerTop = doc.page.height - 40 - footerHeight;
+      const columns = [
+        { label: "NOME", width: 220, key: "debtorName" },
+        { label: "DATA ACORDO", width: 80, key: "agreementDate" },
+        { label: "PARCELAS", width: 65, key: "installments" },
+        { label: "VALOR ENTRADA", width: 90, key: "downPaymentValue" },
+        { label: "DATA ENTRADA", width: 90, key: "downPaymentDate" },
+        { label: "HONORARIOS MES", width: 110, key: "monthlyFee" },
+        { label: "STATUS", width: Math.round(contentWidth - (220 + 80 + 65 + 90 + 90 + 110)), key: "status" },
+      ] as const;
 
-      for (const to of emailList) {
-        await emailService.sendEmail({ to, subject: `Honorários ${clientName} – ${monthYear}`, html: htmlBody, attachments: [{ filename: fileName, content: buf, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }] });
-        if (!results.includes("email")) results.push("email");
-      }
+      const drawHeader = () => {
+        doc.save();
+        doc.roundedRect(left, 40, contentWidth, headerHeight, 8).fill("#1d4ed8");
+        doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(18)
+          .text(clientName, left + 18, 56, { width: contentWidth - 36 });
+        doc.font("Helvetica").fontSize(10)
+          .text(`Periodo: ${monthYear}`, left + 18, 80, { width: contentWidth - 36 });
+        doc.restore();
+      };
 
-      if (whatsappList.length > 0) {
-        const { whatsappService } = await import("./services/whatsapp");
-        for (const to of whatsappList) {
-          await whatsappService.sendDocument(to.replace(/\D/g, ""), buf, fileName, `Honorários ${clientName} – ${monthYear}`, tenantId, true);
+      const drawTableHeader = () => {
+        let x = left;
+        const y = 124;
+        doc.save();
+        doc.fillColor("#2563eb").rect(left, y, contentWidth, tableHeaderHeight).fill();
+        doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(9);
+        for (const column of columns) {
+          doc.text(column.label, x + 6, y + 7, {
+            width: column.width - 12,
+            align: column.key === "monthlyFee" ? "right" : "left",
+          });
+          x += column.width;
         }
-        results.push("whatsapp");
-      }
+        doc.restore();
+        doc.y = y + tableHeaderHeight;
+      };
 
-      res.json({ success: true, sent: results });
+      const drawFooter = () => {
+        doc.save();
+        doc.moveTo(left, footerTop).lineTo(right, footerTop).lineWidth(1).strokeColor("#1d4ed8").stroke();
+        doc.font("Helvetica-Bold").fontSize(10).fillColor("#111827")
+          .text("TOTAL HONORARIOS", left, footerTop + 10, { width: 220 });
+        doc.font("Helvetica-Bold").fontSize(10)
+          .text(
+            new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(totalHonorarios),
+            right - 150,
+            footerTop + 10,
+            { width: 150, align: "right" }
+          );
+        doc.restore();
+      };
+
+      const drawRow = (row: (typeof rows)[number], rowIndex: number) => {
+        const y = doc.y;
+        let x = left;
+        if (rowIndex % 2 === 0) {
+          doc.save();
+          doc.rect(left, y, contentWidth, rowHeight).fill("#eff6ff");
+          doc.restore();
+        }
+        doc.font("Helvetica").fontSize(9).fillColor("#111827");
+        for (const column of columns) {
+          const value = String(row[column.key as keyof typeof row] ?? "-");
+          doc.text(value, x + 6, y + 6, {
+            width: column.width - 12,
+            align: column.key === "monthlyFee" ? "right" : "left",
+            ellipsis: true,
+          });
+          x += column.width;
+        }
+        doc.y = y + rowHeight;
+      };
+
+      drawHeader();
+      drawTableHeader();
+
+      rows.forEach((row, index) => {
+        if (doc.y + rowHeight > footerTop - 8) {
+          drawFooter();
+          doc.addPage();
+          drawHeader();
+          drawTableHeader();
+        }
+        drawRow(row, index);
+      });
+
+      drawFooter();
+      doc.end();
+
+      const pdfBuffer = await pdfReady;
+      const fileName = `honorarios_${monthYear.replace("/", "_")}.pdf`;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+      res.setHeader("Cache-Control", "no-store");
+      return res.send(pdfBuffer);
     } catch (error) {
-      console.error("Error sending agreements report:", error);
-      res.status(500).json({ error: "Failed to send report" });
+      console.error("Error generating agreements PDF report:", error);
+      return res.status(500).json({ error: "Failed to generate report" });
     }
   });
 
