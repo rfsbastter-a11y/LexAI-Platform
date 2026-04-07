@@ -172,7 +172,7 @@ export default function AcordosPage() {
   });
 
   // Rebuild recipient list when reportClientId or socios change.
-  // Preserves existing checked state for s?cios to avoid resetting user choices on data refetch.
+  // Preserves existing checked state for socios to avoid resetting user choices on data refetch.
   // Client contacts always reset to checked when a new client is selected.
   useEffect(() => {
     setReportRecipients(prev => {
@@ -397,7 +397,7 @@ export default function AcordosPage() {
     if (!reportClientId) return toast({ title: "Selecione um cliente", variant: "destructive" });
     const params = new URLSearchParams({ clientId: reportClientId, month: reportMonth, year: reportYear });
     const res = await fetch(`/api/debtor-agreements/report?${params}`, { headers: getAuthHeaders() });
-    if (!res.ok) return toast({ title: "Erro ao gerar relat?rio", variant: "destructive" });
+    if (!res.ok) return toast({ title: "Erro ao gerar relatorio", variant: "destructive" });
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -419,7 +419,7 @@ export default function AcordosPage() {
       ...(extraWhatsapp.trim() ? [extraWhatsapp.trim()] : []),
     ];
     if (emailTos.length === 0 && whatsappTos.length === 0) {
-      return toast({ title: "Selecione ao menos um destinat?rio", variant: "destructive" });
+      return toast({ title: "Selecione ao menos um destinatario", variant: "destructive" });
     }
     setIsSending(true);
     try {
@@ -436,10 +436,10 @@ export default function AcordosPage() {
       });
       if (!res.ok) throw new Error();
       const data = await res.json();
-      toast({ title: `Relat?rio enviado via ${data.sent.join(" e ")}!` });
+      toast({ title: `Relatorio enviado via ${data.sent.join(" e ")}!` });
       setShowReport(false);
     } catch {
-      toast({ title: "Erro ao enviar relat?rio", variant: "destructive" });
+      toast({ title: "Erro ao enviar relatorio", variant: "destructive" });
     } finally {
       setIsSending(false);
     }
@@ -465,7 +465,7 @@ export default function AcordosPage() {
       setImportPreview(data.records || []);
       toast({ title: `${data.count} acordos detectados` });
     } catch (e: any) {
-      toast({ title: "Erro ao processar importa??o: " + e.message, variant: "destructive" });
+      toast({ title: "Erro ao processar importacao: " + e.message, variant: "destructive" });
     } finally {
       setImportPreviewing(false);
     }
@@ -512,7 +512,7 @@ export default function AcordosPage() {
       setImportPreview([]);
       setImportText("");
       setImportFile(null);
-      const msg = noMatch > 0 ? ` (${noMatch} ignorados por devedor n?o encontrado)` : "";
+      const msg = noMatch > 0 ? ` (${noMatch} ignorados por devedor nao encontrado)` : "";
       toast({ title: `${data.created} acordos importados${msg}!` });
     } catch {
       toast({ title: "Erro ao salvar acordos importados", variant: "destructive" });
@@ -522,7 +522,7 @@ export default function AcordosPage() {
   }
 
   const months = [
-    "1 - Janeiro", "2 - Fevereiro", "3 - Mar?o", "4 - Abril",
+    "1 - Janeiro", "2 - Fevereiro", "3 - Marco", "4 - Abril",
     "5 - Maio", "6 - Junho", "7 - Julho", "8 - Agosto",
     "9 - Setembro", "10 - Outubro", "11 - Novembro", "12 - Dezembro",
   ];
@@ -544,7 +544,7 @@ export default function AcordosPage() {
               <Upload className="w-4 h-4 mr-2" /> Importar
             </Button>
             <Button variant="outline" onClick={() => { setReportClientId(selectedClientId !== "all" ? selectedClientId : ""); setShowReport(true); }} data-testid="button-report-acordos">
-              <FileSpreadsheet className="w-4 h-4 mr-2" /> Relat?rio Mensal
+              <FileSpreadsheet className="w-4 h-4 mr-2" /> Relatorio Mensal
             </Button>
             <Button onClick={() => { setEditingId(null); setForm(emptyForm()); setShowForm(true); }} data-testid="button-new-acordo">
               <Plus className="w-4 h-4 mr-2" /> Novo Acordo
@@ -568,7 +568,7 @@ export default function AcordosPage() {
           </Card>
           <Card>
             <CardContent className="pt-5">
-              <p className="text-sm text-muted-foreground">Honor?rios/M?s (ativos)</p>
+              <p className="text-sm text-muted-foreground">Honorarios/Mes (ativos)</p>
               <p className="text-3xl font-bold text-blue-600">{formatCurrency(stats.totalHonorarios)}</p>
             </CardContent>
           </Card>
@@ -626,12 +626,12 @@ export default function AcordosPage() {
                     <TableHead>Parcelas</TableHead>
                     <TableHead>Valor Entrada</TableHead>
                     <TableHead>Data Entrada</TableHead>
-                    <TableHead>Valor Presta??o</TableHead>
+                    <TableHead>Valor Prestacao</TableHead>
                     <TableHead>Vencimento</TableHead>
-                    <TableHead>Honor?rios/M?s</TableHead>
+                    <TableHead>Honorarios/Mes</TableHead>
                     <TableHead>Hon. Status</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead className="text-right">A??es</TableHead>
+                    <TableHead className="text-right">Acoes</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -645,7 +645,7 @@ export default function AcordosPage() {
                       <TableRow key={a.id} data-testid={`row-acordo-${a.id}`}>
                         <TableCell className="font-medium">{a.debtorName || "-"}</TableCell>
                         <TableCell>{formatDate(a.agreementDate)}</TableCell>
-                        <TableCell>{a.isSinglePayment ? "?NICA" : (a.installmentsCount || "-")}</TableCell>
+                        <TableCell>{a.isSinglePayment ? "UNICA" : (a.installmentsCount || "-")}</TableCell>
                         <TableCell>{a.downPaymentValue ? formatCurrency(a.downPaymentValue) : "-"}</TableCell>
                         <TableCell>{formatDate(a.downPaymentDate)}</TableCell>
                         <TableCell>{a.installmentValue ? formatCurrency(a.installmentValue) : "-"}</TableCell>
@@ -756,7 +756,7 @@ export default function AcordosPage() {
             {/* Valores originais */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
-                <Label>D?vida Original (R$)</Label>
+                <Label>Divida Original (R$)</Label>
                 <Input placeholder="0,00" value={form.originalDebtValue} onChange={e => setForm(f => ({ ...f, originalDebtValue: e.target.value }))} data-testid="input-original-debt-value" />
               </div>
               <div className="space-y-1">
@@ -768,7 +768,7 @@ export default function AcordosPage() {
             {/* Tipo de pagamento */}
             <div className="flex items-center gap-3">
               <input type="checkbox" id="single-payment" checked={form.isSinglePayment} onChange={e => setForm(f => ({ ...f, isSinglePayment: e.target.checked }))} className="w-4 h-4" data-testid="checkbox-single-payment" />
-              <Label htmlFor="single-payment">Pagamento ?nico (parcela ?nica)</Label>
+              <Label htmlFor="single-payment">Pagamento unico (parcela unica)</Label>
             </div>
 
             {/* Entrada */}
@@ -787,7 +787,7 @@ export default function AcordosPage() {
             {!form.isSinglePayment && (
               <div className="grid grid-cols-3 gap-4">
                 <div className="space-y-1">
-                  <Label>N? de Parcelas</Label>
+                  <Label>No de Parcelas</Label>
                   <Input type="number" placeholder="Ex: 24" value={form.installmentsCount} onChange={e => setForm(f => ({ ...f, installmentsCount: e.target.value }))} data-testid="input-installments-count" />
                 </div>
                 <div className="space-y-1">
@@ -803,29 +803,29 @@ export default function AcordosPage() {
 
             {form.isSinglePayment && (
               <div className="space-y-1">
-                <Label>Valor do Pagamento ?nico (R$)</Label>
+                <Label>Valor do Pagamento Unico (R$)</Label>
                 <Input placeholder="0,00" value={form.installmentValue} onChange={e => setForm(f => ({ ...f, installmentValue: e.target.value }))} data-testid="input-single-payment-value" />
               </div>
             )}
 
-            {/* Honor?rios */}
+            {/* Honorarios */}
             <div className="grid grid-cols-2 gap-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
               <div className="space-y-1">
-                <Label className="text-blue-800">% Honor?rios do Escrit?rio</Label>
+                <Label className="text-blue-800">% Honorarios do Escritorio</Label>
                 <Input placeholder="10" value={form.feePercent} onChange={e => setForm(f => ({ ...f, feePercent: e.target.value }))} data-testid="input-fee-percent" />
               </div>
               <div className="space-y-1">
-                <Label className="text-blue-800">Honor?rios/M?s (calculado)</Label>
+                <Label className="text-blue-800">Honorarios/Mes (calculado)</Label>
                 <div className="flex items-center h-9 px-3 bg-white border rounded-md text-blue-700 font-semibold">
                   {formatCurrency(monthlyFee)}
                 </div>
               </div>
               <div className="space-y-1">
-                <Label className="text-blue-800">Valor Honor?rios (R$)</Label>
+                <Label className="text-blue-800">Valor Honorarios (R$)</Label>
                 <Input placeholder="Deixar vazio para calcular automaticamente" value={form.feeAmount} onChange={e => setForm(f => ({ ...f, feeAmount: e.target.value }))} data-testid="input-fee-amount" />
               </div>
               <div className="space-y-1">
-                <Label className="text-blue-800">Status Honor?rios</Label>
+                <Label className="text-blue-800">Status Honorarios</Label>
                 <Select value={form.feeStatus} onValueChange={v => setForm(f => ({ ...f, feeStatus: v }))}>
                   <SelectTrigger data-testid="select-fee-status">
                     <SelectValue />
@@ -838,9 +838,9 @@ export default function AcordosPage() {
               </div>
             </div>
 
-            {/* Observa??es */}
+            {/* Observacoes */}
             <div className="space-y-1">
-              <Label>Observa??es</Label>
+              <Label>Observacoes</Label>
               <Textarea placeholder="Ex: A partir de julho, parcela reduz para R$ 345,00" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2} data-testid="textarea-notes" />
             </div>
           </div>
@@ -851,7 +851,7 @@ export default function AcordosPage() {
             </Button>
             <Button onClick={handleSave} disabled={createMutation.isPending || updateMutation.isPending} data-testid="button-save-acordo">
               {(createMutation.isPending || updateMutation.isPending) && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {editingId ? "Salvar Altera??es" : "Registrar Acordo"}
+              {editingId ? "Salvar Alteracoes" : "Registrar Acordo"}
             </Button>
           </div>
         </DialogContent>
@@ -863,7 +863,7 @@ export default function AcordosPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileSpreadsheet className="w-5 h-5 text-green-600" />
-              Relat?rio Mensal de Honor?rios
+              Relatorio Mensal de Honorarios
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -880,7 +880,7 @@ export default function AcordosPage() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
-                <Label>M?s</Label>
+                <Label>Mes</Label>
                 <Select value={reportMonth} onValueChange={setReportMonth}>
                   <SelectTrigger data-testid="select-report-month">
                     <SelectValue />
@@ -897,7 +897,7 @@ export default function AcordosPage() {
             </div>
 
             <div className="space-y-2 p-3 bg-gray-50 rounded-lg border">
-              <p className="text-sm font-medium text-gray-700">Enviar relat?rio para:</p>
+              <p className="text-sm font-medium text-gray-700">Enviar relatorio para:</p>
               {reportRecipients.length > 0 ? (
                 <div className="space-y-2">
                   {reportRecipients.map(r => (
@@ -918,10 +918,10 @@ export default function AcordosPage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-xs text-muted-foreground">Selecione um cliente para ver os destinat?rios dispon?veis.</p>
+                <p className="text-xs text-muted-foreground">Selecione um cliente para ver os destinatarios disponiveis.</p>
               )}
               <div className="pt-2 border-t space-y-2">
-                <p className="text-xs font-medium text-gray-600">Destinat?rio avulso (opcional):</p>
+                <p className="text-xs font-medium text-gray-600">Destinatario avulso (opcional):</p>
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground flex items-center gap-1"><Mail className="w-3 h-3" /> E-mail</Label>
                   <Input type="email" placeholder="email@exemplo.com.br" value={extraEmail} onChange={e => setExtraEmail(e.target.value)} data-testid="input-report-extra-email" />
@@ -975,7 +975,7 @@ export default function AcordosPage() {
               </TabsList>
 
               <TabsContent value="text" className="space-y-2 mt-3">
-                <Label className="text-sm text-muted-foreground">Cole o conte?do da planilha (copiada do Excel/Google Sheets):</Label>
+                <Label className="text-sm text-muted-foreground">Cole o conteudo da planilha (copiada do Excel/Google Sheets):</Label>
                 <Textarea
                   placeholder="Cole aqui a planilha copiada..."
                   value={importText}
@@ -1043,7 +1043,7 @@ export default function AcordosPage() {
                         <TableHead>Data</TableHead>
                         <TableHead>Parcelas</TableHead>
                         <TableHead>Entrada</TableHead>
-                        <TableHead>Presta??o</TableHead>
+                        <TableHead>Prestacao</TableHead>
                         <TableHead>Dia</TableHead>
                         <TableHead>%</TableHead>
                       </TableRow>
@@ -1053,7 +1053,7 @@ export default function AcordosPage() {
                         <TableRow key={i}>
                           <TableCell className="text-xs font-medium">{r.debtorName}</TableCell>
                           <TableCell className="text-xs">{r.agreementDate}</TableCell>
-                          <TableCell className="text-xs">{r.isSinglePayment ? "?NICA" : r.installmentsCount}</TableCell>
+                          <TableCell className="text-xs">{r.isSinglePayment ? "UNICA" : r.installmentsCount}</TableCell>
                           <TableCell className="text-xs">{r.downPaymentValue ? formatCurrency(r.downPaymentValue) : "-"}</TableCell>
                           <TableCell className="text-xs">{r.installmentValue ? formatCurrency(r.installmentValue) : "-"}</TableCell>
                           <TableCell className="text-xs">{r.dueDay ? `Dia ${r.dueDay}` : "-"}</TableCell>
@@ -1063,7 +1063,7 @@ export default function AcordosPage() {
                     </TableBody>
                   </Table>
                 </div>
-                <p className="text-xs text-amber-600">Os devedores ser?o vinculados pelo nome. Certifique-se que os devedores j? est?o cadastrados no sistema para este cliente.</p>
+                <p className="text-xs text-amber-600">Os devedores serao vinculados pelo nome. Certifique-se que os devedores ja estao cadastrados no sistema para este cliente.</p>
               </div>
             )}
           </div>
@@ -1072,7 +1072,7 @@ export default function AcordosPage() {
             {importPreview.length > 0 && (
               <Button onClick={handleImportConfirm} disabled={importSaving || !importClientId} data-testid="button-import-confirm">
                 {importSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
-                Confirmar Importa??o ({importPreview.length})
+                Confirmar Importacao ({importPreview.length})
               </Button>
             )}
           </div>
