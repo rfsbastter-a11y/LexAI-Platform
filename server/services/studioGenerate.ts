@@ -2494,7 +2494,7 @@ NUNCA inverta a lógica do caso. NUNCA escreva o recorrente errado. O diagnósti
   }
 
   const isLongFormPiece = ["contrarrazoes", "recurso_apelacao", "recurso_especial", "recurso_extraordinario", "agravo_instrumento"].includes(templateType);
-  const outputMaxTokens = isLongFormPiece ? 32000 : 16000;
+  const outputMaxTokens = isLongFormPiece ? 16000 : 8192;
 
   const response = useGemini
     ? await aiService.chatWithGemini(userContent, strictInstructions)
