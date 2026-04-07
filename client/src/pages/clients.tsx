@@ -12,7 +12,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { useCreateContract } from "@/hooks/use-contracts";
 import { useCreateCase } from "@/hooks/use-cases";
 import { useRoute, useLocation } from "wouter";
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -658,6 +658,12 @@ function ClientDetailView({ clientId }: { clientId: number }) {
     enabled: !!clientId,
   });
 
+  const sortedClientDebtors = useMemo(() => {
+    return [...(clientDebtors || [])].sort((a: any, b: any) =>
+      String(a?.name || "").localeCompare(String(b?.name || ""), "pt-BR", { sensitivity: "base" })
+    );
+  }, [clientDebtors]);
+
   const { data: negotiations, isLoading: negotiationsLoading } = useQuery({
     queryKey: ["/api/clients", clientId, "negotiations"],
     queryFn: async () => {
@@ -1117,6 +1123,15 @@ function ClientDetailView({ clientId }: { clientId: number }) {
     queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "debtors"] });
   };
 
+  const handleDeleteAllDebtors = async () => {
+    if (!clientId) return;
+    if (!sortedClientDebtors.length) return;
+    if (!confirm(`Excluir todos os ${sortedClientDebtors.length} devedores deste cliente?`)) return;
+    await fetch(`/api/clients/${clientId}/debtors`, { method: "DELETE", headers: getAuthHeaders(), credentials: "include" });
+    queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "debtors"] });
+    setExpandedDebtorId(null);
+  };
+
   const openEditDebtor = (debtor: any) => {
     setEditingDebtor(debtor);
     setDebtorForm({
@@ -1454,6 +1469,18 @@ function ClientDetailView({ clientId }: { clientId: number }) {
           <div className="flex justify-between items-center mt-4 mb-3">
             <h3 className="text-sm font-medium text-muted-foreground">Devedores do Cliente</h3>
             <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                className="gap-1.5"
+                disabled={!sortedClientDebtors.length}
+                data-testid="btn-delete-all-debtors"
+                onClick={handleDeleteAllDebtors}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Excluir Todos</span>
+                <span className="sm:hidden">Excluir</span>
+              </Button>
               <Button size="sm" variant="outline" className="gap-1.5" data-testid="btn-upload-devedor" onClick={() => { setEditingDebtor(null); setDebtorForm({ type: "PF", name: "", document: "", email: "", phone: "", whatsapp: "", address: "", city: "", state: "", zipCode: "", notes: "", totalDebt: "" }); setDebtorUploadStep("choose"); setDebtorExtracted(false); setDebtorExtractError(""); setShowDebtorDialog(true); }}>
                 <Upload className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Upload Inteligente</span>
@@ -1470,7 +1497,7 @@ function ClientDetailView({ clientId }: { clientId: number }) {
             <div className="flex justify-center py-12">
               <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
             </div>
-          ) : clientDebtors && clientDebtors.length > 0 ? (
+          ) : sortedClientDebtors.length > 0 ? (
             <Card>
               <CardContent className="p-0">
                 <Table>
@@ -1486,7 +1513,7 @@ function ClientDetailView({ clientId }: { clientId: number }) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {clientDebtors.map((debtor: any) => (
+                    {sortedClientDebtors.map((debtor: any) => (
                       <React.Fragment key={debtor.id}>
                       <TableRow data-testid={`row-debtor-${debtor.id}`} className="cursor-pointer" onClick={() => setExpandedDebtorId(expandedDebtorId === debtor.id ? null : debtor.id)}>
                         <TableCell className="font-medium" data-testid={`text-debtor-name-${debtor.id}`}>{debtor.name}</TableCell>
