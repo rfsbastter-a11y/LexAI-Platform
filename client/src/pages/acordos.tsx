@@ -301,6 +301,23 @@ export default function AcordosPage() {
     onError: () => toast({ title: "Erro ao remover acordo", variant: "destructive" }),
   });
 
+  const deleteAllMutation = useMutation({
+    mutationFn: async (ids: number[]) => {
+      const res = await fetch("/api/debtor-agreements/bulk-delete", {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) throw new Error();
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/debtor-agreements"] });
+      toast({ title: "Acordos removidos" });
+    },
+    onError: () => toast({ title: "Erro ao remover acordos", variant: "destructive" }),
+  });
+
   const toggleFeeStatusMutation = useMutation({
     mutationFn: async (id: number) => {
       const res = await fetch(`/api/debtor-agreements/${id}/fee-status`, { method: "PATCH", headers: { ...getAuthHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({}) });
@@ -335,6 +352,13 @@ export default function AcordosPage() {
     }, 0);
     return { total: agreements.length, ativos: ativos.length, totalHonorarios };
   }, [agreements]);
+
+  function handleDeleteAllAgreements() {
+    const ids = filtered.map((agreement: any) => agreement.id).filter(Boolean);
+    if (!ids.length) return;
+    if (!confirm(`Excluir todos os ${ids.length} acordos listados?`)) return;
+    deleteAllMutation.mutate(ids);
+  }
 
   function buildPayload() {
     return {
@@ -475,13 +499,52 @@ export default function AcordosPage() {
     if (!importClientId) return toast({ title: "Selecione um cliente para importar", variant: "destructive" });
     setImportSaving(true);
     try {
-      // Map debtorName to debtorId by looking up debtors of the client
       const debtorsRes = await fetch(`/api/clients/${importClientId}/debtors`, { headers: getAuthHeaders() });
       const debtorsList: any[] = await debtorsRes.json();
+      const normalizedDebtors = new Map<string, any>();
+
+      const normalizeDebtorName = (value: string) =>
+        String(value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toUpperCase();
+
+      for (const debtor of debtorsList) {
+        normalizedDebtors.set(normalizeDebtorName(debtor.name), debtor);
+      }
+
+      for (const record of importPreview) {
+        const debtorName = String(record.debtorName || "").trim();
+        if (!debtorName) continue;
+
+        const normalizedName = normalizeDebtorName(debtorName);
+        if (normalizedDebtors.has(normalizedName)) continue;
+
+        const createDebtorRes = await fetch("/api/debtors", {
+          method: "POST",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientId: parseInt(importClientId),
+            type: "PF",
+            name: debtorName,
+            notes: "Cadastro automatico pela importacao de acordos",
+            status: "ativo",
+          }),
+        });
+
+        if (!createDebtorRes.ok) {
+          throw new Error(`Falha ao cadastrar devedor ${debtorName}`);
+        }
+
+        const createdDebtor = await createDebtorRes.json();
+        normalizedDebtors.set(normalizedName, createdDebtor);
+      }
 
       const agreements = importPreview.map((r: any) => {
-        const normalizedName = r.debtorName?.trim().toUpperCase() || "";
-        const match = debtorsList.find((d: any) => d.name.toUpperCase().includes(normalizedName) || normalizedName.includes(d.name.toUpperCase()));
+        const normalizedName = normalizeDebtorName(r.debtorName || "");
+        const match = normalizedDebtors.get(normalizedName);
         return {
           debtorId: match?.id || null,
           clientId: parseInt(importClientId),
@@ -496,9 +559,7 @@ export default function AcordosPage() {
           status: "ativo",
           notes: r.notes || null,
         };
-      }).filter((a: any) => a.debtorId);
-
-      const noMatch = importPreview.length - agreements.length;
+      });
 
       const res = await fetch("/api/debtor-agreements/batch", {
         method: "POST",
@@ -512,10 +573,10 @@ export default function AcordosPage() {
       setImportPreview([]);
       setImportText("");
       setImportFile(null);
-      const msg = noMatch > 0 ? ` (${noMatch} ignorados por devedor nao encontrado)` : "";
-      toast({ title: `${data.created} acordos importados${msg}!` });
-    } catch {
-      toast({ title: "Erro ao salvar acordos importados", variant: "destructive" });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", parseInt(importClientId), "debtors"] });
+      toast({ title: `${data.created} acordos importados!` });
+    } catch (error: any) {
+      toast({ title: error?.message || "Erro ao salvar acordos importados", variant: "destructive" });
     } finally {
       setImportSaving(false);
     }
@@ -545,6 +606,15 @@ export default function AcordosPage() {
             </Button>
             <Button variant="outline" onClick={() => { setReportClientId(selectedClientId !== "all" ? selectedClientId : ""); setShowReport(true); }} data-testid="button-report-acordos">
               <FileSpreadsheet className="w-4 h-4 mr-2" /> Relatorio Mensal
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteAllAgreements}
+              disabled={!filtered.length || deleteAllMutation.isPending}
+              data-testid="button-delete-all-acordos"
+            >
+              {deleteAllMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
+              Excluir Todos
             </Button>
             <Button onClick={() => { setEditingId(null); setForm(emptyForm()); setShowForm(true); }} data-testid="button-new-acordo">
               <Plus className="w-4 h-4 mr-2" /> Novo Acordo

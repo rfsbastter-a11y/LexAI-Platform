@@ -9045,6 +9045,28 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const clientName = clientRow?.name || "Cliente";
       const targetMonth = month ? parseInt(month as string) : null;
       const targetYear = year ? parseInt(year as string) : null;
+      const isActiveInMonth = (agreement: any, targetMonthValue: number | null, targetYearValue: number | null) => {
+        if (!targetMonthValue || !targetYearValue) return true;
+
+        const baseDateRaw = agreement.downPaymentDate || agreement.agreementDate;
+        if (!baseDateRaw) return false;
+
+        const baseDate = new Date(`${baseDateRaw}T12:00:00`);
+        if (Number.isNaN(baseDate.getTime())) return false;
+
+        const baseMonthIndex = baseDate.getMonth();
+        const baseYear = baseDate.getFullYear();
+        const targetIndex = (targetYearValue * 12) + (targetMonthValue - 1);
+        const baseIndex = (baseYear * 12) + baseMonthIndex;
+
+        if (agreement.isSinglePayment) {
+          return targetIndex === baseIndex;
+        }
+
+        const installmentsCount = Math.max(parseInt(String(agreement.installmentsCount || "0"), 10) || 0, 1);
+        const lastIndex = baseIndex + installmentsCount - 1;
+        return targetIndex >= baseIndex && targetIndex <= lastIndex;
+      };
 
       const rows = agreements.map((agreement: any) => {
         const debtor = debtorMap[agreement.debtorId];
