@@ -152,6 +152,8 @@ export const aiApi = {
     caseNumber?: string;
     court?: string;
     caseClass?: string;
+    classeNome?: string;
+    vara?: string;
     intimationDate?: string;
   }) =>
     fetchApi<{
