@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { escavadorService } from "./escavador";
+import type { TribunalInfo } from "./datajudRegistry";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -72,7 +73,7 @@ export class LegalSearchService {
 
     if (escavadorService.isConfigured()) {
       try {
-        const escResults = await escavadorService.searchByNameOrDocument(query);
+        const escResults = await escavadorService.searchByNameOrDocument(query) as any;
         const processos = escResults?.processos || escResults?.items || [];
         
         for (const proc of processos.slice(0, limit)) {

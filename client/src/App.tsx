@@ -23,6 +23,7 @@ import NegotiationsPage from "@/pages/negotiations";
 import AcordosPage from "@/pages/acordos";
 import ProspectingPage from "@/pages/prospecting";
 import MeetingsPage from "@/pages/meetings";
+import ProtocolosPage from "@/pages/protocolos";
 import LoginPage from "@/pages/login";
 
 const STAFF_ROLES = ["socio", "advogado", "admin"];
@@ -61,6 +62,7 @@ function Router() {
       <Route path="/mensagens" component={MensagensPage} />
       <Route path="/negotiations" component={NegotiationsPage} />
       <Route path="/acordos" component={AcordosPage} />
+      <Route path="/protocolos" component={ProtocolosPage} />
       <Route path="/prospecting" component={ProspectingPage} />
       <Route path="/meetings" component={MeetingsPage} />
       <Route path="/login" component={LoginPage} />

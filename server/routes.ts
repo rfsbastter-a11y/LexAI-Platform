@@ -14,6 +14,7 @@ import { emailService } from "./services/email";
 import { zohoMailService } from "./services/zohoMail";
 import { legalSearchService } from "./services/legalSearch";
 import { generateStudioPiece } from "./services/studioGenerate";
+import { pdpjService } from "./services/pdpj";
 import { 
   insertClientSchema, insertContractSchema, insertCaseSchema, insertDeadlineSchema,
   insertDocumentTemplateSchema, insertGeneratedPieceSchema,
@@ -33,6 +34,34 @@ function getTenantId(req: Request): number {
 
 function getUserId(req: Request): number {
   return req.tokenUser?.id || req.session?.user?.id || 0;
+}
+
+async function ensureProtocolPackagesTable() {
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS protocol_packages (
+      id SERIAL PRIMARY KEY,
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER,
+      case_id INTEGER,
+      generated_piece_id INTEGER,
+      type TEXT NOT NULL DEFAULT 'intercorrente',
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'preparando',
+      case_number TEXT,
+      court TEXT,
+      main_document_title TEXT,
+      main_document_html TEXT NOT NULL,
+      protocol_data JSONB,
+      attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+      notes TEXT,
+      prepared_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+      protocol_number TEXT,
+      receipt_url TEXT,
+      submitted_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+    )
+  `);
 }
 
 const searchRateLimiter = rateLimit({
@@ -5961,6 +5990,441 @@ TÉCNICAS ANTI-DETECÇÃO:
     }
   });
 
+  app.post("/api/studio/pdf-separator/analyze", async (req: Request, res: Response) => {
+    try {
+      const { fileData, fileName, instructions } = req.body;
+      if (!fileData || !instructions) {
+        return res.status(400).json({ error: "PDF e instruções são obrigatórios." });
+      }
+
+      const base64 = String(fileData).includes(",") ? String(fileData).split(",")[1] : String(fileData);
+      const buffer = Buffer.from(base64, "base64");
+      const { PDFParse } = await import("pdf-parse");
+      const parser = new (PDFParse as any)({ data: buffer });
+      const info = await parser.getInfo({ parsePageInfo: true });
+      const totalPages = Number(info.total || 0);
+      const pageTexts: Array<{ page: number; text: string }> = [];
+
+      for (let page = 1; page <= totalPages; page++) {
+        try {
+          const pageResult = await parser.getText({ partial: [page] });
+          pageTexts.push({
+            page,
+            text: String(pageResult.text || "").replace(/\s+/g, " ").trim().slice(0, 2500),
+          });
+        } catch {
+          pageTexts.push({ page, text: "" });
+        }
+      }
+      await parser.destroy();
+
+      const pageIndex = pageTexts.map(p => `PÁGINA ${p.page}: ${p.text || "[sem texto extraído]"}`).join("\n\n");
+      const prompt = `Você é um assistente jurídico que separa PDFs grandes em documentos para protocolo eletrônico.
+
+Arquivo: ${fileName || "documento.pdf"}
+Total de páginas: ${totalPages}
+
+ORDEM E INSTRUÇÕES DO ADVOGADO:
+${instructions}
+
+TEXTO EXTRAÍDO POR PÁGINA:
+${pageIndex}
+
+Responda APENAS JSON válido, sem markdown, no formato:
+{
+  "documents": [
+    {
+      "order": 1,
+      "title": "Doc 01 - Nome do documento",
+      "requestedItem": "item pedido pelo advogado",
+      "pages": [1,2,3],
+      "confidence": "alta|media|baixa",
+      "reason": "por que essas páginas pertencem ao documento"
+    }
+  ],
+  "ignoredPages": [4,5],
+  "warnings": ["alertas objetivos"]
+}
+
+Regras:
+- Siga a ordem escrita pelo advogado.
+- Use somente páginas que existam no PDF.
+- Se não encontrar um documento pedido, inclua warning.
+- Não invente páginas.
+- Se páginas consecutivas claramente pertencem ao mesmo documento, agrupe.
+- Páginas em branco ou irrelevantes devem ir para ignoredPages.`;
+
+      const aiResult = await aiService.chat([{ role: "user", content: prompt }], []);
+      const jsonMatch = aiResult.content.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return res.status(500).json({ error: "A IA não retornou uma separação válida." });
+      }
+      const parsed = JSON.parse(jsonMatch[0]);
+      res.json({
+        fileName,
+        totalPages,
+        pages: pageTexts,
+        documents: Array.isArray(parsed.documents) ? parsed.documents : [],
+        ignoredPages: Array.isArray(parsed.ignoredPages) ? parsed.ignoredPages : [],
+        warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+        tokensUsed: aiResult.tokensUsed,
+      });
+    } catch (error: any) {
+      console.error("Error analyzing PDF separator:", error);
+      res.status(500).json({ error: error?.message || "Falha ao analisar PDF para separação." });
+    }
+  });
+
+  app.post("/api/studio/pdf-separator/split", async (req: Request, res: Response) => {
+    try {
+      const { fileData, documents } = req.body;
+      if (!fileData || !Array.isArray(documents)) {
+        return res.status(400).json({ error: "PDF e documentos são obrigatórios." });
+      }
+
+      const base64 = String(fileData).includes(",") ? String(fileData).split(",")[1] : String(fileData);
+      const sourceBytes = Buffer.from(base64, "base64");
+      const { PDFDocument } = await import("pdf-lib");
+      const sourcePdf = await PDFDocument.load(sourceBytes);
+      const pageCount = sourcePdf.getPageCount();
+
+      const sanitizeName = (value: string) =>
+        value
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-zA-Z0-9._ -]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 90) || "Documento";
+
+      const files: Array<{
+        order: number;
+        name: string;
+        mimeType: string;
+        pages: number[];
+        size: number;
+        data: string;
+      }> = [];
+      for (const doc of documents) {
+        const pages = Array.isArray(doc.pages)
+          ? Array.from(new Set<number>(doc.pages.map((p: any) => Number(p)).filter((p: number) => Number.isInteger(p) && p >= 1 && p <= pageCount)))
+          : [];
+        if (pages.length === 0) continue;
+
+        const targetPdf = await PDFDocument.create();
+        const copiedPages = await targetPdf.copyPages(sourcePdf, pages.map((p: number) => p - 1));
+        copiedPages.forEach(page => targetPdf.addPage(page));
+        const outputBytes = await targetPdf.save();
+        const order = Number(doc.order) || files.length + 1;
+        const name = `Doc ${String(order).padStart(2, "0")} - ${sanitizeName(doc.title || doc.requestedItem || "Documento")}.pdf`;
+        files.push({
+          order,
+          name,
+          mimeType: "application/pdf",
+          pages,
+          size: outputBytes.length,
+          data: `data:application/pdf;base64,${Buffer.from(outputBytes).toString("base64")}`,
+        });
+      }
+
+      res.json({ files });
+    } catch (error: any) {
+      console.error("Error splitting PDF:", error);
+      res.status(500).json({ error: error?.message || "Falha ao gerar PDFs separados." });
+    }
+  });
+
+  // ==================== PROTOCOL PACKAGES (Peticionamento Assistido) ====================
+  app.get("/api/protocol-packages", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const result = await dbPool.query(
+        `SELECT
+          id,
+          tenant_id AS "tenantId",
+          user_id AS "userId",
+          case_id AS "caseId",
+          generated_piece_id AS "generatedPieceId",
+          type,
+          title,
+          status,
+          case_number AS "caseNumber",
+          court,
+          main_document_title AS "mainDocumentTitle",
+          protocol_data AS "protocolData",
+          attachments,
+          notes,
+          prepared_at AS "preparedAt",
+          protocol_number AS "protocolNumber",
+          receipt_url AS "receiptUrl",
+          submitted_at AS "submittedAt",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM protocol_packages
+        WHERE tenant_id = $1
+        ORDER BY created_at DESC`,
+        [tenantId],
+      );
+      res.json(result.rows);
+    } catch (error) {
+      console.error("Error fetching protocol packages:", error);
+      res.status(500).json({ error: "Falha ao listar pacotes de protocolo." });
+    }
+  });
+
+  app.get("/api/protocol-packages/:id", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const id = Number(req.params.id);
+      const result = await dbPool.query(
+        `SELECT
+          id,
+          tenant_id AS "tenantId",
+          user_id AS "userId",
+          case_id AS "caseId",
+          generated_piece_id AS "generatedPieceId",
+          type,
+          title,
+          status,
+          case_number AS "caseNumber",
+          court,
+          main_document_title AS "mainDocumentTitle",
+          main_document_html AS "mainDocumentHtml",
+          protocol_data AS "protocolData",
+          attachments,
+          notes,
+          prepared_at AS "preparedAt",
+          protocol_number AS "protocolNumber",
+          receipt_url AS "receiptUrl",
+          submitted_at AS "submittedAt",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM protocol_packages
+        WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId],
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Pacote de protocolo não encontrado." });
+      }
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error("Error fetching protocol package:", error);
+      res.status(500).json({ error: "Falha ao buscar pacote de protocolo." });
+    }
+  });
+
+  app.post("/api/protocol-packages", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const userId = getUserId(req) || null;
+      const {
+        title,
+        caseId,
+        generatedPieceId,
+        caseNumber,
+        court,
+        mainDocumentTitle,
+        mainDocumentHtml,
+        protocolData,
+        attachments,
+        notes,
+      } = req.body;
+
+      if (!title || !mainDocumentHtml) {
+        return res.status(400).json({ error: "Título e peça principal são obrigatórios." });
+      }
+
+      const result = await dbPool.query(
+        `INSERT INTO protocol_packages (
+          tenant_id,
+          user_id,
+          case_id,
+          generated_piece_id,
+          type,
+          title,
+          status,
+          case_number,
+          court,
+          main_document_title,
+          main_document_html,
+          protocol_data,
+          attachments,
+          notes
+        ) VALUES ($1, $2, $3, $4, 'intercorrente', $5, 'pronto_para_conferencia', $6, $7, $8, $9, $10, $11, $12)
+        RETURNING
+          id,
+          tenant_id AS "tenantId",
+          user_id AS "userId",
+          case_id AS "caseId",
+          generated_piece_id AS "generatedPieceId",
+          type,
+          title,
+          status,
+          case_number AS "caseNumber",
+          court,
+          main_document_title AS "mainDocumentTitle",
+          protocol_data AS "protocolData",
+          attachments,
+          notes,
+          prepared_at AS "preparedAt",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"`,
+        [
+          tenantId,
+          userId,
+          caseId || null,
+          generatedPieceId || null,
+          title,
+          caseNumber || null,
+          court || null,
+          mainDocumentTitle || title,
+          mainDocumentHtml,
+          JSON.stringify(protocolData || {}),
+          JSON.stringify(Array.isArray(attachments) ? attachments : []),
+          notes || null,
+        ],
+      );
+
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error("Error creating protocol package:", error);
+      res.status(500).json({ error: "Falha ao criar pacote de protocolo." });
+    }
+  });
+
+  app.patch("/api/protocol-packages/:id/status", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const id = Number(req.params.id);
+      const { status, protocolNumber, receiptUrl } = req.body;
+      const allowedStatuses = ["preparando", "pronto_para_conferencia", "protocolado", "erro", "cancelado"];
+      if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({ error: "Status inválido." });
+      }
+
+      const result = await dbPool.query(
+        `UPDATE protocol_packages
+        SET status = $1,
+          protocol_number = COALESCE($2, protocol_number),
+          receipt_url = COALESCE($3, receipt_url),
+          submitted_at = CASE WHEN $1 = 'protocolado' THEN COALESCE(submitted_at, NOW()) ELSE submitted_at END,
+          updated_at = NOW()
+        WHERE id = $4 AND tenant_id = $5
+        RETURNING
+          id,
+          tenant_id AS "tenantId",
+          user_id AS "userId",
+          case_id AS "caseId",
+          generated_piece_id AS "generatedPieceId",
+          type,
+          title,
+          status,
+          case_number AS "caseNumber",
+          court,
+          main_document_title AS "mainDocumentTitle",
+          protocol_data AS "protocolData",
+          attachments,
+          notes,
+          prepared_at AS "preparedAt",
+          protocol_number AS "protocolNumber",
+          receipt_url AS "receiptUrl",
+          submitted_at AS "submittedAt",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"`,
+        [status, protocolNumber || null, receiptUrl || null, id, tenantId],
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Pacote de protocolo não encontrado." });
+      }
+
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error("Error updating protocol package status:", error);
+      res.status(500).json({ error: "Falha ao atualizar status do protocolo." });
+    }
+  });
+
+  app.get("/api/protocol-packages/:id/pdpj/validate", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const id = Number(req.params.id);
+      const result = await dbPool.query(
+        `SELECT
+          id,
+          tenant_id AS "tenantId",
+          case_id AS "caseId",
+          title,
+          case_number AS "caseNumber",
+          court,
+          main_document_title AS "mainDocumentTitle",
+          main_document_html AS "mainDocumentHtml",
+          protocol_data AS "protocolData",
+          attachments
+        FROM protocol_packages
+        WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId],
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Pacote de protocolo não encontrado." });
+      }
+      res.json(pdpjService.validateIntercorrente(result.rows[0]));
+    } catch (error) {
+      console.error("Error validating PDPJ protocol package:", error);
+      res.status(500).json({ error: "Falha ao validar pacote PDPJ." });
+    }
+  });
+
+  app.post("/api/protocol-packages/:id/pdpj/submit", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const id = Number(req.params.id);
+      const result = await dbPool.query(
+        `SELECT
+          id,
+          tenant_id AS "tenantId",
+          case_id AS "caseId",
+          title,
+          case_number AS "caseNumber",
+          court,
+          main_document_title AS "mainDocumentTitle",
+          main_document_html AS "mainDocumentHtml",
+          protocol_data AS "protocolData",
+          attachments
+        FROM protocol_packages
+        WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId],
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Pacote de protocolo não encontrado." });
+      }
+
+      const submission = await pdpjService.submitIntercorrente(result.rows[0]);
+      if (submission.submitted) {
+        await dbPool.query(
+          `UPDATE protocol_packages
+          SET status = 'protocolado', updated_at = NOW(), submitted_at = COALESCE(submitted_at, NOW())
+          WHERE id = $1 AND tenant_id = $2`,
+          [id, tenantId],
+        );
+      }
+      res.json(submission);
+    } catch (error: any) {
+      console.error("Error submitting PDPJ protocol package:", error);
+      res.status(500).json({ error: error?.message || "Falha ao enviar pacote ao PDPJ." });
+    }
+  });
+
+  app.get("/api/pdpj/status", (_req: Request, res: Response) => {
+    res.json(pdpjService.getConfigStatus());
+  });
+
   // ==================== LEGAL SEARCH ====================
   const searchSchema = z.object({
     query: z.string().min(3, "A pesquisa deve ter pelo menos 3 caracteres"),
@@ -6757,9 +7221,12 @@ TÉCNICAS ANTI-DETECÇÃO:
       let extractedText: string | null = null;
       try {
         if (doc.mimeType === "application/pdf" || doc.filePath.toLowerCase().endsWith(".pdf")) {
-          const pdfParse = (await import("pdf-parse")).default;
-          const pdfData = await pdfParse(fileBuffer);
-          extractedText = pdfData.text?.trim() || null;
+          const { PDFParse } = await import("pdf-parse");
+          const parser = new (PDFParse as any)({ data: fileBuffer });
+          await parser.load();
+          const pdfData = await parser.getText();
+          extractedText = (typeof pdfData === "string" ? pdfData : pdfData?.text || "").trim() || null;
+          try { await parser.destroy(); } catch {}
         } else if (
           doc.mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
           doc.filePath.toLowerCase().endsWith(".docx")
@@ -6955,7 +7422,7 @@ TÉCNICAS ANTI-DETECÇÃO:
         model: "gpt-4o",
         messages: [
           {
-            role: "system",
+            role: "user",
             content: "Você é um assistente jurídico brasileiro. Gere um relatório executivo conciso sobre o estado dos processos de um devedor. Inclua: situação atual de cada processo, últimas movimentações relevantes, próximos passos recomendados, e avaliação geral da cobrança. Formate em Markdown. Seja objetivo e profissional."
           },
           {
@@ -6982,7 +7449,6 @@ TÉCNICAS ANTI-DETECÇÃO:
         return res.status(400).json({ error: "Texto é obrigatório" });
       }
 
-      const aiService = (await import("./services/ai")).default;
       let result: any;
       try {
         result = await aiService.chat([{
@@ -7857,7 +8323,7 @@ ${text}`
         console.log(`[Network Import] Extracted ${extractedText.length} chars from ${fileName}`);
         if (extractedText.trim()) {
           const aiRes = await aiService.chat([{
-            role: "system",
+            role: "user",
             content: `Você é um assistente que extrai contatos de documentos. O texto abaixo pode ser uma exportação do LinkedIn, lista de contatos, ou documento com nomes de pessoas.
 
 REGRAS IMPORTANTES:
@@ -7925,7 +8391,7 @@ Exemplo de saída:
 
       try {
         const aiRes = await aiService.chat([{
-          role: "system",
+          role: "user",
           content: `Você é um assistente que extrai contatos de texto. O texto abaixo contém nomes de pessoas, possivelmente com cargos e empresas.
 
 REGRAS:
@@ -8155,11 +8621,12 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = client.id;
         const { id, createdAt, ...clientData } = client;
         try {
-          const [inserted] = await db.insert(clientsTable).values({
+          const insertedRows = await db.insert(clientsTable).values({
             ...clientData,
             tenantId,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedRows[0];
           clientIdMap.set(oldId, inserted.id);
           stats.clients++;
         } catch (e: any) {
@@ -8176,12 +8643,13 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = contract.id;
         const { id, createdAt, ...contractData } = contract;
         try {
-          const [inserted] = await db.insert(contracts).values({
+          const insertedRows = await db.insert(contracts).values({
             ...contractData,
             tenantId,
             clientId: clientIdMap.get(contract.clientId) || contract.clientId,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedRows[0];
           contractIdMap.set(oldId, inserted.id);
           stats.contracts++;
         } catch (e: any) {
@@ -8193,13 +8661,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = cs.id;
         const { id, createdAt, ...caseData } = cs;
         try {
-          const [inserted] = await db.insert(cases).values({
+          const insertedRows = await db.insert(cases).values({
             ...caseData,
             tenantId,
             clientId: cs.clientId ? (clientIdMap.get(cs.clientId) || cs.clientId) : null,
             contractId: cs.contractId ? (contractIdMap.get(cs.contractId) || cs.contractId) : null,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedRows[0];
           caseIdMap.set(oldId, inserted.id);
           stats.cases++;
         } catch (e: any) {
@@ -8270,13 +8739,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = neg.id;
         const { id, createdAt, ...negData } = neg;
         try {
-          const [inserted] = await db.insert(negotiations).values({
+          const insertedRows = await db.insert(negotiations).values({
             ...negData,
             tenantId,
             clientId: neg.clientId ? (clientIdMap.get(neg.clientId) || neg.clientId) : null,
             debtorId: neg.debtorId || null,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedRows[0];
           negIdMap.set(oldId, inserted.id);
           stats.negotiations++;
         } catch (e: any) {
@@ -8879,6 +9349,58 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
+  app.patch("/api/debtor-agreements/:id/status", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const id = parseInt(req.params.id);
+      const existing = await storage.getDebtorAgreement(id, tenantId);
+      if (!existing) return res.status(404).json({ error: "Agreement not found" });
+
+      const allowedStatuses = new Set(["ativo", "inadimplente", "encerrado", "suspenso"]);
+      const status = String(req.body.status || "");
+      if (!allowedStatuses.has(status)) return res.status(400).json({ error: "Invalid status" });
+
+      const updated = await storage.updateDebtorAgreement(id, tenantId, { status });
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update agreement status" });
+    }
+  });
+
+  app.get("/api/debtor-agreements/monthly-statuses", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { clientId, month, year } = req.query;
+      const agreements = clientId
+        ? await storage.getDebtorAgreementsByClient(parseInt(clientId as string), tenantId)
+        : await storage.getDebtorAgreementsByTenant(tenantId);
+      const months = month && year ? [makeMonthKey(parseInt(month as string), parseInt(year as string))] : undefined;
+      const statuses = await storage.getAgreementMonthlyStatuses(agreements.map((a: any) => a.id), months);
+      res.json(statuses);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get monthly statuses" });
+    }
+  });
+
+  app.post("/api/debtor-agreements/:id/monthly-status", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const id = parseInt(req.params.id);
+      const existing = await storage.getDebtorAgreement(id, tenantId);
+      if (!existing) return res.status(404).json({ error: "Agreement not found" });
+
+      const month = String(req.body.month || "");
+      const status = String(req.body.status || "");
+      if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: "Invalid month" });
+      if (!["pago", "inadimplente", "pendente"].includes(status)) return res.status(400).json({ error: "Invalid status" });
+
+      const updated = await storage.upsertAgreementMonthlyStatus({ agreementId: id, month, status });
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update monthly status" });
+    }
+  });
+
   // Generate Excel report for a client+month
   app.get("/api/debtor-agreements/report", requireAuth, async (req: Request, res: Response) => {
     try {
@@ -8913,6 +9435,8 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
 
       const targetMonth = month ? parseInt(month as string) : null;
       const targetYear = year ? parseInt(year as string) : null;
+      const monthKey = targetMonth && targetYear ? makeMonthKey(targetMonth, targetYear) : null;
+      const monthlyPaymentMap = monthKey ? await getMonthlyPaymentMap(agreements.map((a: any) => a.id), [monthKey]) : {};
 
       for (const a of agreements) {
         const debtor = debtorMap[a.debtorId];
@@ -8921,7 +9445,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const feePercent = parseFloat(a.feePercent || "10");
         const installmentValue = parseFloat(a.installmentValue || "0");
         const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
+          ? calculateMonthlyAgreementFee(a, targetMonth, targetYear, monthlyPaymentMap)
           : Math.round(installmentValue * feePercent / 100 * 100) / 100;
 
         rows.push([
@@ -8972,17 +9496,46 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
   // Helper (defined outside request handler via closure)
   function isActiveInMonth(a: any, month: number, year: number): boolean {
     if (!a.agreementDate) return false;
-    const agreementDate = new Date(a.agreementDate);
+    const agreementDate = new Date(`${a.agreementDate}T12:00:00`);
     const refDate = new Date(year, month - 1, 1);
     if (agreementDate > new Date(year, month - 1, 31)) return false;
     if (a.isSinglePayment) return agreementDate.getMonth() + 1 === month && agreementDate.getFullYear() === year;
     // For installments, check if still running
     if (a.installmentsCount && a.downPaymentDate) {
-      const endDate = new Date(a.downPaymentDate);
+      const endDate = new Date(`${a.downPaymentDate}T12:00:00`);
       endDate.setMonth(endDate.getMonth() + (a.installmentsCount - 1));
       if (refDate > endDate) return false;
     }
     return true;
+  }
+
+  function makeMonthKey(month: number, year: number): string {
+    return `${year}-${String(month).padStart(2, "0")}`;
+  }
+
+  async function getMonthlyPaymentMap(agreementIds: number[], months?: string[]): Promise<Record<number, Record<string, string>>> {
+    const rows = await storage.getAgreementMonthlyStatuses(agreementIds, months);
+    return rows.reduce((acc: Record<number, Record<string, string>>, row: any) => {
+      if (!acc[row.agreementId]) acc[row.agreementId] = {};
+      acc[row.agreementId][row.month] = row.status;
+      return acc;
+    }, {});
+  }
+
+  function calculateMonthlyAgreementFee(a: any, targetMonth: number, targetYear: number, monthlyPaymentMap: Record<number, Record<string, string>>): number {
+    const monthKey = makeMonthKey(targetMonth, targetYear);
+    const feePercent = parseFloat(a.feePercent || "10");
+    const downDate = a.downPaymentDate ? new Date(`${a.downPaymentDate}T12:00:00`) : null;
+    const isEntryMonth = !!downDate
+      && downDate.getMonth() + 1 === targetMonth
+      && downDate.getFullYear() === targetYear;
+    const feeBase = isEntryMonth
+      ? parseFloat(a.downPaymentValue || "0")
+      : parseFloat(a.installmentValue || "0");
+    const isInad = a.status === "inadimplente" || monthlyPaymentMap[a.id]?.[monthKey] === "inadimplente";
+    return isActiveInMonth(a, targetMonth, targetYear) && !isInad
+      ? Math.round(feeBase * feePercent / 100 * 100) / 100
+      : 0;
   }
 
   // Send report via email and/or WhatsApp
@@ -8998,8 +9551,8 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         return arr.map((x: any) => (x != null ? String(x).trim() : "")).filter(Boolean);
       };
       // Accept both singular (emailTo/whatsappTo) and plural (emailTos/whatsappTos) field names; deduplicate
-      const emailList = [...new Set(toStringArray(req.body.emailTos ?? req.body.emailTo))];
-      const whatsappList = [...new Set(toStringArray(req.body.whatsappTos ?? req.body.whatsappTo))];
+      const emailList = Array.from(new Set(toStringArray(req.body.emailTos ?? req.body.emailTo)));
+      const whatsappList = Array.from(new Set(toStringArray(req.body.whatsappTos ?? req.body.whatsappTo)));
 
       // Build the excel internally
       let agreements = await storage.getDebtorAgreementsByClient(parseInt(clientId), tenantId);
@@ -9018,6 +9571,8 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const clientName = clientRow?.name || "Cliente";
       const targetMonth = month ? parseInt(month) : null;
       const targetYear = year ? parseInt(year) : null;
+      const monthKey = targetMonth && targetYear ? makeMonthKey(targetMonth, targetYear) : null;
+      const monthlyPaymentMap = monthKey ? await getMonthlyPaymentMap(agreements.map((a: any) => a.id), [monthKey]) : {};
 
       const wsRows: any[][] = [
         [`${clientName.toUpperCase()} – PLANILHA MENSAL DOS HONORÁRIOS – ${monthYear.toUpperCase()}`],
@@ -9032,7 +9587,7 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const feePercent = parseFloat(a.feePercent || "10");
         const installmentValue = parseFloat(a.installmentValue || "0");
         const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
+          ? calculateMonthlyAgreementFee(a, targetMonth, targetYear, monthlyPaymentMap)
           : Math.round(installmentValue * feePercent / 100 * 100) / 100;
         wsRows.push([debtor?.name || "", a.agreementDate || "", parseFloat(a.originalDebtValue || "0") || "", parseFloat(a.agreedValue || "0") || "", installmentsDisplay, parseFloat(a.downPaymentValue || "0") || "", a.downPaymentDate || "", installmentValue || "", dueDayDisplay, `${feePercent}%`, parseFloat(a.feeAmount || "0") || "", a.feeStatus || "pendente", monthlyFee, a.status || "ativo", a.notes || ""]);
       }

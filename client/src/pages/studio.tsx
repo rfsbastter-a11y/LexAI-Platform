@@ -17,13 +17,14 @@ import {
   GraduationCap, Gavel, Check, Upload, Image, FolderOpen, Stamp, 
   ChevronDown, ChevronUp, File, AlertTriangle, Lightbulb, Eye, EyeOff, PanelLeftClose, PanelLeft,
   ExternalLink, Share2, Mic, MicOff, Briefcase, ClipboardList, Maximize2, Minimize2, Calculator,
-  Copy, ClipboardCheck, User, Users, Building2, MapPin, Wand2, Undo2, Shield, GripHorizontal
+  Copy, ClipboardCheck, User, Users, Building2, MapPin, Wand2, Undo2, Shield, GripHorizontal, Scissors
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { protocolPackagesApi } from "@/lib/api";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -173,6 +174,30 @@ interface ProtocolData {
   };
 }
 
+interface SeparatorResult {
+  fileName: string;
+  totalPages: number;
+  documents: Array<{
+    order: number;
+    title: string;
+    requestedItem: string;
+    pages: number[];
+    confidence: "alta" | "media" | "baixa";
+    reason: string;
+  }>;
+  ignoredPages: number[];
+  warnings: string[];
+}
+
+interface SeparatorOutputFile {
+  order: number;
+  name: string;
+  mimeType: string;
+  pages: number[];
+  size: number;
+  data: string;
+}
+
 const PIECE_MODELS = [
   { value: "peticao_inicial", label: "Petição Inicial" },
   { value: "acao_monitoria", label: "Ação Monitória" },
@@ -219,7 +244,7 @@ const CALC_INDEX_RATES: Record<string, { monthly: number; label: string }> = {
   "IPCA": { monthly: 0.0045, label: "IPCA (~5,5% a.a.)" },
 };
 
-type ToolTab = 'arquivos' | 'juris' | 'doutrina' | 'modelos' | 'timbrado' | 'calculos' | 'dados' | 'humanizar';
+type ToolTab = 'arquivos' | 'separador' | 'juris' | 'doutrina' | 'modelos' | 'timbrado' | 'calculos' | 'dados' | 'humanizar';
 
 export default function StudioPage() {
   const { user } = useAuth();
@@ -313,6 +338,13 @@ export default function StudioPage() {
   const [isExtractingProtocol, setIsExtractingProtocol] = useState(false);
   const [protocolTab, setProtocolTab] = useState("dados");
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [separatorFile, setSeparatorFile] = useState<{ name: string; data: string; type: string } | null>(null);
+  const [separatorInstructions, setSeparatorInstructions] = useState("");
+  const [separatorResult, setSeparatorResult] = useState<SeparatorResult | null>(null);
+  const [separatorOutputFiles, setSeparatorOutputFiles] = useState<SeparatorOutputFile[]>([]);
+  const [isSeparatingPdf, setIsSeparatingPdf] = useState(false);
+  const [isGeneratingSplitPdfs, setIsGeneratingSplitPdfs] = useState(false);
+  const separatorFileRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
   const [draftSavedAt, setDraftSavedAt] = useState<Date | null>(null);
@@ -1013,6 +1045,128 @@ export default function StudioPage() {
     setUploadedFiles((prev) => prev.filter((f) => f.id !== fileId));
   };
 
+  const handleSeparatorFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+      toast({ title: "Envie um PDF para separar.", variant: "destructive" });
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSeparatorFile({ name: file.name, data: reader.result as string, type: file.type || "application/pdf" });
+      setSeparatorResult(null);
+      setSeparatorOutputFiles([]);
+    };
+    reader.readAsDataURL(file);
+
+    if (separatorFileRef.current) {
+      separatorFileRef.current.value = "";
+    }
+  };
+
+  const handleAnalyzeSeparator = async () => {
+    if (!separatorFile || !separatorInstructions.trim()) {
+      toast({ title: "Envie o PDF e descreva a ordem dos documentos.", variant: "destructive" });
+      return;
+    }
+
+    setIsSeparatingPdf(true);
+    try {
+      const response = await fetch("/api/studio/pdf-separator/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        credentials: "include",
+        body: JSON.stringify({
+          fileData: separatorFile.data,
+          fileName: separatorFile.name,
+          instructions: separatorInstructions,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Falha ao analisar PDF");
+      setSeparatorResult(data);
+      setSeparatorOutputFiles([]);
+      toast({ title: "Separação sugerida", description: `${data.documents?.length || 0} documento(s) identificado(s).` });
+    } catch (err) {
+      toast({
+        title: "Erro no separador",
+        description: err instanceof Error ? err.message : "Tente novamente.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSeparatingPdf(false);
+    }
+  };
+
+  const addSeparatorSummaryToInstruction = () => {
+    if (!separatorResult) return;
+    const summary = [
+      "SEPARAÇÃO DE DOCUMENTOS PARA PROTOCOLO:",
+      ...separatorResult.documents.map(doc => `${doc.order}. ${doc.title}: páginas ${doc.pages.join(", ")} (${doc.confidence}) - ${doc.reason}`),
+      separatorResult.ignoredPages.length ? `Páginas ignoradas: ${separatorResult.ignoredPages.join(", ")}` : "",
+      separatorResult.warnings.length ? `Alertas: ${separatorResult.warnings.join("; ")}` : "",
+    ].filter(Boolean).join("\n");
+    setInstructionText(prev => prev ? `${prev}\n\n${summary}` : summary);
+    toast({ title: "Resumo inserido na peça." });
+  };
+
+  const handleGenerateSplitPdfs = async () => {
+    if (!separatorFile || !separatorResult?.documents?.length) {
+      toast({ title: "Analise o PDF antes de gerar anexos.", variant: "destructive" });
+      return;
+    }
+
+    setIsGeneratingSplitPdfs(true);
+    try {
+      const response = await fetch("/api/studio/pdf-separator/split", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        credentials: "include",
+        body: JSON.stringify({
+          fileData: separatorFile.data,
+          documents: separatorResult.documents,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Falha ao gerar PDFs separados");
+      setSeparatorOutputFiles(Array.isArray(data.files) ? data.files : []);
+      toast({ title: "PDFs separados gerados", description: `${data.files?.length || 0} arquivo(s) pronto(s).` });
+    } catch (err) {
+      toast({
+        title: "Erro ao gerar PDFs",
+        description: err instanceof Error ? err.message : "Tente novamente.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGeneratingSplitPdfs(false);
+    }
+  };
+
+  const addSplitPdfsToStudio = () => {
+    if (separatorOutputFiles.length === 0) return;
+    const newFiles: UploadedFile[] = separatorOutputFiles.map((file) => ({
+      id: `split-${Date.now()}-${file.order}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name,
+      data: file.data,
+      type: file.mimeType,
+      extractedText: `Documento separado automaticamente do PDF "${separatorFile?.name || ""}". Páginas: ${file.pages.join(", ")}.`,
+      documents: [{
+        type: file.name.replace(/\.pdf$/i, ""),
+        text: `Páginas ${file.pages.join(", ")} do PDF original.`,
+        selected: true,
+      }],
+    }));
+    setUploadedFiles(prev => [...prev, ...newFiles]);
+    setChecklistDocNames(prev => [...prev, ...separatorOutputFiles.map(file => file.name)]);
+    setChecklistDocTexts(prev => [
+      ...prev,
+      ...separatorOutputFiles.map(file => `Documento separado automaticamente. Páginas: ${file.pages.join(", ")}.`),
+    ]);
+    toast({ title: "Anexos adicionados", description: "Os PDFs separados foram enviados para Arquivos e Checklist." });
+  };
+
   const handleWordTemplateUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1621,6 +1775,93 @@ export default function StudioPage() {
     }
   };
 
+  const handleSaveIntercorrentePackage = async () => {
+    if (!generatedHtml.trim()) {
+      toast({ title: "Gere a peça antes de montar o pacote.", variant: "destructive" });
+      return;
+    }
+
+    let currentData = protocolData;
+    if (!currentData) {
+      currentData = await handleExtractProtocolData();
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const caseIdParam = params.get("caseId");
+    const caseNumberFromUrl = params.get("processo");
+    const inferredCaseNumber = caseNumberFromUrl || instructionText.match(/Processo:\s*([^\n]+)/i)?.[1]?.trim() || "";
+    const inferredCourt = instructionText.match(/Tribunal:\s*([^\n]+)/i)?.[1]?.trim() || "";
+    const title = pieceTitle.trim() || `Petição intercorrente${inferredCaseNumber ? ` - ${inferredCaseNumber}` : ""}`;
+
+    const attachments = [
+      ...uploadedFiles.map((file) => ({
+        name: file.name,
+        type: file.type,
+        source: file.isReferenceModel ? "modelo_referencia" : "arquivo_studio",
+        hasExtractedText: !!file.extractedText,
+      })),
+      ...checklistDocNames.map((name, index) => ({
+        name,
+        type: "documento_checklist",
+        source: "checklist_pje",
+        hasExtractedText: !!checklistDocTexts[index],
+      })),
+    ];
+    const pdpjIntercorrente = {
+      schema: "lexai.pdpj.intercorrente.v1",
+      tipoPeticionamento: "INTERCORRENTE",
+      numeroProcesso: inferredCaseNumber || null,
+      tribunal: inferredCourt || null,
+      documentoPrincipal: {
+        titulo: title,
+        formatoOrigem: "html",
+        obrigatorio: true,
+      },
+      documentos: attachments.map((attachment, index) => ({
+        ordem: index + 1,
+        nome: attachment.name,
+        tipo: attachment.type || "application/octet-stream",
+        origem: attachment.source,
+        textoExtraido: attachment.hasExtractedText,
+      })),
+      metadados: {
+        classeJudicial: currentData?.dadosIniciais?.classeJudicial || null,
+        assuntoSugerido: currentData?.assunto?.sugestao || null,
+        codigoAssunto: currentData?.assunto?.codigo || null,
+        procurador: currentData?.procurador || null,
+      },
+      pendencias: [
+        !inferredCaseNumber ? "Informar numero do processo antes do protocolo." : null,
+        attachments.length === 0 ? "Conferir se ha anexos obrigatorios para a peticao." : null,
+      ].filter(Boolean),
+    };
+
+    try {
+      const pkg = await protocolPackagesApi.createIntercorrente({
+        title,
+        caseId: caseIdParam ? Number(caseIdParam) : null,
+        caseNumber: inferredCaseNumber || null,
+        court: inferredCourt || null,
+        mainDocumentTitle: title,
+        mainDocumentHtml: generatedHtml,
+        protocolData: { ...(currentData || {}), pdpjIntercorrente },
+        attachments,
+        notes: "Pacote intercorrente preparado no Estúdio LexAI para conferência e protocolo manual.",
+      });
+
+      toast({
+        title: "Pacote intercorrente salvo",
+        description: `Protocolo #${pkg.id} pronto para conferência.`,
+      });
+    } catch (err) {
+      toast({
+        title: "Erro ao salvar pacote",
+        description: err instanceof Error ? err.message : "Tente novamente.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleOpenPjeWithChecklist = async (pjeUrl: string) => {
     let currentData = protocolData;
     if (!currentData) {
@@ -2135,6 +2376,135 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                     )}
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+        );
+
+      case 'separador':
+        return (
+          <div className="p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-medium text-sm">Separador de PDF</h3>
+                <p className="text-xs text-muted-foreground">Identifique documentos dentro de um PDF único pela ordem escrita.</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => separatorFileRef.current?.click()} data-testid="btn-upload-separator-pdf">
+                <Upload className="w-4 h-4 mr-2" />
+                PDF
+              </Button>
+              <input
+                ref={separatorFileRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                className="hidden"
+                onChange={handleSeparatorFileUpload}
+                data-testid="input-separator-pdf"
+              />
+            </div>
+
+            {separatorFile ? (
+              <div className="rounded-lg border bg-muted/40 p-3 text-sm flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-medium truncate">{separatorFile.name}</p>
+                  <p className="text-xs text-muted-foreground">PDF carregado para análise</p>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => { setSeparatorFile(null); setSeparatorResult(null); setSeparatorOutputFiles([]); }} data-testid="btn-clear-separator-pdf">
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground border border-dashed rounded-lg">
+                <Scissors className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="text-sm">Envie um PDF grande para separar</p>
+                <p className="text-xs mt-1">A primeira versão sugere intervalos de páginas para revisão.</p>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label className="text-sm">Ordem escrita dos documentos</Label>
+              <Textarea
+                value={separatorInstructions}
+                onChange={(e) => setSeparatorInstructions(e.target.value)}
+                rows={7}
+                placeholder={"Exemplo:\n1. Contrato de prestação de serviços\n2. Notificação extrajudicial\n3. Comprovante de envio / AR\n4. Procuração\n\nIgnorar páginas em branco e documentos pessoais."}
+                data-testid="textarea-separator-instructions"
+              />
+            </div>
+
+            <Button className="w-full" onClick={handleAnalyzeSeparator} disabled={!separatorFile || !separatorInstructions.trim() || isSeparatingPdf} data-testid="btn-analyze-separator">
+              {isSeparatingPdf ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Scissors className="w-4 h-4 mr-2" />}
+              Analisar separação
+            </Button>
+
+            {separatorResult && (
+              <div className="space-y-3">
+                <div className="rounded-lg border bg-white p-3 text-sm">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-medium">Resultado</span>
+                    <Badge variant="outline">{separatorResult.totalPages} página(s)</Badge>
+                  </div>
+                  <div className="space-y-2">
+                    {separatorResult.documents.map((doc) => (
+                      <div key={`${doc.order}-${doc.title}`} className="rounded border p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-medium text-sm">{doc.order}. {doc.title}</p>
+                          <Badge variant={doc.confidence === "alta" ? "default" : "outline"}>{doc.confidence}</Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">Páginas: {doc.pages.join(", ") || "-"}</p>
+                        <p className="text-xs mt-1">{doc.reason}</p>
+                      </div>
+                    ))}
+                  </div>
+                  {separatorResult.ignoredPages.length > 0 && (
+                    <p className="text-xs text-muted-foreground mt-3">Páginas ignoradas: {separatorResult.ignoredPages.join(", ")}</p>
+                  )}
+                  {separatorResult.warnings.length > 0 && (
+                    <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                      {separatorResult.warnings.map((warning) => <p key={warning}>- {warning}</p>)}
+                    </div>
+                  )}
+                </div>
+                <Button variant="outline" className="w-full" onClick={addSeparatorSummaryToInstruction} data-testid="btn-add-separator-summary">
+                  <ClipboardCheck className="w-4 h-4 mr-2" />
+                  Inserir resumo na peça
+                </Button>
+                <Button className="w-full" onClick={handleGenerateSplitPdfs} disabled={isGeneratingSplitPdfs} data-testid="btn-generate-split-pdfs">
+                  {isGeneratingSplitPdfs ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileDown className="w-4 h-4 mr-2" />}
+                  Gerar PDFs separados
+                </Button>
+                {separatorOutputFiles.length > 0 && (
+                  <div className="rounded-lg border bg-white p-3 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-sm">Anexos gerados</span>
+                      <Badge variant="outline">{separatorOutputFiles.length}</Badge>
+                    </div>
+                    <div className="space-y-2">
+                      {separatorOutputFiles.map((file) => (
+                        <div key={`${file.order}-${file.name}`} className="rounded border p-2 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="font-medium truncate">{file.name}</p>
+                              <p className="text-muted-foreground">Paginas: {file.pages.join(", ")} - {(file.size / 1024).toFixed(1)} KB</p>
+                            </div>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => {
+                              const a = document.createElement("a");
+                              a.href = file.data;
+                              a.download = file.name;
+                              a.click();
+                            }} data-testid={`btn-download-split-${file.order}`}>
+                              <FileDown className="w-3 h-3" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <Button variant="outline" className="w-full" onClick={addSplitPdfsToStudio} data-testid="btn-add-split-pdfs-to-studio">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Adicionar ao Estudio e Checklist
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -3194,6 +3564,7 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                       <div className="flex border-b overflow-x-auto scrollbar-thin scrollbar-thumb-muted-foreground/20 scrollbar-track-transparent" style={{ scrollbarWidth: 'thin' }}>
                         {[
                           { id: 'arquivos' as ToolTab, label: 'Arquivos', icon: FolderOpen },
+                          { id: 'separador' as ToolTab, label: 'Separador', icon: Scissors },
                           { id: 'dados' as ToolTab, label: 'Cadastro', icon: Briefcase },
                           { id: 'juris' as ToolTab, label: 'Juris', icon: Gavel },
                           { id: 'doutrina' as ToolTab, label: 'Doutrina', icon: BookOpen },
@@ -3339,6 +3710,12 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                               <DropdownMenuItem onClick={handleOpenProtocolChecklist} disabled={isExtractingProtocol} data-testid="btn-protocol-checklist-fullscreen">
                                 {isExtractingProtocol ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ClipboardList className="w-4 h-4 mr-2" />}
                                 Checklist PJe
+                              </DropdownMenuItem>
+                            )}
+                            {generatedHtml && (
+                              <DropdownMenuItem onClick={handleSaveIntercorrentePackage} disabled={isExtractingProtocol} data-testid="btn-save-intercorrente-package-fullscreen">
+                                {isExtractingProtocol ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Save className="w-4 h-4 mr-2" />}
+                                Salvar pacote intercorrente
                               </DropdownMenuItem>
                             )}
                           </DropdownMenuContent>
@@ -3550,6 +3927,7 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                       <div className="flex border-b">
                         {[
                           { id: 'arquivos' as ToolTab, label: 'Arquivos', icon: FolderOpen, tooltip: 'Upload de documentos e PDFs para extrair texto via OCR' },
+                          { id: 'separador' as ToolTab, label: 'Separador', icon: Scissors, tooltip: 'Separar documentos dentro de um PDF grande por ordem escrita' },
                           { id: 'dados' as ToolTab, label: 'Cadastro', icon: Briefcase, tooltip: 'Buscar dados de clientes e devedores do sistema' },
                           { id: 'juris' as ToolTab, label: 'Juris', icon: Gavel, tooltip: 'Pesquisar jurisprudência nos tribunais brasileiros' },
                           { id: 'doutrina' as ToolTab, label: 'Doutrina', icon: BookOpen, tooltip: 'Pesquisar doutrina e autores jurídicos no Google Scholar' },

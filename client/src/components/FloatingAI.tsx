@@ -560,7 +560,7 @@ export function FloatingAI() {
           });
           if (extractResp.ok) {
             const extData = await extractResp.json();
-            const jsonMatch = (extData.content || "").match(/\{[^}]*\}/s);
+            const jsonMatch = (extData.content || "").match(/\{[\s\S]*\}/);
             if (jsonMatch) {
               const parsed = JSON.parse(jsonMatch[0]);
               if (parsed.nome && parsed.nome.length > 2) {

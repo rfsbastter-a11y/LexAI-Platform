@@ -1,4 +1,4 @@
-import makeWASocket, { Browsers, DisconnectReason, WASocket, type AuthenticationCreds, type SignalDataTypeMap, initAuthCreds, proto, BufferJSON, fetchLatestBaileysVersion } from "@whiskeysockets/baileys";
+import type { AuthenticationCreds, SignalDataTypeMap, WASocket } from "@whiskeysockets/baileys";
 import { storage } from "../storage";
 import { db } from "../db";
 import { eq, and, isNull, isNotNull, inArray, gte, desc, sql } from "drizzle-orm";
@@ -33,6 +33,20 @@ const AUTH_DIR = "./whatsapp_auth";
 
 const MANUAL_SILENCE_DURATION_MS = 30 * 60 * 1000;
 const manualSendSilenceMap = new Map<string, number>();
+
+type BaileysModule = typeof import("@whiskeysockets/baileys");
+
+let baileysModulePromise: Promise<BaileysModule> | null = null;
+const nativeImport = new Function("specifier", "return import(specifier)") as (
+  specifier: string,
+) => Promise<BaileysModule>;
+
+function loadBaileys(): Promise<BaileysModule> {
+  if (!baileysModulePromise) {
+    baileysModulePromise = nativeImport("@whiskeysockets/baileys");
+  }
+  return baileysModulePromise;
+}
 
 function extractPhoneFromJid(jid: string): string {
   if (jid.endsWith("@s.whatsapp.net")) {
@@ -117,7 +131,7 @@ async function populateLidMappingsFromKnownPhones(): Promise<number> {
     if (lidMapping) {
       console.log(`[WhatsApp] LID mapping store available, checking...`);
       if (typeof lidMapping.getLIDForPN === "function") {
-        for (const phone of phoneSet) {
+        for (const phone of Array.from(phoneSet)) {
           if (!phone || phone.length < 10) continue;
           try {
             const lid = await lidMapping.getLIDForPN(`${phone}@s.whatsapp.net`);
@@ -135,7 +149,7 @@ async function populateLidMappingsFromKnownPhones(): Promise<number> {
     console.warn(`[WhatsApp] signalRepository lidMapping access failed: ${e}`);
   }
 
-  for (const phone of phoneSet) {
+  for (const phone of Array.from(phoneSet)) {
     if (!phone || phone.length < 10) continue;
     const existing = await storage.getLidByPhone(phone);
     if (existing) { resolved++; continue; }
@@ -267,7 +281,8 @@ async function resolvePhoneToLidJid(phoneNumber: string): Promise<string | null>
 
   if (sock && connectionStatus === "connected") {
     try {
-      const [result] = await sock.onWhatsApp(`+${cleaned}`);
+      const results = await sock.onWhatsApp(`+${cleaned}`);
+      const result = results?.[0];
       if (result?.exists && result?.jid) {
         console.log(`[WhatsApp] onWhatsApp resolved ${cleaned} → ${result.jid}`);
         if (result.jid.endsWith("@lid")) {
@@ -287,7 +302,7 @@ async function resolvePhoneToLidJid(phoneNumber: string): Promise<string | null>
 
 setInterval(() => {
   const now = Date.now();
-  for (const [jid, expiresAt] of manualSendSilenceMap) {
+  for (const [jid, expiresAt] of Array.from(manualSendSilenceMap.entries())) {
     if (now >= expiresAt) {
       manualSendSilenceMap.delete(jid);
     }
@@ -295,6 +310,8 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 async function usePostgresAuthState(tenantId: number) {
+  const { BufferJSON, initAuthCreds, proto } = await loadBaileys();
+
   const writeData = async (key: string, data: any) => {
     const serialized = JSON.parse(JSON.stringify(data, BufferJSON.replacer));
     await db.insert(whatsappAuthState)
@@ -553,6 +570,8 @@ export const whatsappService = {
     statusMessage = "Conectando ao WhatsApp...";
 
     try {
+      const { Browsers, DisconnectReason, default: makeWASocket, fetchLatestBaileysVersion, proto } = await loadBaileys();
+
       if (isManualConnect) {
         await clearPostgresCredentials(tenantId);
         if (fs.existsSync(AUTH_DIR)) {
@@ -897,7 +916,7 @@ export const whatsappService = {
                   groupAllowed = cached.allowed;
                 } else {
                   try {
-                    const metadata = await sock.groupMetadata(jid);
+                    const metadata = await sock!.groupMetadata(jid);
                     const groupSubject = (metadata?.subject || "").toLowerCase();
                     groupAllowed = groupSubject.includes("jurídico") || groupSubject.includes("juridico") || groupSubject.includes("mobilar");
                     groupAuthCache.set(jid, { allowed: groupAllowed, expires: Date.now() + 3600000 });
@@ -930,7 +949,7 @@ export const whatsappService = {
                     if (!batch || batch.docs.length === 0) return;
 
                     try {
-                      const { downloadMediaMessage, downloadContentFromMessage } = await import("@whiskeysockets/baileys");
+                      const { downloadMediaMessage, downloadContentFromMessage } = await loadBaileys();
                       const { secretaryService } = await import("./secretary");
 
                       for (const entry of batch.docs) {
@@ -1031,7 +1050,7 @@ export const whatsappService = {
                   const mergedText = batch.texts.join("\n");
 
                   if (batch.mediaItems.length > 0 && sock) {
-                    const { downloadMediaMessage, downloadContentFromMessage } = await import("@whiskeysockets/baileys");
+                    const { downloadMediaMessage, downloadContentFromMessage } = await loadBaileys();
 
                     const downloadOneMedia = async (mMsg: any, mType: string): Promise<{ buffer: Buffer | null, mInner: any, mType: string, mMsg: any }> => {
                       const mInner = mMsg.message?.ephemeralMessage?.message
