@@ -9023,6 +9023,29 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
+  app.get("/api/debtor-agreements/report/pdf", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { clientId, month, year } = req.query;
+      if (!clientId) return res.status(400).json({ error: "clientId is required" });
+
+      const report = await buildAgreementReportData(
+        parseInt(clientId as string),
+        tenantId,
+        month ? parseInt(month as string) : null,
+        year ? parseInt(year as string) : null
+      );
+      const pdfBuffer = await buildAgreementReportPdf(report);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="honorarios_${report.monthYear.replace("/", "_")}.pdf"`);
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error("Error generating agreements PDF report:", error);
+      res.status(500).json({ error: "Failed to generate PDF report" });
+    }
+  });
+
   // Helper (defined outside request handler via closure)
   function isActiveInMonth(a: any, month: number, year: number): boolean {
     if (!a.agreementDate) return false;
@@ -9066,6 +9089,140 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     return isActiveInMonth(a, targetMonth, targetYear) && !isInad
       ? Math.round(feeBase * feePercent / 100 * 100) / 100
       : 0;
+  }
+
+  async function buildAgreementReportData(clientId: number, tenantId: number, targetMonth: number | null, targetYear: number | null) {
+    const agreements = await storage.getDebtorAgreementsByClient(clientId, tenantId);
+    const { debtors: debtorsTable, clients: clientsTable } = await import("@shared/schema");
+    const debtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId)));
+    let debtorMap: Record<number, any> = {};
+    if (debtorIds.length > 0) {
+      const debtorsRows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
+      debtorsRows.forEach((r: any) => { debtorMap[r.id] = r; });
+    }
+    const [clientRow] = await db.select().from(clientsTable).where(eq(clientsTable.id, clientId));
+    const monthYear = targetMonth && targetYear
+      ? `${String(targetMonth).padStart(2, "0")}/${targetYear}`
+      : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" }).replace("/", "/");
+    const monthKey = targetMonth && targetYear ? makeMonthKey(targetMonth, targetYear) : null;
+    const monthlyPaymentMap = monthKey ? await getMonthlyPaymentMap(agreements.map((a: any) => a.id), [monthKey]) : {};
+
+    const rows = agreements.map((a: any) => {
+      const feePercent = parseFloat(a.feePercent || "10");
+      const installmentValue = parseFloat(a.installmentValue || "0");
+      const monthlyFee = targetMonth && targetYear
+        ? calculateMonthlyAgreementFee(a, targetMonth, targetYear, monthlyPaymentMap)
+        : Math.round(installmentValue * feePercent / 100 * 100) / 100;
+      return {
+        debtorName: debtorMap[a.debtorId]?.name || "",
+        agreementDate: a.agreementDate || "",
+        installments: a.isSinglePayment ? "UNICA" : (a.installmentsCount?.toString() || ""),
+        downPaymentValue: parseFloat(a.downPaymentValue || "0") || 0,
+        downPaymentDate: a.downPaymentDate || "",
+        installmentValue,
+        dueDay: a.dueDay ? `Dia ${a.dueDay}` : "",
+        feePercent,
+        feeAmount: parseFloat(a.feeAmount || "0") || 0,
+        feeStatus: a.feeStatus || "pendente",
+        monthlyFee,
+        status: a.status || "ativo",
+        notes: a.notes || "",
+      };
+    });
+    const total = rows.reduce((sum: number, row: any) => sum + (row.monthlyFee || 0), 0);
+    return { clientName: clientRow?.name || "Cliente", monthYear, rows, total: Math.round(total * 100) / 100 };
+  }
+
+  async function buildAgreementReportPdf(report: { clientName: string; monthYear: string; rows: any[]; total: number }): Promise<Buffer> {
+    const PDFDocument = (await import("pdfkit")).default;
+    const doc = new PDFDocument({
+      size: "A4",
+      layout: "landscape",
+      margins: { top: 48, bottom: 40, left: 32, right: 32 },
+      bufferPages: true,
+    });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const pdfReady = new Promise<Buffer>((resolve) => {
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+
+    const formatMoney = (value: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value || 0);
+    const formatShortDate = (value: string) => value ? new Date(`${value}T12:00:00`).toLocaleDateString("pt-BR") : "";
+    const tableLeft = 32;
+    const tableWidth = doc.page.width - 64;
+    const columns = [
+      { label: "NOME", key: "debtorName", width: 170 },
+      { label: "DATA", key: "agreementDate", width: 58 },
+      { label: "PARC.", key: "installments", width: 44 },
+      { label: "ENTRADA", key: "downPaymentValue", width: 72 },
+      { label: "DATA ENT.", key: "downPaymentDate", width: 58 },
+      { label: "PRESTACAO", key: "installmentValue", width: 72 },
+      { label: "VENC.", key: "dueDay", width: 52 },
+      { label: "%", key: "feePercent", width: 34 },
+      { label: "HON. MES", key: "monthlyFee", width: 72 },
+      { label: "STATUS", key: "status", width: 78 },
+    ];
+
+    const drawHeader = () => {
+      doc.font("Helvetica-Bold").fontSize(12).text("MARQUES & SERRA ADVOCACIA", tableLeft, 24, { align: "center", width: tableWidth });
+      doc.fontSize(11).text(`${report.clientName.toUpperCase()} - PLANILHA MENSAL DOS HONORARIOS - ${report.monthYear}`, tableLeft, 48, { align: "center", width: tableWidth });
+      doc.font("Helvetica").fontSize(8).text(`Gerado em ${new Date().toLocaleDateString("pt-BR")}`, tableLeft, 66, { align: "center", width: tableWidth });
+      doc.moveTo(tableLeft, 82).lineTo(tableLeft + tableWidth, 82).stroke("#333333");
+    };
+
+    const drawTableHeader = (y: number) => {
+      doc.rect(tableLeft, y, tableWidth, 18).fill("#f3f4f6");
+      doc.fillColor("#111827").font("Helvetica-Bold").fontSize(7);
+      let x = tableLeft;
+      for (const col of columns) {
+        doc.text(col.label, x + 3, y + 5, { width: col.width - 6, align: "left" });
+        x += col.width;
+      }
+      doc.fillColor("#000000");
+    };
+
+    drawHeader();
+    let y = 92;
+    drawTableHeader(y);
+    y += 18;
+
+    doc.font("Helvetica").fontSize(7);
+    for (const row of report.rows) {
+      if (y > doc.page.height - 72) {
+        doc.addPage();
+        drawHeader();
+        y = 92;
+        drawTableHeader(y);
+        y += 18;
+        doc.font("Helvetica").fontSize(7);
+      }
+      let x = tableLeft;
+      const values: Record<string, string> = {
+        debtorName: row.debtorName,
+        agreementDate: formatShortDate(row.agreementDate),
+        installments: row.installments,
+        downPaymentValue: row.downPaymentValue ? formatMoney(row.downPaymentValue) : "",
+        downPaymentDate: formatShortDate(row.downPaymentDate),
+        installmentValue: row.installmentValue ? formatMoney(row.installmentValue) : "",
+        dueDay: row.dueDay,
+        feePercent: `${row.feePercent}%`,
+        monthlyFee: formatMoney(row.monthlyFee),
+        status: row.status,
+      };
+      for (const col of columns) {
+        doc.text(values[col.key] || "", x + 3, y + 5, { width: col.width - 6, height: 12, ellipsis: true });
+        x += col.width;
+      }
+      doc.moveTo(tableLeft, y + 17).lineTo(tableLeft + tableWidth, y + 17).strokeColor("#e5e7eb").lineWidth(0.5).stroke();
+      doc.strokeColor("#000000").lineWidth(1);
+      y += 18;
+    }
+
+    y += 8;
+    doc.font("Helvetica-Bold").fontSize(9).text(`TOTAL HONORARIOS: ${formatMoney(report.total)}`, tableLeft, y, { align: "right", width: tableWidth });
+    doc.end();
+    return pdfReady;
   }
 
   // Send report via email and/or WhatsApp
@@ -9126,19 +9283,22 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       XLSX.utils.book_append_sheet(wb, ws, "Acordos");
       const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
       const fileName = `honorarios_${monthYear.replace("/", "_")}.xlsx`;
+      const pdfReport = await buildAgreementReportData(parseInt(clientId), tenantId, targetMonth, targetYear);
+      const pdfBuf = await buildAgreementReportPdf(pdfReport);
+      const pdfFileName = `honorarios_${pdfReport.monthYear.replace("/", "_")}.pdf`;
 
       const results: string[] = [];
       const htmlBody = `<p>Segue em anexo a planilha de honorários de <strong>${clientName}</strong> referente a <strong>${monthYear}</strong>.</p><p>Atenciosamente,<br>Marques &amp; Serra Advogados</p>`;
 
       for (const to of emailList) {
-        await emailService.sendEmail({ to, subject: `Honorários ${clientName} – ${monthYear}`, html: htmlBody, attachments: [{ filename: fileName, content: buf, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }] });
+        await emailService.sendEmail({ to, subject: `Honorários ${clientName} – ${monthYear}`, html: htmlBody, attachments: [{ filename: pdfFileName, content: pdfBuf, contentType: "application/pdf" }] });
         if (!results.includes("email")) results.push("email");
       }
 
       if (whatsappList.length > 0) {
         const { whatsappService } = await import("./services/whatsapp");
         for (const to of whatsappList) {
-          await whatsappService.sendDocument(to.replace(/\D/g, ""), buf, fileName, `Honorários ${clientName} – ${monthYear}`, tenantId, true);
+          await whatsappService.sendDocument(to.replace(/\D/g, ""), pdfBuf, pdfFileName, `Honorários ${clientName} – ${monthYear}`, tenantId, true);
         }
         results.push("whatsapp");
       }

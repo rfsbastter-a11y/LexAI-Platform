@@ -468,16 +468,17 @@ export default function AcordosPage() {
     setShowForm(true);
   }
 
-  async function handleDownloadReport() {
+  async function handleDownloadReport(format: "xlsx" | "pdf" = "xlsx") {
     if (!reportClientId) return toast({ title: "Selecione um cliente", variant: "destructive" });
     const params = new URLSearchParams({ clientId: reportClientId, month: reportMonth, year: reportYear });
-    const res = await fetch(`/api/debtor-agreements/report?${params}`, { headers: getAuthHeaders() });
+    const endpoint = format === "pdf" ? "/api/debtor-agreements/report/pdf" : "/api/debtor-agreements/report";
+    const res = await fetch(`${endpoint}?${params}`, { headers: getAuthHeaders() });
     if (!res.ok) return toast({ title: "Erro ao gerar relatório", variant: "destructive" });
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `honorarios_${String(reportMonth).padStart(2, "0")}_${reportYear}.xlsx`;
+    a.download = `honorarios_${String(reportMonth).padStart(2, "0")}_${reportYear}.${format}`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -955,7 +956,7 @@ export default function AcordosPage() {
 
       {/* ===== REPORT MODAL ===== */}
       <Dialog open={showReport} onOpenChange={setShowReport}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileSpreadsheet className="w-5 h-5 text-green-600" />
@@ -1029,9 +1030,12 @@ export default function AcordosPage() {
               </div>
             </div>
           </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={handleDownloadReport} data-testid="button-download-report">
+          <div className="sticky bottom-0 flex justify-end gap-2 pt-3 bg-background border-t">
+            <Button variant="outline" onClick={() => handleDownloadReport("xlsx")} data-testid="button-download-report">
               <Download className="w-4 h-4 mr-2" /> Baixar Excel
+            </Button>
+            <Button variant="outline" onClick={() => handleDownloadReport("pdf")} data-testid="button-download-report-pdf">
+              <Download className="w-4 h-4 mr-2" /> Baixar PDF
             </Button>
             <Button onClick={handleSendReport} disabled={isSending || !reportClientId} data-testid="button-send-report">
               {isSending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
