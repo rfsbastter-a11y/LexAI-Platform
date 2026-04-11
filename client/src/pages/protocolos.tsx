@@ -78,12 +78,7 @@ function downloadText(filename: string, text: string, type = "text/plain") {
   URL.revokeObjectURL(url);
 }
 
-function tribunalUrl(pkg: any) {
-  const text = `${pkg?.court || ""} ${pkg?.caseNumber || ""}`.toLowerCase();
-  if (text.includes("tjdft") || text.includes("807")) return "https://pje.tjdft.jus.br/pje/login.seam";
-  if (text.includes("trf1") || text.includes("401")) return "https://pje1g.trf1.jus.br/pje/login.seam";
-  return "https://portal-servicos.pdpj.jus.br/";
-}
+const JUS_BR_PETITION_URL = "https://portaldeservicos.pdpj.jus.br/peticao";
 
 export default function ProtocolosPage() {
   const [selectedPackage, setSelectedPackage] = useState<any | null>(null);
@@ -244,7 +239,7 @@ export default function ProtocolosPage() {
                     {[
                       ["1", "Validar pacote", validation ? "ok" : "pending"],
                       ["2", "Baixar peca e checklist", "pending"],
-                      ["3", "Abrir tribunal/PDPJ", "pending"],
+                      ["3", "Abrir Jus.br", "pending"],
                       ["4", "Protocolar e salvar recibo", selectedPackage.status === "protocolado" ? "ok" : "pending"],
                     ].map(([n, label, state]) => (
                       <div key={n} className="flex items-center gap-2">
@@ -283,9 +278,9 @@ export default function ProtocolosPage() {
                     {validatePdpj.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <AlertTriangle className="w-4 h-4 mr-2" />}
                     Validar pendencias
                   </Button>
-                  <Button variant="outline" onClick={() => window.open(tribunalUrl(selectedPackage), "_blank")}>
+                  <Button variant="outline" onClick={() => window.open(JUS_BR_PETITION_URL, "_blank")}>
                     <ExternalLink className="w-4 h-4 mr-2" />
-                    Abrir tribunal/PDPJ
+                    Abrir Jus.br
                   </Button>
                   <Button variant="outline" onClick={() => submitPdpj.mutate(selectedPackage.id)} disabled={submitPdpj.isPending}>
                     {submitPdpj.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Stamp className="w-4 h-4 mr-2" />}
