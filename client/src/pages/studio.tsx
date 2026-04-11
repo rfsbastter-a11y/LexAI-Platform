@@ -24,6 +24,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Textarea } from "@/components/ui/textarea";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { protocolPackagesApi } from "@/lib/api";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -1618,6 +1619,86 @@ export default function StudioPage() {
     setShowProtocolChecklist(true);
     if (!protocolData) {
       await handleExtractProtocolData();
+    }
+  };
+
+  const handleSaveIntercorrentePackage = async () => {
+    if (!generatedHtml.trim()) {
+      toast({ title: "Gere a peca antes de montar o pacote.", variant: "destructive" });
+      return;
+    }
+
+    let currentData = protocolData;
+    if (!currentData) {
+      currentData = await handleExtractProtocolData();
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const caseIdParam = params.get("caseId");
+    const caseNumberFromUrl = params.get("processo");
+    const inferredCaseNumber = caseNumberFromUrl || instructionText.match(/Processo:\s*([^\n]+)/i)?.[1]?.trim() || "";
+    const inferredCourt = instructionText.match(/Tribunal:\s*([^\n]+)/i)?.[1]?.trim() || "";
+    const title = pieceTitle.trim() || `Peticao intercorrente${inferredCaseNumber ? ` - ${inferredCaseNumber}` : ""}`;
+    const attachments = [
+      ...uploadedFiles.map((file) => ({
+        name: file.name,
+        type: file.type,
+        source: file.isReferenceModel ? "modelo_referencia" : "arquivo_studio",
+        hasExtractedText: !!file.extractedText,
+      })),
+      ...checklistDocNames.map((name, index) => ({
+        name,
+        type: "documento_checklist",
+        source: "checklist_pje",
+        hasExtractedText: !!checklistDocTexts[index],
+      })),
+    ];
+
+    const pdpjIntercorrente = {
+      schema: "lexai.pdpj.intercorrente.v1",
+      tipoPeticionamento: "INTERCORRENTE",
+      numeroProcesso: inferredCaseNumber || null,
+      tribunal: inferredCourt || null,
+      documentoPrincipal: { titulo: title, formatoOrigem: "html", obrigatorio: true },
+      documentos: attachments.map((attachment, index) => ({
+        ordem: index + 1,
+        nome: attachment.name,
+        tipo: attachment.type || "application/octet-stream",
+        origem: attachment.source,
+        textoExtraido: attachment.hasExtractedText,
+      })),
+      metadados: {
+        classeJudicial: currentData?.dadosIniciais?.classeJudicial || null,
+        assuntoSugerido: currentData?.assunto?.sugestao || null,
+        codigoAssunto: currentData?.assunto?.codigo || null,
+        procurador: currentData?.procurador || null,
+      },
+      pendencias: [
+        !inferredCaseNumber ? "Informar numero do processo antes do protocolo." : null,
+        attachments.length === 0 ? "Conferir se ha anexos obrigatorios para a peticao." : null,
+      ].filter(Boolean),
+    };
+
+    try {
+      const pkg = await protocolPackagesApi.createIntercorrente({
+        title,
+        caseId: caseIdParam ? Number(caseIdParam) : null,
+        caseNumber: inferredCaseNumber || null,
+        court: inferredCourt || null,
+        mainDocumentTitle: title,
+        mainDocumentHtml: generatedHtml,
+        protocolData: { ...(currentData || {}), pdpjIntercorrente },
+        attachments,
+        notes: "Pacote intercorrente preparado no Estudio LexAI para conferencia e protocolo manual.",
+      });
+      toast({ title: "Pacote intercorrente salvo", description: `Protocolo #${pkg.id} pronto em Protocolos.` });
+      window.location.href = "/protocolos";
+    } catch (err) {
+      toast({
+        title: "Erro ao salvar pacote",
+        description: err instanceof Error ? err.message : "Tente novamente.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -3339,6 +3420,12 @@ function cc(btn){const row=btn.closest('.field')||btn.parentElement;const valEl=
                               <DropdownMenuItem onClick={handleOpenProtocolChecklist} disabled={isExtractingProtocol} data-testid="btn-protocol-checklist-fullscreen">
                                 {isExtractingProtocol ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ClipboardList className="w-4 h-4 mr-2" />}
                                 Checklist PJe
+                              </DropdownMenuItem>
+                            )}
+                            {generatedHtml && (
+                              <DropdownMenuItem onClick={handleSaveIntercorrentePackage} disabled={isExtractingProtocol} data-testid="btn-save-intercorrente-package-fullscreen">
+                                {isExtractingProtocol ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Stamp className="w-4 h-4 mr-2" />}
+                                Salvar pacote intercorrente
                               </DropdownMenuItem>
                             )}
                           </DropdownMenuContent>

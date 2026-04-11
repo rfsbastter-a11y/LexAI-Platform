@@ -25,7 +25,8 @@ import {
   Handshake,
   Target,
   Video,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Stamp
 } from "lucide-react";
 import logoMs from "@/assets/images/logo-ms-new.png";
 import { Button } from "@/components/ui/button";
@@ -101,6 +102,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "Secretária", icon: MessageSquare, href: "/mensagens", highlight: true },
       { label: "Negociações", icon: Handshake, href: "/negotiations", highlight: true },
       { label: "Acordos", icon: FileSpreadsheet, href: "/acordos", highlight: true },
+      { label: "Protocolos", icon: Stamp, href: "/protocolos", highlight: true },
       { label: "Prospecção", icon: Target, href: "/prospecting", highlight: true },
       { label: "Reunião", icon: Video, href: "/meetings", highlight: true },
     ],

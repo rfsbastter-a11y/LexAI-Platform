@@ -257,7 +257,7 @@ async function generatePlainWord(contentHtml: string, title: string): Promise<Bu
     return segments.length > 0 ? segments : [{ text: decodeEntities(inner.replace(/<[^>]+>/g, '')), bold: false }];
   };
 
-  const children: Paragraph[] = [];
+  const children: any[] = [];
 
   children.push(new Paragraph({
     text: title,
@@ -4025,7 +4025,7 @@ O contato se identificou como: ${contactName}
             : "auto" as const;
 
       console.log(`[Secretary] tool_choice: ${shouldForceAction ? "FORCED executar_acao" : shouldForceSearch ? "FORCED pesquisar_web" : shouldForceSystemQuery ? "FORCED consultar_sistema" : "auto"} (msg: "${lastUserMsg.substring(0, 60)}")`);
-      if (isSocio) console.log(`[Secretary] Sender identified as sócio/advogado: ${senderUser?.email || senderUser?.username}`);
+      if (isSocio) console.log(`[Secretary] Sender identified as socio/advogado: ${senderUser?.email || (senderUser as any)?.username}`);
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",

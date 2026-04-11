@@ -39,7 +39,7 @@ interface SpeechRecognitionConstructor {
 }
 
 function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
-  const win = window as Record<string, unknown>;
+  const win = window as unknown as Record<string, unknown>;
   return (win.SpeechRecognition || win.webkitSpeechRecognition) as SpeechRecognitionConstructor | null;
 }
 
@@ -99,7 +99,7 @@ export function useAudioCapture({
   const isBrowserSupported = useCallback(() => {
     return !!(
       navigator.mediaDevices &&
-      navigator.mediaDevices.getDisplayMedia &&
+      typeof navigator.mediaDevices.getDisplayMedia === 'function' &&
       typeof MediaRecorder !== 'undefined'
     );
   }, []);

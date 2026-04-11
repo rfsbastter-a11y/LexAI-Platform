@@ -152,6 +152,8 @@ export const aiApi = {
     caseNumber?: string;
     court?: string;
     caseClass?: string;
+    classeNome?: string;
+    vara?: string;
     intimationDate?: string;
   }) =>
     fetchApi<{
@@ -302,6 +304,23 @@ export const documentsApi = {
     credentials: "include",
     body: formData,
   }).then(r => { if (!r.ok) throw new Error("Failed to archive"); return r.json(); }),
+};
+
+// Protocolos
+export const protocolPackagesApi = {
+  getAll: () => fetchApi<any[]>("/protocol-packages"),
+  getById: (id: number) => fetchApi<any>(`/protocol-packages/${id}`),
+  validatePdpj: (id: number) => fetchApi<any>(`/protocol-packages/${id}/pdpj/validate`),
+  submitPdpj: (id: number) => fetchApi<any>(`/protocol-packages/${id}/pdpj/submit`, { method: "POST" }),
+  createIntercorrente: (data: any) => fetchApi<any>("/protocol-packages", {
+    method: "POST",
+    body: JSON.stringify(data),
+  }),
+  updateStatus: (id: number, data: { status: string; protocolNumber?: string; receiptUrl?: string }) =>
+    fetchApi<any>(`/protocol-packages/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
 };
 
 // Studio

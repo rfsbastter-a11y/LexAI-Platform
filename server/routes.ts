@@ -14,6 +14,7 @@ import { emailService } from "./services/email";
 import { zohoMailService } from "./services/zohoMail";
 import { legalSearchService } from "./services/legalSearch";
 import { generateStudioPiece } from "./services/studioGenerate";
+import { pdpjService } from "./services/pdpj";
 import { 
   insertClientSchema, insertContractSchema, insertCaseSchema, insertDeadlineSchema,
   insertDocumentTemplateSchema, insertGeneratedPieceSchema,
@@ -33,6 +34,34 @@ function getTenantId(req: Request): number {
 
 function getUserId(req: Request): number {
   return req.tokenUser?.id || req.session?.user?.id || 0;
+}
+
+async function ensureProtocolPackagesTable() {
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS protocol_packages (
+      id SERIAL PRIMARY KEY,
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER,
+      case_id INTEGER,
+      generated_piece_id INTEGER,
+      type TEXT NOT NULL DEFAULT 'intercorrente',
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'preparando',
+      case_number TEXT,
+      court TEXT,
+      main_document_title TEXT,
+      main_document_html TEXT NOT NULL,
+      protocol_data JSONB,
+      attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+      notes TEXT,
+      prepared_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+      protocol_number TEXT,
+      receipt_url TEXT,
+      submitted_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+    )
+  `);
 }
 
 const searchRateLimiter = rateLimit({
@@ -5961,6 +5990,173 @@ TÉCNICAS ANTI-DETECÇÃO:
     }
   });
 
+  // ==================== PROTOCOL PACKAGES ====================
+  app.get("/api/protocol-packages", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const result = await dbPool.query(
+        `SELECT id, tenant_id AS "tenantId", user_id AS "userId", case_id AS "caseId",
+          generated_piece_id AS "generatedPieceId", type, title, status,
+          case_number AS "caseNumber", court, main_document_title AS "mainDocumentTitle",
+          protocol_data AS "protocolData", attachments, notes, prepared_at AS "preparedAt",
+          protocol_number AS "protocolNumber", receipt_url AS "receiptUrl",
+          submitted_at AS "submittedAt", created_at AS "createdAt", updated_at AS "updatedAt"
+        FROM protocol_packages
+        WHERE tenant_id = $1
+        ORDER BY created_at DESC`,
+        [tenantId],
+      );
+      res.json(result.rows);
+    } catch (error) {
+      console.error("Error fetching protocol packages:", error);
+      res.status(500).json({ error: "Falha ao listar pacotes de protocolo." });
+    }
+  });
+
+  app.get("/api/protocol-packages/:id", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const id = Number(req.params.id);
+      const result = await dbPool.query(
+        `SELECT id, tenant_id AS "tenantId", user_id AS "userId", case_id AS "caseId",
+          generated_piece_id AS "generatedPieceId", type, title, status,
+          case_number AS "caseNumber", court, main_document_title AS "mainDocumentTitle",
+          main_document_html AS "mainDocumentHtml", protocol_data AS "protocolData",
+          attachments, notes, prepared_at AS "preparedAt", protocol_number AS "protocolNumber",
+          receipt_url AS "receiptUrl", submitted_at AS "submittedAt", created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM protocol_packages
+        WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId],
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Pacote de protocolo nao encontrado." });
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error("Error fetching protocol package:", error);
+      res.status(500).json({ error: "Falha ao buscar pacote de protocolo." });
+    }
+  });
+
+  app.post("/api/protocol-packages", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const userId = getUserId(req) || null;
+      const { title, caseId, generatedPieceId, caseNumber, court, mainDocumentTitle, mainDocumentHtml, protocolData, attachments, notes } = req.body;
+      if (!title || !mainDocumentHtml) return res.status(400).json({ error: "Titulo e peca principal sao obrigatorios." });
+
+      const result = await dbPool.query(
+        `INSERT INTO protocol_packages (
+          tenant_id, user_id, case_id, generated_piece_id, type, title, status,
+          case_number, court, main_document_title, main_document_html, protocol_data, attachments, notes
+        ) VALUES ($1, $2, $3, $4, 'intercorrente', $5, 'pronto_para_conferencia', $6, $7, $8, $9, $10, $11, $12)
+        RETURNING id, tenant_id AS "tenantId", user_id AS "userId", case_id AS "caseId",
+          generated_piece_id AS "generatedPieceId", type, title, status,
+          case_number AS "caseNumber", court, main_document_title AS "mainDocumentTitle",
+          protocol_data AS "protocolData", attachments, notes, prepared_at AS "preparedAt",
+          created_at AS "createdAt", updated_at AS "updatedAt"`,
+        [
+          tenantId,
+          userId,
+          caseId || null,
+          generatedPieceId || null,
+          title,
+          caseNumber || null,
+          court || null,
+          mainDocumentTitle || title,
+          mainDocumentHtml,
+          JSON.stringify(protocolData || {}),
+          JSON.stringify(Array.isArray(attachments) ? attachments : []),
+          notes || null,
+        ],
+      );
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error("Error creating protocol package:", error);
+      res.status(500).json({ error: "Falha ao criar pacote de protocolo." });
+    }
+  });
+
+  app.patch("/api/protocol-packages/:id/status", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const id = Number(req.params.id);
+      const { status, protocolNumber, receiptUrl } = req.body;
+      const allowedStatuses = ["preparando", "pronto_para_conferencia", "protocolado", "erro", "cancelado"];
+      if (!allowedStatuses.includes(status)) return res.status(400).json({ error: "Status invalido." });
+
+      const result = await dbPool.query(
+        `UPDATE protocol_packages
+        SET status = $1,
+          protocol_number = COALESCE($2, protocol_number),
+          receipt_url = COALESCE($3, receipt_url),
+          submitted_at = CASE WHEN $1 = 'protocolado' THEN COALESCE(submitted_at, NOW()) ELSE submitted_at END,
+          updated_at = NOW()
+        WHERE id = $4 AND tenant_id = $5
+        RETURNING id, tenant_id AS "tenantId", user_id AS "userId", case_id AS "caseId",
+          generated_piece_id AS "generatedPieceId", type, title, status,
+          case_number AS "caseNumber", court, main_document_title AS "mainDocumentTitle",
+          protocol_data AS "protocolData", attachments, notes, prepared_at AS "preparedAt",
+          protocol_number AS "protocolNumber", receipt_url AS "receiptUrl",
+          submitted_at AS "submittedAt", created_at AS "createdAt", updated_at AS "updatedAt"`,
+        [status, protocolNumber || null, receiptUrl || null, id, tenantId],
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Pacote de protocolo nao encontrado." });
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error("Error updating protocol package status:", error);
+      res.status(500).json({ error: "Falha ao atualizar status do protocolo." });
+    }
+  });
+
+  app.get("/api/protocol-packages/:id/pdpj/validate", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const id = Number(req.params.id);
+      const result = await dbPool.query(
+        `SELECT id, tenant_id AS "tenantId", case_id AS "caseId", title,
+          case_number AS "caseNumber", court, main_document_title AS "mainDocumentTitle",
+          main_document_html AS "mainDocumentHtml", protocol_data AS "protocolData", attachments
+        FROM protocol_packages WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId],
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Pacote de protocolo nao encontrado." });
+      res.json(pdpjService.validateIntercorrente(result.rows[0]));
+    } catch (error) {
+      console.error("Error validating PDPJ protocol package:", error);
+      res.status(500).json({ error: "Falha ao validar pacote PDPJ." });
+    }
+  });
+
+  app.post("/api/protocol-packages/:id/pdpj/submit", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const id = Number(req.params.id);
+      const result = await dbPool.query(
+        `SELECT id, tenant_id AS "tenantId", case_id AS "caseId", title,
+          case_number AS "caseNumber", court, main_document_title AS "mainDocumentTitle",
+          main_document_html AS "mainDocumentHtml", protocol_data AS "protocolData", attachments
+        FROM protocol_packages WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId],
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Pacote de protocolo nao encontrado." });
+      const submission = await pdpjService.submitIntercorrente(result.rows[0]);
+      res.json(submission);
+    } catch (error: any) {
+      console.error("Error submitting PDPJ protocol package:", error);
+      res.status(500).json({ error: error?.message || "Falha ao enviar pacote ao PDPJ." });
+    }
+  });
+
+  app.get("/api/pdpj/status", (_req: Request, res: Response) => {
+    res.json(pdpjService.getConfigStatus());
+  });
+
   // ==================== LEGAL SEARCH ====================
   const searchSchema = z.object({
     query: z.string().min(3, "A pesquisa deve ter pelo menos 3 caracteres"),
@@ -6757,9 +6953,12 @@ TÉCNICAS ANTI-DETECÇÃO:
       let extractedText: string | null = null;
       try {
         if (doc.mimeType === "application/pdf" || doc.filePath.toLowerCase().endsWith(".pdf")) {
-          const pdfParse = (await import("pdf-parse")).default;
-          const pdfData = await pdfParse(fileBuffer);
-          extractedText = pdfData.text?.trim() || null;
+          const { PDFParse } = await import("pdf-parse");
+          const parser = new (PDFParse as any)({ data: fileBuffer });
+          await parser.load();
+          const pdfData = await parser.getText();
+          extractedText = (typeof pdfData === "string" ? pdfData : pdfData?.text || "").trim() || null;
+          try { await parser.destroy(); } catch {}
         } else if (
           doc.mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
           doc.filePath.toLowerCase().endsWith(".docx")
@@ -6955,7 +7154,7 @@ TÉCNICAS ANTI-DETECÇÃO:
         model: "gpt-4o",
         messages: [
           {
-            role: "system",
+            role: "user",
             content: "Você é um assistente jurídico brasileiro. Gere um relatório executivo conciso sobre o estado dos processos de um devedor. Inclua: situação atual de cada processo, últimas movimentações relevantes, próximos passos recomendados, e avaliação geral da cobrança. Formate em Markdown. Seja objetivo e profissional."
           },
           {
@@ -6982,7 +7181,6 @@ TÉCNICAS ANTI-DETECÇÃO:
         return res.status(400).json({ error: "Texto é obrigatório" });
       }
 
-      const aiService = (await import("./services/ai")).default;
       let result: any;
       try {
         result = await aiService.chat([{
@@ -7857,7 +8055,7 @@ ${text}`
         console.log(`[Network Import] Extracted ${extractedText.length} chars from ${fileName}`);
         if (extractedText.trim()) {
           const aiRes = await aiService.chat([{
-            role: "system",
+            role: "user",
             content: `Você é um assistente que extrai contatos de documentos. O texto abaixo pode ser uma exportação do LinkedIn, lista de contatos, ou documento com nomes de pessoas.
 
 REGRAS IMPORTANTES:
@@ -7925,7 +8123,7 @@ Exemplo de saída:
 
       try {
         const aiRes = await aiService.chat([{
-          role: "system",
+          role: "user",
           content: `Você é um assistente que extrai contatos de texto. O texto abaixo contém nomes de pessoas, possivelmente com cargos e empresas.
 
 REGRAS:
@@ -8155,11 +8353,12 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = client.id;
         const { id, createdAt, ...clientData } = client;
         try {
-          const [inserted] = await db.insert(clientsTable).values({
+          const insertedRows = await db.insert(clientsTable).values({
             ...clientData,
             tenantId,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedRows[0];
           clientIdMap.set(oldId, inserted.id);
           stats.clients++;
         } catch (e: any) {
@@ -8176,12 +8375,13 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = contract.id;
         const { id, createdAt, ...contractData } = contract;
         try {
-          const [inserted] = await db.insert(contracts).values({
+          const insertedRows = await db.insert(contracts).values({
             ...contractData,
             tenantId,
             clientId: clientIdMap.get(contract.clientId) || contract.clientId,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedRows[0];
           contractIdMap.set(oldId, inserted.id);
           stats.contracts++;
         } catch (e: any) {
@@ -8193,13 +8393,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = cs.id;
         const { id, createdAt, ...caseData } = cs;
         try {
-          const [inserted] = await db.insert(cases).values({
+          const insertedRows = await db.insert(cases).values({
             ...caseData,
             tenantId,
             clientId: cs.clientId ? (clientIdMap.get(cs.clientId) || cs.clientId) : null,
             contractId: cs.contractId ? (contractIdMap.get(cs.contractId) || cs.contractId) : null,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedRows[0];
           caseIdMap.set(oldId, inserted.id);
           stats.cases++;
         } catch (e: any) {
@@ -8270,13 +8471,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = neg.id;
         const { id, createdAt, ...negData } = neg;
         try {
-          const [inserted] = await db.insert(negotiations).values({
+          const insertedRows = await db.insert(negotiations).values({
             ...negData,
             tenantId,
             clientId: neg.clientId ? (clientIdMap.get(neg.clientId) || neg.clientId) : null,
             debtorId: neg.debtorId || null,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedRows[0];
           negIdMap.set(oldId, inserted.id);
           stats.negotiations++;
         } catch (e: any) {
@@ -9023,6 +9225,29 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
+  app.get("/api/debtor-agreements/report/pdf", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { clientId, month, year } = req.query;
+      if (!clientId) return res.status(400).json({ error: "clientId is required" });
+
+      const report = await buildAgreementReportData(
+        parseInt(clientId as string),
+        tenantId,
+        month ? parseInt(month as string) : null,
+        year ? parseInt(year as string) : null
+      );
+      const pdfBuffer = await buildAgreementReportPdf(report);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="honorarios_${report.monthYear.replace("/", "_")}.pdf"`);
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error("Error generating agreements PDF report:", error);
+      res.status(500).json({ error: "Failed to generate PDF report" });
+    }
+  });
+
   // Helper (defined outside request handler via closure)
   function isActiveInMonth(a: any, month: number, year: number): boolean {
     if (!a.agreementDate) return false;
@@ -9066,6 +9291,140 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     return isActiveInMonth(a, targetMonth, targetYear) && !isInad
       ? Math.round(feeBase * feePercent / 100 * 100) / 100
       : 0;
+  }
+
+  async function buildAgreementReportData(clientId: number, tenantId: number, targetMonth: number | null, targetYear: number | null) {
+    const agreements = await storage.getDebtorAgreementsByClient(clientId, tenantId);
+    const { debtors: debtorsTable, clients: clientsTable } = await import("@shared/schema");
+    const debtorIds = Array.from(new Set(agreements.map((a: any) => a.debtorId)));
+    let debtorMap: Record<number, any> = {};
+    if (debtorIds.length > 0) {
+      const debtorsRows = await db.select().from(debtorsTable).where(inArray(debtorsTable.id, debtorIds as number[]));
+      debtorsRows.forEach((r: any) => { debtorMap[r.id] = r; });
+    }
+    const [clientRow] = await db.select().from(clientsTable).where(eq(clientsTable.id, clientId));
+    const monthYear = targetMonth && targetYear
+      ? `${String(targetMonth).padStart(2, "0")}/${targetYear}`
+      : new Date().toLocaleDateString("pt-BR", { month: "2-digit", year: "numeric" }).replace("/", "/");
+    const monthKey = targetMonth && targetYear ? makeMonthKey(targetMonth, targetYear) : null;
+    const monthlyPaymentMap = monthKey ? await getMonthlyPaymentMap(agreements.map((a: any) => a.id), [monthKey]) : {};
+
+    const rows = agreements.map((a: any) => {
+      const feePercent = parseFloat(a.feePercent || "10");
+      const installmentValue = parseFloat(a.installmentValue || "0");
+      const monthlyFee = targetMonth && targetYear
+        ? calculateMonthlyAgreementFee(a, targetMonth, targetYear, monthlyPaymentMap)
+        : Math.round(installmentValue * feePercent / 100 * 100) / 100;
+      return {
+        debtorName: debtorMap[a.debtorId]?.name || "",
+        agreementDate: a.agreementDate || "",
+        installments: a.isSinglePayment ? "UNICA" : (a.installmentsCount?.toString() || ""),
+        downPaymentValue: parseFloat(a.downPaymentValue || "0") || 0,
+        downPaymentDate: a.downPaymentDate || "",
+        installmentValue,
+        dueDay: a.dueDay ? `Dia ${a.dueDay}` : "",
+        feePercent,
+        feeAmount: parseFloat(a.feeAmount || "0") || 0,
+        feeStatus: a.feeStatus || "pendente",
+        monthlyFee,
+        status: a.status || "ativo",
+        notes: a.notes || "",
+      };
+    });
+    const total = rows.reduce((sum: number, row: any) => sum + (row.monthlyFee || 0), 0);
+    return { clientName: clientRow?.name || "Cliente", monthYear, rows, total: Math.round(total * 100) / 100 };
+  }
+
+  async function buildAgreementReportPdf(report: { clientName: string; monthYear: string; rows: any[]; total: number }): Promise<Buffer> {
+    const PDFDocument = (await import("pdfkit")).default;
+    const doc = new PDFDocument({
+      size: "A4",
+      layout: "landscape",
+      margins: { top: 48, bottom: 40, left: 32, right: 32 },
+      bufferPages: true,
+    });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const pdfReady = new Promise<Buffer>((resolve) => {
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+
+    const formatMoney = (value: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value || 0);
+    const formatShortDate = (value: string) => value ? new Date(`${value}T12:00:00`).toLocaleDateString("pt-BR") : "";
+    const tableLeft = 32;
+    const tableWidth = doc.page.width - 64;
+    const columns = [
+      { label: "NOME", key: "debtorName", width: 170 },
+      { label: "DATA", key: "agreementDate", width: 58 },
+      { label: "PARC.", key: "installments", width: 44 },
+      { label: "ENTRADA", key: "downPaymentValue", width: 72 },
+      { label: "DATA ENT.", key: "downPaymentDate", width: 58 },
+      { label: "PRESTACAO", key: "installmentValue", width: 72 },
+      { label: "VENC.", key: "dueDay", width: 52 },
+      { label: "%", key: "feePercent", width: 34 },
+      { label: "HON. MES", key: "monthlyFee", width: 72 },
+      { label: "STATUS", key: "status", width: 78 },
+    ];
+
+    const drawHeader = () => {
+      doc.font("Helvetica-Bold").fontSize(12).text("MARQUES & SERRA ADVOCACIA", tableLeft, 24, { align: "center", width: tableWidth });
+      doc.fontSize(11).text(`${report.clientName.toUpperCase()} - PLANILHA MENSAL DOS HONORARIOS - ${report.monthYear}`, tableLeft, 48, { align: "center", width: tableWidth });
+      doc.font("Helvetica").fontSize(8).text(`Gerado em ${new Date().toLocaleDateString("pt-BR")}`, tableLeft, 66, { align: "center", width: tableWidth });
+      doc.moveTo(tableLeft, 82).lineTo(tableLeft + tableWidth, 82).stroke("#333333");
+    };
+
+    const drawTableHeader = (y: number) => {
+      doc.rect(tableLeft, y, tableWidth, 18).fill("#f3f4f6");
+      doc.fillColor("#111827").font("Helvetica-Bold").fontSize(7);
+      let x = tableLeft;
+      for (const col of columns) {
+        doc.text(col.label, x + 3, y + 5, { width: col.width - 6, align: "left" });
+        x += col.width;
+      }
+      doc.fillColor("#000000");
+    };
+
+    drawHeader();
+    let y = 92;
+    drawTableHeader(y);
+    y += 18;
+
+    doc.font("Helvetica").fontSize(7);
+    for (const row of report.rows) {
+      if (y > doc.page.height - 72) {
+        doc.addPage();
+        drawHeader();
+        y = 92;
+        drawTableHeader(y);
+        y += 18;
+        doc.font("Helvetica").fontSize(7);
+      }
+      let x = tableLeft;
+      const values: Record<string, string> = {
+        debtorName: row.debtorName,
+        agreementDate: formatShortDate(row.agreementDate),
+        installments: row.installments,
+        downPaymentValue: row.downPaymentValue ? formatMoney(row.downPaymentValue) : "",
+        downPaymentDate: formatShortDate(row.downPaymentDate),
+        installmentValue: row.installmentValue ? formatMoney(row.installmentValue) : "",
+        dueDay: row.dueDay,
+        feePercent: `${row.feePercent}%`,
+        monthlyFee: formatMoney(row.monthlyFee),
+        status: row.status,
+      };
+      for (const col of columns) {
+        doc.text(values[col.key] || "", x + 3, y + 5, { width: col.width - 6, height: 12, ellipsis: true });
+        x += col.width;
+      }
+      doc.moveTo(tableLeft, y + 17).lineTo(tableLeft + tableWidth, y + 17).strokeColor("#e5e7eb").lineWidth(0.5).stroke();
+      doc.strokeColor("#000000").lineWidth(1);
+      y += 18;
+    }
+
+    y += 8;
+    doc.font("Helvetica-Bold").fontSize(9).text(`TOTAL HONORARIOS: ${formatMoney(report.total)}`, tableLeft, y, { align: "right", width: tableWidth });
+    doc.end();
+    return pdfReady;
   }
 
   // Send report via email and/or WhatsApp
@@ -9126,19 +9485,22 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       XLSX.utils.book_append_sheet(wb, ws, "Acordos");
       const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
       const fileName = `honorarios_${monthYear.replace("/", "_")}.xlsx`;
+      const pdfReport = await buildAgreementReportData(parseInt(clientId), tenantId, targetMonth, targetYear);
+      const pdfBuf = await buildAgreementReportPdf(pdfReport);
+      const pdfFileName = `honorarios_${pdfReport.monthYear.replace("/", "_")}.pdf`;
 
       const results: string[] = [];
       const htmlBody = `<p>Segue em anexo a planilha de honorários de <strong>${clientName}</strong> referente a <strong>${monthYear}</strong>.</p><p>Atenciosamente,<br>Marques &amp; Serra Advogados</p>`;
 
       for (const to of emailList) {
-        await emailService.sendEmail({ to, subject: `Honorários ${clientName} – ${monthYear}`, html: htmlBody, attachments: [{ filename: fileName, content: buf, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }] });
+        await emailService.sendEmail({ to, subject: `Honorários ${clientName} – ${monthYear}`, html: htmlBody, attachments: [{ filename: pdfFileName, content: pdfBuf, contentType: "application/pdf" }] });
         if (!results.includes("email")) results.push("email");
       }
 
       if (whatsappList.length > 0) {
         const { whatsappService } = await import("./services/whatsapp");
         for (const to of whatsappList) {
-          await whatsappService.sendDocument(to.replace(/\D/g, ""), buf, fileName, `Honorários ${clientName} – ${monthYear}`, tenantId, true);
+          await whatsappService.sendDocument(to.replace(/\D/g, ""), pdfBuf, pdfFileName, `Honorários ${clientName} – ${monthYear}`, tenantId, true);
         }
         results.push("whatsapp");
       }
