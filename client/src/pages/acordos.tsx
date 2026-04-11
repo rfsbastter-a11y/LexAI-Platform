@@ -248,7 +248,8 @@ export default function AcordosPage() {
       if (selectedClientId !== "all") params.set("clientId", selectedClientId);
       const qs = params.toString();
       const res = await fetch(`/api/debtor-agreements/monthly-statuses${qs ? `?${qs}` : ""}`, { headers: getAuthHeaders() });
-      return res.json();
+      const data = await res.json();
+      return Array.isArray(data) ? data : [];
     },
   });
 
@@ -378,6 +379,7 @@ export default function AcordosPage() {
   const currentMonthKey = useMemo(() => makeMonthKey(reportMonth, reportYear), [reportMonth, reportYear]);
 
   const monthlyStatusMap = useMemo(() => {
+    if (!Array.isArray(monthlyStatuses)) return {} as Record<number, Record<string, string>>;
     return monthlyStatuses.reduce((acc: Record<number, Record<string, string>>, row: any) => {
       if (!acc[row.agreementId]) acc[row.agreementId] = {};
       acc[row.agreementId][row.month] = row.status;
