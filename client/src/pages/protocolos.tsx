@@ -78,6 +78,18 @@ function downloadText(filename: string, text: string, type = "text/plain") {
   URL.revokeObjectURL(url);
 }
 
+async function downloadPackagePdf(id: number, title: string) {
+  const response = await fetch(protocolPackagesApi.mainDocumentPdfUrl(id), { credentials: "include" });
+  if (!response.ok) throw new Error("Falha ao gerar PDF");
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${(title || "peticao-intercorrente").replace(/[^a-zA-Z0-9._-]+/g, "_")}.pdf`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 const JUS_BR_PETITION_URL = "https://portaldeservicos.pdpj.jus.br/peticao";
 
 export default function ProtocolosPage() {
@@ -297,13 +309,15 @@ export default function ProtocolosPage() {
                     </CardHeader>
                     <CardContent className="space-y-2">
                       <div className="flex flex-wrap gap-2">
-                        <Button size="sm" variant="outline" onClick={() => copy(selectedPackage.mainDocumentHtml || "", "Peca copiada.")}>
-                          <Copy className="w-4 h-4 mr-2" />
-                          Copiar HTML
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => downloadText(`${selectedPackage.title || "peticao"}.html`, selectedPackage.mainDocumentHtml || "", "text/html")}>
+                        <Button size="sm" variant="outline" onClick={async () => {
+                          try {
+                            await downloadPackagePdf(selectedPackage.id, selectedPackage.mainDocumentTitle || selectedPackage.title);
+                          } catch (err) {
+                            toast({ title: err instanceof Error ? err.message : "Erro ao baixar PDF", variant: "destructive" });
+                          }
+                        }}>
                           <Download className="w-4 h-4 mr-2" />
-                          Baixar HTML
+                          Baixar PDF para Jus.br
                         </Button>
                       </div>
                       <div className="border rounded-md p-3 text-sm bg-muted/30 max-h-48 overflow-auto" dangerouslySetInnerHTML={{ __html: selectedPackage.mainDocumentHtml || "" }} />

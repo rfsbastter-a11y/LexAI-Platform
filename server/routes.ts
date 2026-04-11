@@ -36,6 +36,68 @@ function getUserId(req: Request): number {
   return req.tokenUser?.id || req.session?.user?.id || 0;
 }
 
+function htmlToPlainText(html: string): string {
+  return String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|h[1-6]|li)>/gi, "\n\n")
+    .replace(/<li[^>]*>/gi, "- ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function buildProtocolMainDocumentPdf(contentHtml: string, title: string): Promise<Buffer> {
+  const PDFDocument = (await import("pdfkit")).default;
+  const doc = new PDFDocument({
+    size: "A4",
+    margins: { top: 96, bottom: 72, left: 72, right: 72 },
+    bufferPages: true,
+  });
+  const chunks: Buffer[] = [];
+  doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const pdfReady = new Promise<Buffer>((resolve) => {
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+  });
+
+  const drawHeaderFooter = () => {
+    const pageWidth = doc.page.width;
+    doc.font("Helvetica-Bold").fontSize(13).text("MARQUES & SERRA ADVOCACIA", 72, 36, { align: "center", width: pageWidth - 144 });
+    doc.font("Helvetica").fontSize(8).text("Documento gerado pelo LexAI", 72, 55, { align: "center", width: pageWidth - 144 });
+    doc.moveTo(72, 72).lineTo(pageWidth - 72, 72).stroke("#333333");
+    const footerY = doc.page.height - 48;
+    doc.moveTo(72, footerY).lineTo(pageWidth - 72, footerY).stroke("#333333");
+    doc.font("Helvetica").fontSize(7).text(`Gerado em ${new Date().toLocaleDateString("pt-BR")}`, 72, footerY + 10, { align: "center", width: pageWidth - 144 });
+  };
+
+  drawHeaderFooter();
+  doc.y = 104;
+  doc.font("Helvetica-Bold").fontSize(12).text(title || "Peticao intercorrente", { align: "center" });
+  doc.moveDown(1);
+
+  const text = htmlToPlainText(contentHtml);
+  const paragraphs = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  for (const paragraph of paragraphs) {
+    if (doc.y > doc.page.height - 100) {
+      doc.addPage();
+      drawHeaderFooter();
+      doc.y = 104;
+    }
+    const isHeading = paragraph === paragraph.toUpperCase() && paragraph.length < 120;
+    doc.font(isHeading ? "Helvetica-Bold" : "Helvetica").fontSize(isHeading ? 11 : 10);
+    doc.text(paragraph, { align: isHeading ? "left" : "justify", lineGap: 2 });
+    doc.moveDown(0.7);
+  }
+
+  doc.end();
+  return pdfReady;
+}
+
 async function ensureProtocolPackagesTable() {
   await dbPool.query(`
     CREATE TABLE IF NOT EXISTS protocol_packages (
@@ -6036,6 +6098,33 @@ TÉCNICAS ANTI-DETECÇÃO:
     } catch (error) {
       console.error("Error fetching protocol package:", error);
       res.status(500).json({ error: "Falha ao buscar pacote de protocolo." });
+    }
+  });
+
+  app.get("/api/protocol-packages/:id/main-document/pdf", async (req: Request, res: Response) => {
+    try {
+      await ensureProtocolPackagesTable();
+      const tenantId = getTenantId(req);
+      const id = Number(req.params.id);
+      const result = await dbPool.query(
+        `SELECT title, main_document_title AS "mainDocumentTitle", main_document_html AS "mainDocumentHtml"
+        FROM protocol_packages
+        WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId],
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Pacote de protocolo nao encontrado." });
+
+      const pkg = result.rows[0];
+      const title = pkg.mainDocumentTitle || pkg.title || "peticao-intercorrente";
+      const pdf = await buildProtocolMainDocumentPdf(pkg.mainDocumentHtml || "", title);
+      const safeName = String(title).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 90) || "peticao";
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}.pdf"`);
+      res.send(pdf);
+    } catch (error) {
+      console.error("Error generating protocol PDF:", error);
+      res.status(500).json({ error: "Falha ao gerar PDF da peca principal." });
     }
   });
 

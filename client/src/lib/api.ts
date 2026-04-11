@@ -310,6 +310,7 @@ export const documentsApi = {
 export const protocolPackagesApi = {
   getAll: () => fetchApi<any[]>("/protocol-packages"),
   getById: (id: number) => fetchApi<any>(`/protocol-packages/${id}`),
+  mainDocumentPdfUrl: (id: number) => `${API_BASE}/protocol-packages/${id}/main-document/pdf`,
   validatePdpj: (id: number) => fetchApi<any>(`/protocol-packages/${id}/pdpj/validate`),
   submitPdpj: (id: number) => fetchApi<any>(`/protocol-packages/${id}/pdpj/submit`, { method: "POST" }),
   createIntercorrente: (data: any) => fetchApi<any>("/protocol-packages", {
