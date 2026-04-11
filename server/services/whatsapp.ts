@@ -1,4 +1,4 @@
-import makeWASocket, { Browsers, DisconnectReason, WASocket, type AuthenticationCreds, type SignalDataTypeMap, initAuthCreds, proto, BufferJSON, fetchLatestBaileysVersion } from "@whiskeysockets/baileys";
+import type { AuthenticationCreds, SignalDataTypeMap, WASocket } from "@whiskeysockets/baileys";
 import { storage } from "../storage";
 import { db } from "../db";
 import { eq, and, isNull, isNotNull, inArray, gte, desc, sql } from "drizzle-orm";
@@ -33,6 +33,20 @@ const AUTH_DIR = "./whatsapp_auth";
 
 const MANUAL_SILENCE_DURATION_MS = 30 * 60 * 1000;
 const manualSendSilenceMap = new Map<string, number>();
+
+type BaileysModule = typeof import("@whiskeysockets/baileys");
+
+let baileysModulePromise: Promise<BaileysModule> | null = null;
+const nativeImport = new Function("specifier", "return import(specifier)") as (
+  specifier: string,
+) => Promise<BaileysModule>;
+
+function loadBaileys(): Promise<BaileysModule> {
+  if (!baileysModulePromise) {
+    baileysModulePromise = nativeImport("@whiskeysockets/baileys");
+  }
+  return baileysModulePromise;
+}
 
 function extractPhoneFromJid(jid: string): string {
   if (jid.endsWith("@s.whatsapp.net")) {
@@ -295,6 +309,8 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 async function usePostgresAuthState(tenantId: number) {
+  const { BufferJSON, initAuthCreds, proto } = await loadBaileys();
+
   const writeData = async (key: string, data: any) => {
     const serialized = JSON.parse(JSON.stringify(data, BufferJSON.replacer));
     await db.insert(whatsappAuthState)
@@ -553,6 +569,8 @@ export const whatsappService = {
     statusMessage = "Conectando ao WhatsApp...";
 
     try {
+      const { Browsers, DisconnectReason, default: makeWASocket, fetchLatestBaileysVersion, proto } = await loadBaileys();
+
       if (isManualConnect) {
         await clearPostgresCredentials(tenantId);
         if (fs.existsSync(AUTH_DIR)) {
@@ -930,7 +948,7 @@ export const whatsappService = {
                     if (!batch || batch.docs.length === 0) return;
 
                     try {
-                      const { downloadMediaMessage, downloadContentFromMessage } = await import("@whiskeysockets/baileys");
+                      const { downloadMediaMessage, downloadContentFromMessage } = await loadBaileys();
                       const { secretaryService } = await import("./secretary");
 
                       for (const entry of batch.docs) {
@@ -1031,7 +1049,7 @@ export const whatsappService = {
                   const mergedText = batch.texts.join("\n");
 
                   if (batch.mediaItems.length > 0 && sock) {
-                    const { downloadMediaMessage, downloadContentFromMessage } = await import("@whiskeysockets/baileys");
+                    const { downloadMediaMessage, downloadContentFromMessage } = await loadBaileys();
 
                     const downloadOneMedia = async (mMsg: any, mType: string): Promise<{ buffer: Buffer | null, mInner: any, mType: string, mMsg: any }> => {
                       const mInner = mMsg.message?.ephemeralMessage?.message
