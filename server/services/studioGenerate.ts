@@ -2440,16 +2440,20 @@ NUNCA inverta a lógica do caso. NUNCA escreva o recorrente errado. O diagnósti
     .replace(/Brasília,?\s*nesta data\.?/gi, `Brasília, ${brasiliaDate}.`)
     .replace(/<blockquote(?!\s+style)>/gi, '<blockquote style="margin-left: 4cm;">');
 
-  await storage.createAiGenerationLog({
-    tenantId: params.tenantId || 1,
-    userId: 1,
-    generationType: "studio_piece",
-    prompt: prompt.substring(0, 500),
-    citations: response.citations as any,
-    modelUsed,
-    tokensUsed: response.tokensUsed,
-    outputPreview: response.content.substring(0, 500),
-  });
+  try {
+    await storage.createAiGenerationLog({
+      tenantId: params.tenantId || 1,
+      userId: 5,
+      generationType: "studio_piece",
+      prompt: prompt.substring(0, 500),
+      citations: response.citations as any,
+      modelUsed,
+      tokensUsed: response.tokensUsed,
+      outputPreview: response.content.substring(0, 500),
+    });
+  } catch (logErr) {
+    console.warn("[Studio] Falha ao registrar log de geração (não crítico):", logErr);
+  }
 
     return {
       contentHtml,

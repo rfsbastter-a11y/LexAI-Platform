@@ -2852,16 +2852,20 @@ Seja objetivo e use números reais dos dados. Responda em português. Formate co
 
       const response = await aiService.chat(messages, contextDocuments);
       
-      await storage.createAiGenerationLog({
-        tenantId: 1,
-        userId: 1,
-        generationType: "chat",
-        prompt: messages[messages.length - 1]?.content || "",
-        citations: response.citations as any,
-        modelUsed: "gpt-4o",
-        tokensUsed: response.tokensUsed,
-        outputPreview: response.content.substring(0, 500),
-      });
+      try {
+        await storage.createAiGenerationLog({
+          tenantId: 1,
+          userId: 5,
+          generationType: "chat",
+          prompt: messages[messages.length - 1]?.content || "",
+          citations: response.citations as any,
+          modelUsed: "gpt-4o",
+          tokensUsed: response.tokensUsed,
+          outputPreview: response.content.substring(0, 500),
+        });
+      } catch (logErr) {
+        console.warn("[AI] Falha ao registrar log (não crítico):", logErr);
+      }
 
       res.json(response);
     } catch (error) {
@@ -2970,16 +2974,20 @@ ${contextData}`
 
       const response = await aiService.chat(messages);
 
-      await storage.createAiGenerationLog({
-        tenantId,
-        userId: 1,
-        generationType: "daily_briefing",
-        prompt: "Daily briefing generation",
-        citations: response.citations as any,
-        modelUsed: "gpt-4o",
-        tokensUsed: response.tokensUsed,
-        outputPreview: response.content.substring(0, 500),
-      });
+      try {
+        await storage.createAiGenerationLog({
+          tenantId,
+          userId: 5,
+          generationType: "daily_briefing",
+          prompt: "Daily briefing generation",
+          citations: response.citations as any,
+          modelUsed: "gpt-4o",
+          tokensUsed: response.tokensUsed,
+          outputPreview: response.content.substring(0, 500),
+        });
+      } catch (logErr) {
+        console.warn("[AI] Falha ao registrar log (não crítico):", logErr);
+      }
 
       res.json({ briefing: response.content });
     } catch (error) {
@@ -3060,16 +3068,20 @@ ${contextSummary}`
 
       const response = await aiService.chat(messages);
 
-      await storage.createAiGenerationLog({
-        tenantId,
-        userId: 1,
-        generationType: "strategic_analysis",
-        prompt: `Strategic analysis for client ${client.name} (ID: ${clientId})`,
-        citations: response.citations as any,
-        modelUsed: "gpt-4o",
-        tokensUsed: response.tokensUsed,
-        outputPreview: response.content.substring(0, 500),
-      });
+      try {
+        await storage.createAiGenerationLog({
+          tenantId,
+          userId: 5,
+          generationType: "strategic_analysis",
+          prompt: `Strategic analysis for client ${client.name} (ID: ${clientId})`,
+          citations: response.citations as any,
+          modelUsed: "gpt-4o",
+          tokensUsed: response.tokensUsed,
+          outputPreview: response.content.substring(0, 500),
+        });
+      } catch (logErr) {
+        console.warn("[AI] Falha ao registrar log (não crítico):", logErr);
+      }
 
       res.json({ analysis: response.content });
     } catch (error) {
@@ -3488,16 +3500,20 @@ Return JSON only with these three fields.`;
         additionalInstructions
       );
 
-      await storage.createAiGenerationLog({
-        tenantId: 1,
-        userId: 1,
-        generationType: "peca",
-        prompt: `Gerar ${pieceType} para: ${intimationText}`,
-        citations: response.citations as any,
-        modelUsed: "gpt-4o",
-        tokensUsed: response.tokensUsed,
-        outputPreview: response.content.substring(0, 500),
-      });
+      try {
+        await storage.createAiGenerationLog({
+          tenantId: 1,
+          userId: 5,
+          generationType: "peca",
+          prompt: `Gerar ${pieceType} para: ${intimationText}`,
+          citations: response.citations as any,
+          modelUsed: "gpt-4o",
+          tokensUsed: response.tokensUsed,
+          outputPreview: response.content.substring(0, 500),
+        });
+      } catch (logErr) {
+        console.warn("[AI] Falha ao registrar log (não crítico):", logErr);
+      }
 
       res.json(response);
     } catch (error) {
