@@ -4,7 +4,6 @@ import { useLocation } from "wouter";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -73,6 +72,49 @@ const statusConfig: Record<string, { label: string; color: string; icon: any }> 
   ativo: { label: "Ativo", color: "bg-emerald-100 text-emerald-700 border-emerald-200", icon: CheckCircle2 },
   quitado: { label: "Quitado", color: "bg-blue-100 text-blue-700 border-blue-200", icon: CheckCircle2 },
   inadimplente: { label: "Inadimplente", color: "bg-red-100 text-red-700 border-red-200", icon: AlertCircle },
+  encerrado: { label: "Encerrado", color: "bg-gray-100 text-gray-700 border-gray-200", icon: CheckCircle2 },
+  suspenso: { label: "Suspenso", color: "bg-amber-100 text-amber-700 border-amber-200", icon: Clock },
+};
+
+const monthlyStatusConfig: Record<string, { label: string; color: string; icon: any }> = {
+  pago: { label: "Pago", color: "bg-green-100 text-green-700 border-green-300 hover:bg-green-200", icon: CheckCircle2 },
+  inadimplente: { label: "Inadimplente", color: "bg-red-100 text-red-700 border-red-300 hover:bg-red-200", icon: AlertCircle },
+  pendente: { label: "Pendente", color: "bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100", icon: Clock },
+};
+
+const makeMonthKey = (month: string | number, year: string | number) => `${year}-${String(month).padStart(2, "0")}`;
+
+const addMonthsToKey = (monthKey: string, offset: number) => {
+  const [year, month] = monthKey.split("-").map(Number);
+  const date = new Date(year, month - 1 + offset, 1);
+  return makeMonthKey(date.getMonth() + 1, date.getFullYear());
+};
+
+const toggleAgreementStatus = (current: string) => {
+  const cycle = ["ativo", "inadimplente", "encerrado"];
+  const idx = cycle.indexOf(current);
+  return cycle[(idx + 1) % cycle.length];
+};
+
+const toggleMonthlyStatus = (current: string) => {
+  const cycle = ["pendente", "pago", "inadimplente"];
+  const idx = cycle.indexOf(current);
+  return cycle[(idx + 1) % cycle.length];
+};
+
+const calculateAgreementFeeForMonth = (agreement: any, month: string, year: string, monthlyStatus?: string) => {
+  const targetMonth = parseInt(month);
+  const targetYear = parseInt(year);
+  const downDate = agreement.downPaymentDate ? new Date(`${agreement.downPaymentDate}T12:00:00`) : null;
+  const isEntryMonth = !!downDate
+    && downDate.getMonth() + 1 === targetMonth
+    && downDate.getFullYear() === targetYear;
+  const feeBase = isEntryMonth
+    ? parseFloat(agreement.downPaymentValue || "0")
+    : parseFloat(agreement.installmentValue || "0");
+  const feePct = parseFloat(agreement.feePercent || "10");
+  const isInad = agreement.status === "inadimplente" || monthlyStatus === "inadimplente";
+  return isInad ? 0 : Math.round(feeBase * feePct / 100 * 100) / 100;
 };
 
 type AgreementForm = {
@@ -199,6 +241,17 @@ export default function AcordosPage() {
     },
   });
 
+  const { data: monthlyStatuses = EMPTY } = useQuery<any[]>({
+    queryKey: ["/api/debtor-agreements/monthly-statuses", selectedClientId],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (selectedClientId !== "all") params.set("clientId", selectedClientId);
+      const qs = params.toString();
+      const res = await fetch(`/api/debtor-agreements/monthly-statuses${qs ? `?${qs}` : ""}`, { headers: getAuthHeaders() });
+      return res.json();
+    },
+  });
+
   const debtorsForClient = useQuery<any[]>({
     queryKey: ["/api/clients", form.clientId, "debtors"],
     enabled: !!form.clientId,
@@ -285,12 +338,62 @@ export default function AcordosPage() {
     onError: () => toast({ title: "Erro ao atualizar status", variant: "destructive" }),
   });
 
+  const toggleAgreementStatusMutation = useMutation({
+    mutationFn: async ({ id, status }: { id: number; status: string }) => {
+      const res = await fetch(`/api/debtor-agreements/${id}/status`, {
+        method: "PATCH",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!res.ok) throw new Error();
+      return res.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/debtor-agreements"] }),
+    onError: () => toast({ title: "Erro ao atualizar status do acordo", variant: "destructive" }),
+  });
+
+  const toggleMonthlyStatusMutation = useMutation({
+    mutationFn: async ({ id, month, status }: { id: number; month: string; status: string }) => {
+      const res = await fetch(`/api/debtor-agreements/${id}/monthly-status`, {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ month, status }),
+      });
+      if (!res.ok) throw new Error();
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/debtor-agreements/monthly-statuses"] });
+    },
+    onError: () => toast({ title: "Erro ao atualizar status mensal", variant: "destructive" }),
+  });
+
   // Computed
   const monthlyFee = useMemo(() => {
     const inst = parseFloat(form.installmentValue.replace(",", ".")) || 0;
     const pct = parseFloat(form.feePercent.replace(",", ".")) || 0;
     return Math.round(inst * pct / 100 * 100) / 100;
   }, [form.installmentValue, form.feePercent]);
+
+  const currentMonthKey = useMemo(() => makeMonthKey(reportMonth, reportYear), [reportMonth, reportYear]);
+
+  const monthlyStatusMap = useMemo(() => {
+    return monthlyStatuses.reduce((acc: Record<number, Record<string, string>>, row: any) => {
+      if (!acc[row.agreementId]) acc[row.agreementId] = {};
+      acc[row.agreementId][row.month] = row.status;
+      return acc;
+    }, {});
+  }, [monthlyStatuses]);
+
+  const countConsecutiveInad = (agreementId: number, monthKey: string) => {
+    let count = 0;
+    for (let i = 0; i < 12; i++) {
+      const key = addMonthsToKey(monthKey, -i);
+      if (monthlyStatusMap[agreementId]?.[key] !== "inadimplente") break;
+      count++;
+    }
+    return count;
+  };
 
   const filtered = useMemo(() => {
     return agreements.filter((a: any) => {
@@ -303,12 +406,10 @@ export default function AcordosPage() {
   const stats = useMemo(() => {
     const ativos = agreements.filter((a: any) => a.status === "ativo");
     const totalHonorarios = ativos.reduce((sum: number, a: any) => {
-      const inst = parseFloat(a.installmentValue || "0");
-      const pct = parseFloat(a.feePercent || "10");
-      return sum + Math.round(inst * pct / 100 * 100) / 100;
+      return sum + calculateAgreementFeeForMonth(a, reportMonth, reportYear, monthlyStatusMap[a.id]?.[currentMonthKey]);
     }, 0);
     return { total: agreements.length, ativos: ativos.length, totalHonorarios };
-  }, [agreements]);
+  }, [agreements, currentMonthKey, monthlyStatusMap, reportMonth, reportYear]);
 
   function buildPayload() {
     return {
@@ -572,6 +673,8 @@ export default function AcordosPage() {
               <SelectItem value="ativo">Ativo</SelectItem>
               <SelectItem value="quitado">Quitado</SelectItem>
               <SelectItem value="inadimplente">Inadimplente</SelectItem>
+              <SelectItem value="encerrado">Encerrado</SelectItem>
+              <SelectItem value="suspenso">Suspenso</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -603,19 +706,23 @@ export default function AcordosPage() {
                     <TableHead>Vencimento</TableHead>
                     <TableHead>Honorários/Mês</TableHead>
                     <TableHead>Hon. Status</TableHead>
+                    <TableHead>Mes Atual</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.map((a: any) => {
-                    const instVal = parseFloat(a.installmentValue || "0");
-                    const feePct = parseFloat(a.feePercent || "10");
-                    const monthlyFeeVal = Math.round(instVal * feePct / 100 * 100) / 100;
+                    const monthlyStatus = monthlyStatusMap[a.id]?.[currentMonthKey] || "pendente";
+                    const monthlyFeeVal = calculateAgreementFeeForMonth(a, reportMonth, reportYear, monthlyStatus);
                     const cfg = statusConfig[a.status] || statusConfig.ativo;
                     const StatusIcon = cfg.icon;
+                    const monthlyCfg = monthlyStatusConfig[monthlyStatus] || monthlyStatusConfig.pendente;
+                    const MonthlyIcon = monthlyCfg.icon;
+                    const consecutiveInad = countConsecutiveInad(a.id, currentMonthKey);
+                    const rowClass = consecutiveInad >= 3 ? "bg-red-50 border-l-4 border-red-500" : "";
                     return (
-                      <TableRow key={a.id} data-testid={`row-acordo-${a.id}`}>
+                      <TableRow key={a.id} className={rowClass} data-testid={`row-acordo-${a.id}`}>
                         <TableCell className="font-medium">{a.debtorName || "—"}</TableCell>
                         <TableCell>{formatDate(a.agreementDate)}</TableCell>
                         <TableCell>{a.isSinglePayment ? "ÚNICA" : (a.installmentsCount || "—")}</TableCell>
@@ -635,10 +742,27 @@ export default function AcordosPage() {
                           </button>
                         </TableCell>
                         <TableCell>
-                          <Badge className={`${cfg.color} border text-xs gap-1`}>
+                          <button
+                            onClick={() => toggleMonthlyStatusMutation.mutate({ id: a.id, month: currentMonthKey, status: toggleMonthlyStatus(monthlyStatus) })}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border transition-colors ${monthlyCfg.color}`}
+                            data-testid={`button-monthly-status-${a.id}`}
+                            title={`Clique para alternar ${currentMonthKey}`}
+                          >
+                            <MonthlyIcon className="w-3 h-3" />
+                            {consecutiveInad >= 3 && <AlertCircle className="w-3 h-3 text-red-600" />}
+                            {monthlyCfg.label}
+                          </button>
+                        </TableCell>
+                        <TableCell>
+                          <button
+                            onClick={() => toggleAgreementStatusMutation.mutate({ id: a.id, status: toggleAgreementStatus(a.status || "ativo") })}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border transition-colors ${cfg.color}`}
+                            data-testid={`button-status-${a.id}`}
+                            title="Clique para alternar"
+                          >
                             <StatusIcon className="w-3 h-3" />
                             {cfg.label}
-                          </Badge>
+                          </button>
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">

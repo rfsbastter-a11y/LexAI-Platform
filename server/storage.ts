@@ -58,6 +58,8 @@ import {
   type InsertProspectionChatMessage, type ProspectionChatMessage,
   debtorAgreements,
   type InsertDebtorAgreement, type DebtorAgreement,
+  agreementMonthlyStatuses,
+  type InsertAgreementMonthlyStatus, type AgreementMonthlyStatus,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -249,6 +251,8 @@ export interface IStorage {
   createDebtorAgreement(data: InsertDebtorAgreement): Promise<DebtorAgreement>;
   updateDebtorAgreement(id: number, tenantId: number, data: Partial<InsertDebtorAgreement>): Promise<DebtorAgreement | undefined>;
   deleteDebtorAgreement(id: number, tenantId: number): Promise<void>;
+  getAgreementMonthlyStatuses(agreementIds: number[], months?: string[]): Promise<AgreementMonthlyStatus[]>;
+  upsertAgreementMonthlyStatus(data: InsertAgreementMonthlyStatus): Promise<AgreementMonthlyStatus>;
 
   // Negotiations
   getNegotiation(id: number): Promise<Negotiation | undefined>;
@@ -1449,7 +1453,30 @@ class DatabaseStorage implements IStorage {
   }
 
   async deleteDebtorAgreement(id: number, tenantId: number): Promise<void> {
+    const existing = await this.getDebtorAgreement(id, tenantId);
+    if (!existing) return;
+    await db.delete(agreementMonthlyStatuses).where(eq(agreementMonthlyStatuses.agreementId, id));
     await db.delete(debtorAgreements).where(and(eq(debtorAgreements.id, id), eq(debtorAgreements.tenantId, tenantId)));
+  }
+
+  async getAgreementMonthlyStatuses(agreementIds: number[], months?: string[]): Promise<AgreementMonthlyStatus[]> {
+    if (agreementIds.length === 0) return [];
+    const conditions = [inArray(agreementMonthlyStatuses.agreementId, agreementIds)];
+    if (months && months.length > 0) {
+      conditions.push(inArray(agreementMonthlyStatuses.month, months));
+    }
+    return db.select().from(agreementMonthlyStatuses).where(and(...conditions));
+  }
+
+  async upsertAgreementMonthlyStatus(data: InsertAgreementMonthlyStatus): Promise<AgreementMonthlyStatus> {
+    const [status] = await db.insert(agreementMonthlyStatuses)
+      .values(data)
+      .onConflictDoUpdate({
+        target: [agreementMonthlyStatuses.agreementId, agreementMonthlyStatuses.month],
+        set: { status: data.status },
+      })
+      .returning();
+    return status;
   }
 
   // Negotiations
