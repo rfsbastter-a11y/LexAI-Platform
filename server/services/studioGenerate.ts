@@ -2442,7 +2442,7 @@ NUNCA inverta a lógica do caso. NUNCA escreva o recorrente errado. O diagnósti
 
   await storage.createAiGenerationLog({
     tenantId: params.tenantId || 1,
-    userId: 1,
+    userId: 5,
     generationType: "studio_piece",
     prompt: prompt.substring(0, 500),
     citations: response.citations as any,
