@@ -2883,7 +2883,7 @@ Seja objetivo e use números reais dos dados. Responda em português. Formate co
       
       await storage.createAiGenerationLog({
         tenantId: 1,
-        userId: 1,
+        userId: 5,
         generationType: "chat",
         prompt: messages[messages.length - 1]?.content || "",
         citations: response.citations as any,
@@ -3001,7 +3001,7 @@ ${contextData}`
 
       await storage.createAiGenerationLog({
         tenantId,
-        userId: 1,
+        userId: 5,
         generationType: "daily_briefing",
         prompt: "Daily briefing generation",
         citations: response.citations as any,
@@ -3091,7 +3091,7 @@ ${contextSummary}`
 
       await storage.createAiGenerationLog({
         tenantId,
-        userId: 1,
+        userId: 5,
         generationType: "strategic_analysis",
         prompt: `Strategic analysis for client ${client.name} (ID: ${clientId})`,
         citations: response.citations as any,
@@ -3519,7 +3519,7 @@ Return JSON only with these three fields.`;
 
       await storage.createAiGenerationLog({
         tenantId: 1,
-        userId: 1,
+        userId: 5,
         generationType: "peca",
         prompt: `Gerar ${pieceType} para: ${intimationText}`,
         citations: response.citations as any,
