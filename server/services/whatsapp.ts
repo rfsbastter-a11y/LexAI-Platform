@@ -265,9 +265,11 @@ async function resolvePhoneToLidJid(phoneNumber: string): Promise<string | null>
     }
   }
 
-  if (sock && connectionStatus === "connected") {
+  const activeSock = sock;
+  if (activeSock && connectionStatus === "connected") {
     try {
-      const [result] = await sock.onWhatsApp(`+${cleaned}`);
+      const whatsappLookup = await activeSock.onWhatsApp(`+${cleaned}`);
+      const result = whatsappLookup?.[0];
       if (result?.exists && result?.jid) {
         console.log(`[WhatsApp] onWhatsApp resolved ${cleaned} → ${result.jid}`);
         if (result.jid.endsWith("@lid")) {
@@ -1105,7 +1107,8 @@ export const whatsappService = {
             const hasText = content && !skipTypes.includes(content) && content !== "[Mídia]";
 
             if (isGroup) {
-              const isArchivableMedia = hasProcessableMedia && (mediaType === "document" || mediaType === "image") && sock;
+              const groupSock = sock;
+              const isArchivableMedia = hasProcessableMedia && (mediaType === "document" || mediaType === "image") && groupSock;
               if (isArchivableMedia) {
                 let groupAllowed = false;
                 const cached = groupAuthCache.get(jid);
@@ -1113,7 +1116,7 @@ export const whatsappService = {
                   groupAllowed = cached.allowed;
                 } else {
                   try {
-                    const metadata = await sock.groupMetadata(jid);
+                    const metadata = await groupSock.groupMetadata(jid);
                     const groupSubject = (metadata?.subject || "").toLowerCase();
                     groupAllowed = groupSubject.includes("jurídico") || groupSubject.includes("juridico") || groupSubject.includes("mobilar");
                     groupAuthCache.set(jid, { allowed: groupAllowed, expires: Date.now() + 3600000 });

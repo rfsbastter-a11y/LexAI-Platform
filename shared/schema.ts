@@ -463,6 +463,36 @@ export const insertSecretaryActionSchema = createInsertSchema(secretaryActions).
 export type InsertSecretaryAction = z.infer<typeof insertSecretaryActionSchema>;
 export type SecretaryAction = typeof secretaryActions.$inferSelect;
 
+export const secretaryDelegatedTasks = pgTable("secretary_delegated_tasks", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenants.id),
+  requesterJid: text("requester_jid").notNull(),
+  requesterName: text("requester_name"),
+  targetJid: text("target_jid").notNull(),
+  targetPhone: text("target_phone").notNull(),
+  targetName: text("target_name"),
+  taskType: text("task_type").notNull().default("contato"),
+  objective: text("objective").notNull(),
+  initialMessage: text("initial_message").notNull(),
+  status: text("status").notNull().default("awaiting_response"),
+  requestedDate: text("requested_date"),
+  requestedTimeStart: text("requested_time_start"),
+  requestedTimeEnd: text("requested_time_end"),
+  lastInboundMessage: text("last_inbound_message"),
+  resultSummary: text("result_summary"),
+  relatedAgendaEventId: integer("related_agenda_event_id").references(() => agendaEvents.id),
+  attempts: integer("attempts").notNull().default(1),
+  slaMinutes: integer("sla_minutes").notNull().default(120),
+  nextFollowUpAt: timestamp("next_follow_up_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+});
+
+export const insertSecretaryDelegatedTaskSchema = createInsertSchema(secretaryDelegatedTasks).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertSecretaryDelegatedTask = z.infer<typeof insertSecretaryDelegatedTaskSchema>;
+export type SecretaryDelegatedTask = typeof secretaryDelegatedTasks.$inferSelect;
+
 export const agentRuns = pgTable("agent_runs", {
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").notNull().references(() => tenants.id),

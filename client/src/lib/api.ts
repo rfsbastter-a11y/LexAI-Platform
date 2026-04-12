@@ -152,6 +152,8 @@ export const aiApi = {
     caseNumber?: string;
     court?: string;
     caseClass?: string;
+    classeNome?: string;
+    vara?: string;
     intimationDate?: string;
   }) =>
     fetchApi<{
@@ -268,6 +270,16 @@ export const secretaryApi = {
   }),
   getActions: (limit = 50) => fetchApi<any[]>(`/secretary/actions?limit=${limit}`),
   getPending: () => fetchApi<any[]>("/secretary/pending"),
+  getDelegatedTasks: (status?: string, limit = 50) => fetchApi<any[]>(`/secretary/delegated-tasks?limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}`),
+  followUpDelegatedTask: (id: number, message?: string) => fetchApi<any>(`/secretary/delegated-tasks/${id}/follow-up`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  }),
+  runDelegatedFollowUps: () => fetchApi<any>("/secretary/delegated-tasks/run-follow-ups", { method: "POST" }),
+  cancelDelegatedTask: (id: number, reason?: string) => fetchApi<any>(`/secretary/delegated-tasks/${id}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  }),
   approve: (id: number) => fetchApi<any>(`/secretary/actions/${id}/approve`, { method: "POST" }),
   editAndSend: (id: number, message: string) => fetchApi<any>(`/secretary/actions/${id}/edit-send`, {
     method: "POST",

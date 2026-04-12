@@ -7,7 +7,7 @@ import {
   emailFolders, emails, emailAttachments, emailDrafts,
   documentTemplates, generatedPieces, letterheadConfigs,
   agendaEvents, whatsappConfig, whatsappSchedule, whatsappMessages,
-  secretaryConfig, secretaryActions,
+  secretaryConfig, secretaryActions, secretaryDelegatedTasks,
   agentRuns, agentSteps,
   type InsertTenant, type Tenant,
   type InsertUser, type User,
@@ -37,6 +37,7 @@ import {
   type InsertWhatsappMessage, type WhatsappMessage,
   type InsertSecretaryConfig, type SecretaryConfig,
   type InsertSecretaryAction, type SecretaryAction,
+  type InsertSecretaryDelegatedTask, type SecretaryDelegatedTask,
   type InsertAgentRun, type AgentRun,
   type InsertAgentStep, type AgentStep,
   debtors,
@@ -236,6 +237,13 @@ export interface IStorage {
   getPendingSecretaryActions(tenantId: number): Promise<SecretaryAction[]>;
   createSecretaryAction(data: InsertSecretaryAction): Promise<SecretaryAction>;
   updateSecretaryAction(id: number, data: Partial<InsertSecretaryAction>): Promise<SecretaryAction>;
+  createSecretaryDelegatedTask(data: InsertSecretaryDelegatedTask): Promise<SecretaryDelegatedTask>;
+  updateSecretaryDelegatedTask(id: number, data: Partial<InsertSecretaryDelegatedTask>): Promise<SecretaryDelegatedTask>;
+  getSecretaryDelegatedTask(tenantId: number, id: number): Promise<SecretaryDelegatedTask | undefined>;
+  getSecretaryDelegatedTasks(tenantId: number, status?: string, limit?: number): Promise<SecretaryDelegatedTask[]>;
+  getDueSecretaryDelegatedTasks(tenantId: number, now: Date, limit?: number): Promise<SecretaryDelegatedTask[]>;
+  getOpenSecretaryDelegatedTaskByTargetJid(tenantId: number, targetJid: string): Promise<SecretaryDelegatedTask | undefined>;
+  getSecretaryDelegatedTasksByRequesterJid(tenantId: number, requesterJid: string): Promise<SecretaryDelegatedTask[]>;
   createAgentRun(data: InsertAgentRun): Promise<AgentRun>;
   updateAgentRun(id: number, data: Partial<InsertAgentRun>): Promise<AgentRun>;
   getAgentRun(id: number): Promise<AgentRun | undefined>;
@@ -1414,6 +1422,71 @@ class DatabaseStorage implements IStorage {
   async updateSecretaryAction(id: number, data: Partial<InsertSecretaryAction>): Promise<SecretaryAction> {
     const [updated] = await db.update(secretaryActions).set(data).where(eq(secretaryActions.id, id)).returning();
     return updated;
+  }
+
+  async createSecretaryDelegatedTask(data: InsertSecretaryDelegatedTask): Promise<SecretaryDelegatedTask> {
+    const [task] = await db.insert(secretaryDelegatedTasks).values(data).returning();
+    return task;
+  }
+
+  async updateSecretaryDelegatedTask(id: number, data: Partial<InsertSecretaryDelegatedTask>): Promise<SecretaryDelegatedTask> {
+    const [updated] = await db.update(secretaryDelegatedTasks)
+      .set({ ...data, updatedAt: new Date() } as Partial<InsertSecretaryDelegatedTask>)
+      .where(eq(secretaryDelegatedTasks.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getSecretaryDelegatedTask(tenantId: number, id: number): Promise<SecretaryDelegatedTask | undefined> {
+    const [task] = await db.select().from(secretaryDelegatedTasks)
+      .where(and(
+        eq(secretaryDelegatedTasks.tenantId, tenantId),
+        eq(secretaryDelegatedTasks.id, id)
+      ))
+      .limit(1);
+    return task;
+  }
+
+  async getSecretaryDelegatedTasks(tenantId: number, status?: string, limit: number = 50): Promise<SecretaryDelegatedTask[]> {
+    const conditions = [eq(secretaryDelegatedTasks.tenantId, tenantId)];
+    if (status) conditions.push(eq(secretaryDelegatedTasks.status, status));
+    return db.select().from(secretaryDelegatedTasks)
+      .where(and(...conditions))
+      .orderBy(desc(secretaryDelegatedTasks.updatedAt))
+      .limit(limit);
+  }
+
+  async getDueSecretaryDelegatedTasks(tenantId: number, now: Date, limit: number = 25): Promise<SecretaryDelegatedTask[]> {
+    return db.select().from(secretaryDelegatedTasks)
+      .where(and(
+        eq(secretaryDelegatedTasks.tenantId, tenantId),
+        inArray(secretaryDelegatedTasks.status, ["awaiting_response", "sent"]),
+        lte(secretaryDelegatedTasks.nextFollowUpAt, now)
+      ))
+      .orderBy(asc(secretaryDelegatedTasks.nextFollowUpAt))
+      .limit(limit);
+  }
+
+  async getOpenSecretaryDelegatedTaskByTargetJid(tenantId: number, targetJid: string): Promise<SecretaryDelegatedTask | undefined> {
+    const [task] = await db.select().from(secretaryDelegatedTasks)
+      .where(and(
+        eq(secretaryDelegatedTasks.tenantId, tenantId),
+        eq(secretaryDelegatedTasks.targetJid, targetJid),
+        inArray(secretaryDelegatedTasks.status, ["awaiting_response", "sent"])
+      ))
+      .orderBy(desc(secretaryDelegatedTasks.updatedAt))
+      .limit(1);
+    return task;
+  }
+
+  async getSecretaryDelegatedTasksByRequesterJid(tenantId: number, requesterJid: string): Promise<SecretaryDelegatedTask[]> {
+    return db.select().from(secretaryDelegatedTasks)
+      .where(and(
+        eq(secretaryDelegatedTasks.tenantId, tenantId),
+        eq(secretaryDelegatedTasks.requesterJid, requesterJid)
+      ))
+      .orderBy(desc(secretaryDelegatedTasks.updatedAt))
+      .limit(20);
   }
 
   async createAgentRun(data: InsertAgentRun): Promise<AgentRun> {

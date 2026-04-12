@@ -6,9 +6,16 @@ export type SecretaryActionName =
   | "vincular_processo"
   | "cadastrar_processo"
   | "atualizar_processo"
+  | "criar_contrato"
   | "cadastrar_contrato"
+  | "criar_prazo"
   | "cadastrar_prazo"
+  | "agendar_evento"
+  | "atualizar_evento"
   | "agendar_compromisso"
+  | "criar_fatura"
+  | "atualizar_fatura"
+  | "contatar_terceiro"
   | "gerar_relatorio_cliente"
   | "relatorio_devedor"
   | "listar_documentos_devedor"
@@ -52,10 +59,17 @@ export const secretaryActionCapabilities: SecretaryActionCapability[] = [
   { name: "atualizar_devedor", description: "Atualizar dados de devedor existente", requiresSocio: true },
   { name: "vincular_processo", description: "Vincular processo a devedor", requiresSocio: true },
   { name: "cadastrar_processo", description: "Cadastrar processo completo para cliente/devedor", requiresSocio: true },
-  { name: "atualizar_processo", description: "Atualizar status, tribunal, assunto ou titulo de processo existente", requiresSocio: true },
-  { name: "cadastrar_contrato", description: "Criar contrato operacional no cadastro do cliente", requiresSocio: true },
-  { name: "cadastrar_prazo", description: "Registrar prazo manual vinculado ou nao a processo", requiresSocio: true },
-  { name: "agendar_compromisso", description: "Criar compromisso, reuniao ou audiencia na agenda", requiresSocio: true },
+  { name: "atualizar_processo", description: "Atualizar status, marca estrategica, tribunal, assunto, observacoes ou dados de processo existente", requiresSocio: true },
+  { name: "criar_contrato", description: "Criar contrato operacional de honorarios no cadastro do cliente", requiresSocio: true },
+  { name: "cadastrar_contrato", description: "Alias de criar_contrato para compatibilidade", requiresSocio: true },
+  { name: "criar_prazo", description: "Registrar prazo manual vinculado a processo e cliente", requiresSocio: true },
+  { name: "cadastrar_prazo", description: "Alias de criar_prazo para compatibilidade", requiresSocio: true },
+  { name: "agendar_evento", description: "Criar compromisso, reuniao ou audiencia na agenda", requiresSocio: true },
+  { name: "atualizar_evento", description: "Atualizar compromisso, reuniao ou audiencia existente na agenda", requiresSocio: true },
+  { name: "agendar_compromisso", description: "Alias de agendar_evento para compatibilidade", requiresSocio: true },
+  { name: "criar_fatura", description: "Criar nova fatura/cobranca vinculada a cliente e contrato", requiresSocio: true },
+  { name: "atualizar_fatura", description: "Atualizar status, pagamento, vencimento ou valor de fatura existente", requiresSocio: true },
+  { name: "contatar_terceiro", description: "Enviar WhatsApp para terceiro, acompanhar a resposta e retornar feedback ao solicitante", requiresSocio: true },
   { name: "gerar_relatorio_cliente", description: "Gerar relatorio completo de um cliente", requiresSocio: false },
   { name: "relatorio_devedor", description: "Gerar relatorio detalhado dos processos de um devedor", requiresSocio: true },
   { name: "listar_documentos_devedor", description: "Listar documentos anexados a um devedor", requiresSocio: true },

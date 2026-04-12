@@ -6691,6 +6691,111 @@ TÉCNICAS ANTI-DETECÇÃO:
     }
   });
 
+  app.get("/api/secretary/delegated-tasks", async (req, res) => {
+    try {
+      const tenantId = getTenantId(req);
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+      const tasks = await storage.getSecretaryDelegatedTasks(tenantId, status, limit);
+      res.json(tasks);
+    } catch (error) {
+      console.error("Error fetching delegated secretary tasks:", error);
+      res.status(500).json({ error: "Failed to fetch delegated tasks" });
+    }
+  });
+
+  app.post("/api/secretary/delegated-tasks/:id/follow-up", async (req, res) => {
+    try {
+      const tenantId = getTenantId(req);
+      const id = parseInt(req.params.id);
+      const task = await storage.getSecretaryDelegatedTask(tenantId, id);
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      if (!["awaiting_response", "sent"].includes(task.status)) {
+        return res.status(400).json({ error: "Task is not awaiting response" });
+      }
+
+      const message = String(req.body?.message || `Olá${task.targetName ? `, ${String(task.targetName).split(/\s+/)[0]}` : ""}! Passando para acompanhar a mensagem anterior. Consegue nos retornar, por favor?`).trim();
+      const { whatsappService } = await import("./services/whatsapp");
+      const success = await whatsappService.sendToJid(task.targetJid, message, tenantId);
+      if (!success) return res.status(502).json({ error: "Failed to send follow-up" });
+
+      const now = new Date();
+      const slaMinutes = task.slaMinutes || 120;
+      const updated = await storage.updateSecretaryDelegatedTask(task.id, {
+        attempts: (task.attempts || 0) + 1,
+        status: "awaiting_response",
+        resultSummary: `Follow-up enviado em ${now.toISOString()}: ${message}`,
+        nextFollowUpAt: new Date(now.getTime() + slaMinutes * 60 * 1000),
+      });
+
+      await storage.createSecretaryAction({
+        tenantId,
+        jid: task.requesterJid,
+        contactName: task.requesterName || "Solicitante",
+        actionType: "follow_up_contato_terceiro",
+        description: `Follow-up enviado para tarefa delegada #${task.id} (${task.targetName || task.targetPhone})`,
+        status: "completed",
+        pendingAction: { delegatedTaskId: task.id, targetJid: task.targetJid, message },
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error sending delegated task follow-up:", error);
+      res.status(500).json({ error: "Failed to send follow-up" });
+    }
+  });
+
+  app.post("/api/secretary/delegated-tasks/run-follow-ups", async (req, res) => {
+    try {
+      const tenantId = getTenantId(req);
+      const now = new Date();
+      const tasks = await storage.getDueSecretaryDelegatedTasks(tenantId, now, 25);
+      const { whatsappService } = await import("./services/whatsapp");
+      const results: any[] = [];
+
+      for (const task of tasks) {
+        const message = `Olá${task.targetName ? `, ${String(task.targetName).split(/\s+/)[0]}` : ""}! Passando para acompanhar a mensagem anterior. Consegue nos retornar, por favor?`;
+        const success = await whatsappService.sendToJid(task.targetJid, message, tenantId);
+        if (success) {
+          const slaMinutes = task.slaMinutes || 120;
+          const updated = await storage.updateSecretaryDelegatedTask(task.id, {
+            attempts: (task.attempts || 0) + 1,
+            status: "awaiting_response",
+            resultSummary: `Follow-up automático enviado em ${now.toISOString()}: ${message}`,
+            nextFollowUpAt: new Date(now.getTime() + slaMinutes * 60 * 1000),
+          });
+          results.push({ id: task.id, success: true, attempts: updated.attempts });
+        } else {
+          results.push({ id: task.id, success: false });
+        }
+      }
+
+      res.json({ processed: results.length, results });
+    } catch (error) {
+      console.error("Error running delegated task follow-ups:", error);
+      res.status(500).json({ error: "Failed to run follow-ups" });
+    }
+  });
+
+  app.post("/api/secretary/delegated-tasks/:id/cancel", async (req, res) => {
+    try {
+      const tenantId = getTenantId(req);
+      const id = parseInt(req.params.id);
+      const task = await storage.getSecretaryDelegatedTask(tenantId, id);
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      const updated = await storage.updateSecretaryDelegatedTask(task.id, {
+        status: "canceled",
+        resultSummary: String(req.body?.reason || "Cancelada pelo usuário"),
+        completedAt: new Date(),
+        nextFollowUpAt: null,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error canceling delegated task:", error);
+      res.status(500).json({ error: "Failed to cancel delegated task" });
+    }
+  });
+
   app.post("/api/secretary/actions/:id/approve", async (req, res) => {
     try {
       const tenantId = getTenantId(req);
@@ -6868,7 +6973,8 @@ TÉCNICAS ANTI-DETECÇÃO:
       let extractedText: string | null = null;
       try {
         if (doc.mimeType === "application/pdf" || doc.filePath.toLowerCase().endsWith(".pdf")) {
-          const pdfParse = (await import("pdf-parse")).default;
+          const pdfParseModule = await import("pdf-parse");
+          const pdfParse = (pdfParseModule as any).default || pdfParseModule as any;
           const pdfData = await pdfParse(fileBuffer);
           extractedText = pdfData.text?.trim() || null;
         } else if (
@@ -7106,7 +7212,7 @@ TÉCNICAS ANTI-DETECÇÃO:
         return res.status(400).json({ error: "Texto é obrigatório" });
       }
 
-      const aiService = (await import("./services/ai")).default;
+      const { aiService } = await import("./services/ai");
       let result: any;
       try {
         result = await aiService.chat([{
@@ -8279,11 +8385,12 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = client.id;
         const { id, createdAt, ...clientData } = client;
         try {
-          const [inserted] = await db.insert(clientsTable).values({
+          const insertedClients = await db.insert(clientsTable).values({
             ...clientData,
             tenantId,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedClients[0];
           clientIdMap.set(oldId, inserted.id);
           stats.clients++;
         } catch (e: any) {
@@ -8300,12 +8407,13 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = contract.id;
         const { id, createdAt, ...contractData } = contract;
         try {
-          const [inserted] = await db.insert(contracts).values({
+          const insertedContracts = await db.insert(contracts).values({
             ...contractData,
             tenantId,
             clientId: clientIdMap.get(contract.clientId) || contract.clientId,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedContracts[0];
           contractIdMap.set(oldId, inserted.id);
           stats.contracts++;
         } catch (e: any) {
@@ -8394,13 +8502,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const oldId = neg.id;
         const { id, createdAt, ...negData } = neg;
         try {
-          const [inserted] = await db.insert(negotiations).values({
+          const insertedNegotiations = await db.insert(negotiations).values({
             ...negData,
             tenantId,
             clientId: neg.clientId ? (clientIdMap.get(neg.clientId) || neg.clientId) : null,
             debtorId: neg.debtorId || null,
             createdAt: createdAt ? new Date(createdAt) : new Date(),
-          }).returning();
+          }).returning() as any[];
+          const inserted = insertedNegotiations[0];
           negIdMap.set(oldId, inserted.id);
           stats.negotiations++;
         } catch (e: any) {
@@ -9007,6 +9116,26 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
+  app.post("/api/debtor-agreements/bulk-delete", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const ids = Array.isArray(req.body?.ids)
+        ? req.body.ids
+            .map((value: unknown) => parseInt(String(value), 10))
+            .filter((value: number) => Number.isInteger(value) && value > 0)
+        : [];
+
+      if (!ids.length) {
+        return res.status(400).json({ error: "ids are required" });
+      }
+
+      const deletedCount = await storage.deleteDebtorAgreements(ids, tenantId);
+      res.json({ success: true, deletedCount });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete debtor agreements" });
+    }
+  });
+
   // Toggle fee status (one-click: pendente ↔ recebido)
   app.patch("/api/debtor-agreements/:id/fee-status", requireAuth, async (req: Request, res: Response) => {
     try {
@@ -9068,13 +9197,15 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         return targetIndex >= baseIndex && targetIndex <= lastIndex;
       };
 
-      const rows = agreements.map((agreement: any) => {
+      const activeAgreements = agreements.filter((agreement: any) =>
+        isActiveInMonth(agreement, targetMonth, targetYear)
+      );
+
+      const rows = activeAgreements.map((agreement: any) => {
         const debtor = debtorMap[agreement.debtorId];
         const feePercent = parseFloat(agreement.feePercent || "10");
         const installmentValue = parseFloat(agreement.installmentValue || "0");
-        const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(agreement, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
-          : Math.round(installmentValue * feePercent / 100 * 100) / 100;
+        const monthlyFee = Math.round(installmentValue * feePercent / 100 * 100) / 100;
 
         return {
           debtorName: debtor?.name || "-",

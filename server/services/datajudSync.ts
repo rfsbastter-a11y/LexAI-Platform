@@ -261,7 +261,16 @@ export async function triggerEscavadorOnlySync(tenantId: number = 1) {
   const allCases = await storage.getCasesByTenant(tenantId);
   const syncCases = allCases.filter(c => c.caseNumber && c.caseNumber.length > 10);
 
-  const progress = { running: true, total: syncCases.length, current: 0, synced: 0, errors: 0, newMovements: 0, currentCase: "" };
+  const progress: {
+    running: boolean;
+    total: number;
+    current: number;
+    synced: number;
+    errors: number;
+    newMovements: number;
+    currentCase: string;
+    completedAt?: number;
+  } = { running: true, total: syncCases.length, current: 0, synced: 0, errors: 0, newMovements: 0, currentCase: "" };
   escavadorSyncProgressMap.set(tenantId, progress);
 
   (async () => {

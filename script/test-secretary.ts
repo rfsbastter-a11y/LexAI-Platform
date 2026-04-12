@@ -10,6 +10,7 @@ import { archiveSignedAgreementIfMatched } from "../server/services/secretaryMed
 import { getOrCreateConversationContext, appendMessageToConversationContext } from "../server/services/secretaryConversationState";
 import { buildFallbackSecretaryInternalRouting, parseSecretaryInternalRoutingResult } from "../server/services/secretaryInternalPrompts";
 import { buildFallbackSecretaryPlan, applySecretaryPlanOverrides } from "../server/services/secretaryPlanning";
+import { buildSecretaryOperationalParserSystemPrompt, parseSecretaryOperationalParseResult } from "../server/services/secretaryOperationalParser";
 import { verifySecretaryActionResult } from "../server/services/secretaryVerifier";
 
 function test(name: string, fn: () => void | Promise<void>) {
@@ -169,6 +170,11 @@ async function main() {
     assert.equal(requiresSecretaryHumanApproval("acao_atualizar_cliente"), true);
     assert.equal(requiresSecretaryHumanApproval("acao_cadastrar_processo"), true);
     assert.equal(requiresSecretaryHumanApproval("acao_cadastrar_contrato"), true);
+    assert.equal(requiresSecretaryHumanApproval("acao_criar_fatura"), true);
+    assert.equal(requiresSecretaryHumanApproval("acao_atualizar_fatura"), true);
+    assert.equal(requiresSecretaryHumanApproval("acao_agendar_evento"), false);
+    assert.equal(requiresSecretaryHumanApproval("acao_criar_prazo"), false);
+    assert.equal(requiresSecretaryHumanApproval("acao_contatar_terceiro"), false);
     assert.equal(requiresSecretaryHumanApproval("resposta_auto"), false);
   });
 
@@ -199,6 +205,34 @@ async function main() {
     assert.ok(state.lastPieceType);
   });
 
+  await test("lightweight operational parser prompt and parser support delegated contact", () => {
+    const prompt = buildSecretaryOperationalParserSystemPrompt({
+      currentDate: new Date("2026-04-12T12:00:00Z"),
+      isSocio: true,
+    });
+    assert.match(prompt, /contatar_terceiro/);
+    assert.match(prompt, /agendar_evento/);
+    assert.match(prompt, /2026-04-13/);
+
+    const parsed = parseSecretaryOperationalParseResult(JSON.stringify({
+      action: "contatar_terceiro",
+      confidence: 0.91,
+      args: {
+        acao: "contatar_terceiro",
+        targetName: "Fulano",
+        taskType: "agendamento",
+      },
+      missingFields: [],
+      risk: "low",
+      requiresConfirmation: false,
+      reasoningSummary: "Pedido para falar com terceiro e acompanhar retorno.",
+    }));
+
+    assert.equal(parsed?.action, "contatar_terceiro");
+    assert.equal(parsed?.confidence, 0.91);
+    assert.equal(parsed?.args.targetName, "Fulano");
+  });
+
   await test("conversation state is isolated per tenant even with same jid", async () => {
     const deps = {
       getWhatsAppConversation: async () => null,
@@ -212,7 +246,7 @@ async function main() {
     assert.equal(tenantTwoCtx.messages.length, 0);
   });
 
-  await test("tool registry exposes current enums and confirmation flag", () => {
+  await test("tool registry describes open-ended action names and new write capabilities", () => {
     const actionTool = createSecretaryActionTool();
     const queryTool = createSecretarySystemQueryTool();
     const webTool = createSecretaryWebSearchTool();
@@ -221,8 +255,21 @@ async function main() {
     const queryProps = queryTool.function.parameters.properties as Record<string, any>;
 
     assert.equal(webTool.function.name, "pesquisar_web");
-    assert.ok(Array.isArray(actionProps.acao.enum));
-    assert.ok(actionProps.acao.enum.includes("gerar_peca_estudio"));
+    assert.equal(actionProps.acao.enum, undefined);
+    assert.match(actionProps.acao.description, /agendar_evento/);
+    assert.match(actionProps.acao.description, /criar_prazo/);
+    assert.match(actionProps.acao.description, /criar_fatura/);
+    assert.match(actionProps.acao.description, /atualizar_fatura/);
+    assert.match(actionProps.acao.description, /contatar_terceiro/);
+    assert.match(actionTool.function.description, /criar_contrato/);
+    assert.match(actionTool.function.description, /atualizar_processo/);
+    assert.match(actionTool.function.description, /contatar_terceiro/);
+    assert.equal(actionProps.targetPhone.type, "string");
+    assert.equal(actionProps.targetMessage.type, "string");
+    assert.equal(actionProps.objective.type, "string");
+    assert.equal(actionProps.eventId.type, "number");
+    assert.equal(actionProps.invoiceId.type, "number");
+    assert.equal(actionProps.isStrategic.type, "boolean");
     assert.equal(actionProps.confirmed.type, "boolean");
     assert.ok(Array.isArray(queryProps.tipo_consulta.enum));
     assert.ok(queryProps.tipo_consulta.enum.includes("lista_devedores"));

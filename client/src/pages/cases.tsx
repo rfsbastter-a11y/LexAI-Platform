@@ -1040,7 +1040,7 @@ export default function CasesPage() {
       setTimeout(() => {
         setImportStep("input");
         setIsImporting(false);
-        setDatajudResult(null);
+        setEscavadorImportResult(null);
         setImportNumber("");
         setIsConfirming(false);
       }, 1500);

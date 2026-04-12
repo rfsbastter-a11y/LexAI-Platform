@@ -31,6 +31,11 @@ export interface SearchResponse {
   sources: string[];
 }
 
+type TribunalInfo = {
+  sigla: string;
+  nome: string;
+};
+
 const JURISPRUDENCE_CLASSES: Record<string, number> = {
   "acao_civil_publica": 65,
   "acao_trabalhista": 1116,
@@ -72,7 +77,7 @@ export class LegalSearchService {
 
     if (escavadorService.isConfigured()) {
       try {
-        const escResults = await escavadorService.searchByNameOrDocument(query);
+        const escResults = await escavadorService.searchByNameOrDocument(query) as any;
         const processos = escResults?.processos || escResults?.items || [];
         
         for (const proc of processos.slice(0, limit)) {

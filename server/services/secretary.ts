@@ -48,6 +48,11 @@ import {
   parseSecretaryPlan,
   applySecretaryPlanOverrides,
 } from "./secretaryPlanning";
+import {
+  buildSecretaryOperationalParserSystemPrompt,
+  buildSecretaryOperationalParserUserPrompt,
+  parseSecretaryOperationalParseResult,
+} from "./secretaryOperationalParser";
 import { verifySecretaryActionResult } from "./secretaryVerifier";
 import {
   buildAgentResponsePreview,
@@ -119,6 +124,167 @@ async function findBestEntityNameInText(
   return best?.name || null;
 }
 
+function canonicalizeSecretaryAction(action: string): string {
+  const rawAction = String(action || "").trim();
+  const rawLower = rawAction.toLowerCase();
+  const directAliases: Record<string, string> = {
+    agendar_compromisso: "agendar_evento",
+    cadastrar_prazo: "criar_prazo",
+    cadastrar_contrato: "criar_contrato",
+    cadastrar_fatura: "criar_fatura",
+    registrar_fatura: "criar_fatura",
+    marcar_fatura_paga: "atualizar_fatura",
+  };
+  if (directAliases[rawLower]) return directAliases[rawLower];
+  if (getSecretaryActionNames().includes(rawLower as any)) return rawLower;
+
+  const normalized = normalizeForMatch(rawAction);
+  const aliases: Record<string, string> = {
+    agendar_compromisso: "agendar_evento",
+    "agendar compromisso": "agendar_evento",
+    "agendar evento": "agendar_evento",
+    marcar_compromisso: "agendar_evento",
+    "marcar compromisso": "agendar_evento",
+    "marcar reuniao": "agendar_evento",
+    criar_evento: "agendar_evento",
+    "criar evento": "agendar_evento",
+    atualizar_evento: "atualizar_evento",
+    "atualizar evento": "atualizar_evento",
+    "atualizar compromisso": "atualizar_evento",
+    cadastrar_evento: "agendar_evento",
+    cadastrar_prazo: "criar_prazo",
+    "cadastrar prazo": "criar_prazo",
+    "criar prazo": "criar_prazo",
+    registrar_prazo: "criar_prazo",
+    cadastrar_contrato: "criar_contrato",
+    "cadastrar contrato": "criar_contrato",
+    "criar contrato": "criar_contrato",
+    registrar_contrato: "criar_contrato",
+    cadastrar_fatura: "criar_fatura",
+    "cadastrar fatura": "criar_fatura",
+    "criar fatura": "criar_fatura",
+    "emitir fatura": "criar_fatura",
+    registrar_fatura: "criar_fatura",
+    marcar_fatura_paga: "atualizar_fatura",
+    "marcar fatura paga": "atualizar_fatura",
+    "atualizar fatura": "atualizar_fatura",
+    "fatura paga": "atualizar_fatura",
+    "contatar terceiro": "contatar_terceiro",
+    "falar com terceiro": "contatar_terceiro",
+    "entrar em contato": "contatar_terceiro",
+    "mandar mensagem": "contatar_terceiro",
+  };
+  return aliases[normalized] || normalized.replace(/\s+/g, "_") || rawAction;
+}
+
+const LIGHTWEIGHT_OPERATIONAL_ACTIONS = new Set([
+  "agendar_evento",
+  "atualizar_evento",
+  "criar_prazo",
+  "criar_fatura",
+  "atualizar_fatura",
+  "criar_contrato",
+  "cadastrar_cliente",
+  "atualizar_cliente",
+  "cadastrar_devedor",
+  "atualizar_devedor",
+  "cadastrar_processo",
+  "atualizar_processo",
+  "contatar_terceiro",
+]);
+
+function parseSecretaryDate(value: unknown, referenceDate = new Date()): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalized = normalizeForMatch(raw);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const br = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (br) return `${br[3]}-${br[2].padStart(2, "0")}-${br[1].padStart(2, "0")}`;
+  if (/\bhoje\b/.test(normalized)) return format(referenceDate, "yyyy-MM-dd");
+  if (/\bamanha\b/.test(normalized)) return format(addDays(referenceDate, 1), "yyyy-MM-dd");
+  const dayOnly = normalized.match(/\bdia\s+(\d{1,2})\b/);
+  if (dayOnly) {
+    const day = Number(dayOnly[1]);
+    if (day >= 1 && day <= 31) {
+      const candidate = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), day);
+      if (candidate < new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate())) {
+        candidate.setMonth(candidate.getMonth() + 1);
+      }
+      return format(candidate, "yyyy-MM-dd");
+    }
+  }
+  return raw;
+}
+
+function extractSecretaryDate(text: string): string {
+  const dateMatch = text.match(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\/\d{1,2}\/\d{4}\b/);
+  if (dateMatch) return parseSecretaryDate(dateMatch[0]);
+  return parseSecretaryDate(text);
+}
+
+function normalizeSecretaryTime(value: unknown): string {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  const colon = raw.match(/\b(\d{1,2}):(\d{2})\b/);
+  if (colon) return `${colon[1].padStart(2, "0")}:${colon[2]}`;
+  const hour = raw.match(/\b(\d{1,2})h(?:(\d{2}))?\b/);
+  if (hour) return `${hour[1].padStart(2, "0")}:${(hour[2] || "00").padStart(2, "0")}`;
+  return raw;
+}
+
+function extractSecretaryTimes(text: string): string[] {
+  const matches = Array.from(text.matchAll(/\b\d{1,2}:\d{2}\b|\b\d{1,2}h(?:\d{2})?\b/gi));
+  return matches.map((match) => normalizeSecretaryTime(match[0])).filter(Boolean);
+}
+
+function addOneHour(timeStart: string): string {
+  const [h, m] = String(timeStart).split(":").map((v: string) => Number(v));
+  if (Number.isNaN(h) || Number.isNaN(m)) return "";
+  return `${String((h + 1) % 24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function parseMoneyString(value: unknown): string | undefined {
+  const raw = String(value || "").trim();
+  if (!raw) return undefined;
+  const cleaned = raw.replace(/[^\d,.-]/g, "");
+  if (!cleaned) return undefined;
+  const normalized = cleaned.includes(",")
+    ? cleaned.replace(/\./g, "").replace(",", ".")
+    : cleaned;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return undefined;
+  return parsed.toFixed(2);
+}
+
+function isValidSecretaryDate(value: string): boolean {
+  return Boolean(value) && !Number.isNaN(new Date(value).getTime());
+}
+
+function normalizeBrazilianPhoneForSecretary(phone: string): string {
+  let cleaned = String(phone || "").replace(/\D/g, "");
+  if (!cleaned) return "";
+  if (cleaned.length === 10 || cleaned.length === 11) cleaned = `55${cleaned}`;
+  return cleaned;
+}
+
+function jidFromPhoneForSecretary(phone: string): string {
+  const cleaned = normalizeBrazilianPhoneForSecretary(phone);
+  return cleaned ? `${cleaned}@s.whatsapp.net` : "";
+}
+
+function extractPhoneFromText(text: string): string {
+  const match = String(text || "").match(/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-\s]?\d{4}/);
+  return match ? normalizeBrazilianPhoneForSecretary(match[0]) : "";
+}
+
+function classifyDelegatedTaskReply(message: string): "confirmed" | "declined" | "alternative" | "needs_followup" {
+  const normalized = normalizeForMatch(message);
+  if (/(sim|confirmo|confirmado|pode ser|fechado|combinado|ok|certo|estarei|vou sim|consigo)/.test(normalized)) return "confirmed";
+  if (/(nao posso|não posso|nao consigo|não consigo|impossivel|impossível|recuso|cancelar|cancele)/.test(normalized)) return "declined";
+  if (/(pode ser|seria melhor|prefiro|outro horario|outro horário|as \d|às \d|\d{1,2}h|\d{1,2}:\d{2}|amanha|amanhã|depois)/.test(message.toLowerCase())) return "alternative";
+  return "needs_followup";
+}
+
 async function inferDeterministicSocioAction(
   tenantId: number,
   message: string,
@@ -165,6 +331,22 @@ async function inferDeterministicSocioAction(
       acao: "gerar_peca_estudio",
       args: { acao: "gerar_peca_estudio", templateType, description: raw },
       reason: "pedido_natural_peca",
+    };
+  }
+
+  const operationalContractRequest = /(cadastre|cadastrar|registre|registrar|crie|criar).*(contrato).*(honorarios|honorarios|operacional|cadastro)/.test(full)
+    || /(contrato).*(honorarios|honorarios).*(cliente)/.test(full);
+  if (operationalContractRequest) {
+    const clientName = await findBestEntityNameInText(tenantId, raw, "client");
+    return {
+      acao: "criar_contrato",
+      args: {
+        acao: "criar_contrato",
+        clientName: clientName || "",
+        type: "honorarios",
+        description: raw,
+      },
+      reason: "pedido_natural_cadastro_contrato_honorarios",
     };
   }
 
@@ -217,24 +399,20 @@ async function inferDeterministicSocioAction(
     };
   }
 
-  const toIsoDate = (value: string): string => {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-    const br = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-    if (br) return `${br[3]}-${br[2]}-${br[1]}`;
-    return value;
-  };
-
   const scheduleRequest = /(agende|agendar|marque|marcar).*(reuniao|reuni[aã]o|audiencia|audi[eê]ncia|compromisso)/.test(full)
-    || /(reuniao|reuni[aã]o|audiencia|audi[eê]ncia|compromisso).*(amanha|amanh[aã]|hoje|\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2})/.test(full);
+    || /(reuniao|reuni[aã]o|audiencia|audi[eê]ncia|compromisso).*(amanha|amanh[aã]|hoje|\d{1,2}\/\d{1,2}\/\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}|\d{1,2}h)/.test(full);
   if (scheduleRequest) {
-    const dateMatch = raw.match(/\b\d{4}-\d{2}-\d{2}\b|\b\d{2}\/\d{2}\/\d{4}\b/);
-    const timeMatches = raw.match(/\b\d{1,2}:\d{2}\b/g) || [];
+    const timeMatches = extractSecretaryTimes(raw);
+    const clientName = await findBestEntityNameInText(tenantId, raw, "client");
+    const caseNumberMatch = raw.match(/\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/);
     return {
-      acao: "agendar_compromisso",
+      acao: "agendar_evento",
       args: {
-        acao: "agendar_compromisso",
+        acao: "agendar_evento",
         title: raw,
-        date: dateMatch ? toIsoDate(dateMatch[0]) : "",
+        clientName: clientName || "",
+        caseNumber: caseNumberMatch?.[0] || "",
+        date: extractSecretaryDate(raw),
         timeStart: timeMatches[0] || "",
         timeEnd: timeMatches[1] || "",
         description: raw,
@@ -264,12 +442,15 @@ async function inferDeterministicSocioAction(
 
   const processUpdateRequest = /(atualize|atualizar|altere|alterar|mude|mudar).*(processo)/.test(full);
   if (processUpdateRequest) {
-    const caseNumberMatch = raw.match(/\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/);
+    const caseNumberMatch = raw.match(/\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/) || raw.match(/processo\s+([a-z0-9.\-\/]+)/i);
+    const statusMatch = full.match(/\b(?:para|como)\s+(ativo|inativo|suspenso|arquivado|encerrado|estrategico|estrategico)\b/);
     return {
       acao: "atualizar_processo",
       args: {
         acao: "atualizar_processo",
-        caseNumber: caseNumberMatch?.[0] || "",
+        caseNumber: caseNumberMatch?.[1] || caseNumberMatch?.[0] || "",
+        status: statusMatch && !statusMatch[1].startsWith("estrateg") ? statusMatch[1] : "",
+        isStrategic: statusMatch ? statusMatch[1].startsWith("estrateg") : undefined,
         title: raw,
         description: raw,
       },
@@ -281,9 +462,9 @@ async function inferDeterministicSocioAction(
   if (contractCreateRequest) {
     const clientName = await findBestEntityNameInText(tenantId, raw, "client");
     return {
-      acao: "cadastrar_contrato",
+      acao: "criar_contrato",
       args: {
-        acao: "cadastrar_contrato",
+        acao: "criar_contrato",
         clientName: clientName || "",
         description: raw,
       },
@@ -294,17 +475,83 @@ async function inferDeterministicSocioAction(
   const deadlineCreateRequest = /(cadastre|cadastrar|crie|criar|registre|registrar).*(prazo)/.test(full);
   if (deadlineCreateRequest) {
     const caseNumberMatch = raw.match(/\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/);
-    const dateMatch = raw.match(/\b\d{4}-\d{2}-\d{2}\b|\b\d{2}\/\d{2}\/\d{4}\b/);
     return {
-      acao: "cadastrar_prazo",
+      acao: "criar_prazo",
       args: {
-        acao: "cadastrar_prazo",
+        acao: "criar_prazo",
         caseNumber: caseNumberMatch?.[0] || "",
-        dueDate: dateMatch ? toIsoDate(dateMatch[0]) : "",
+        dueDate: extractSecretaryDate(raw),
         title: raw,
         description: raw,
       },
       reason: "pedido_natural_cadastro_prazo",
+    };
+  }
+
+  const invoiceCreateRequest = /(cadastre|cadastrar|crie|criar|emita|emitir|registre|registrar).*(fatura|cobranca|cobran[çc]a)/.test(full);
+  if (invoiceCreateRequest) {
+    const clientName = await findBestEntityNameInText(tenantId, raw, "client");
+    const amountMatch = raw.match(/(?:r\$\s*)?\d{1,3}(?:\.\d{3})*(?:,\d{2})|\b\d+(?:[,.]\d{2})?\b/);
+    return {
+      acao: "criar_fatura",
+      args: {
+        acao: "criar_fatura",
+        clientName: clientName || "",
+        amount: amountMatch?.[0] || "",
+        dueDate: extractSecretaryDate(raw),
+        description: raw,
+      },
+      reason: "pedido_natural_criar_fatura",
+    };
+  }
+
+  const invoiceUpdateRequest = /(marque|marcar|atualize|atualizar|altere|alterar).*(fatura|cobranca|cobran[çc]a)/.test(full);
+  if (invoiceUpdateRequest) {
+    const clientName = await findBestEntityNameInText(tenantId, raw, "client");
+    const invoiceNumberMatch = raw.match(/(?:fatura|cobranca|cobran[çc]a)\s*(?:n[ºo.]?|numero|número|id)\s*([a-z0-9\-\/]+)/i);
+    const paid = /(paga|pago|quitada|quitado|recebida|recebido)/.test(full);
+    return {
+      acao: "atualizar_fatura",
+      args: {
+        acao: "atualizar_fatura",
+        clientName: clientName || "",
+        invoiceNumber: invoiceNumberMatch?.[1] || "",
+        status: paid ? "pago" : "",
+        paidAt: paid ? format(new Date(), "yyyy-MM-dd") : "",
+        description: raw,
+      },
+      reason: "pedido_natural_atualizar_fatura",
+    };
+  }
+
+  const delegatedContactRequest = /(fale|fala|mande mensagem|manda mensagem|chame|avise|contate|entre em contato).*(com|para|pro|pra)/.test(full)
+    || /(marcar|agendar|confirmar).*(motorista|reuniao|reuni[aã]o|cliente|terceiro)/.test(full);
+  if (delegatedContactRequest) {
+    const phone = extractPhoneFromText(raw);
+    const clientName = await findBestEntityNameInText(tenantId, raw, "client");
+    const debtorName = await findBestEntityNameInText(tenantId, raw, "debtor");
+    const timeMatches = extractSecretaryTimes(raw);
+    const taskType = /(motorista|uber|carro|transporte)/.test(full)
+      ? "motorista"
+      : /(reuniao|reuni[aã]o|agenda|agendar|marcar)/.test(full)
+        ? "agendamento"
+        : "recado";
+    return {
+      acao: "contatar_terceiro",
+      args: {
+        acao: "contatar_terceiro",
+        targetPhone: phone,
+        targetName: clientName || debtorName || "",
+        clientName: clientName || "",
+        debtorName: debtorName || "",
+        objective: raw,
+        taskType,
+        date: extractSecretaryDate(raw),
+        timeStart: timeMatches[0] || "",
+        timeEnd: timeMatches[1] || "",
+        description: raw,
+      },
+      reason: "pedido_natural_contato_terceiro",
     };
   }
 
@@ -703,7 +950,7 @@ async function generatePlainWord(contentHtml: string, title: string): Promise<Bu
     return segments.length > 0 ? segments : [{ text: decodeEntities(inner.replace(/<[^>]+>/g, '')), bold: false }];
   };
 
-  const children: Paragraph[] = [];
+  const children: InstanceType<typeof Paragraph>[] = [];
 
   children.push(new Paragraph({
     text: title,
@@ -1703,6 +1950,8 @@ Este remetente é um SÓCIO ou ADVOGADO do escritório Marques e Serra. Ele tem 
 - Ele pode solicitar QUALQUER ação: cadastros, relatórios, consultas, geração de peças, GERAÇÃO DE CONTRATOS
 - Responda de forma direta e eficiente, sem explicações desnecessárias
 - Pode compartilhar dados de qualquer cliente, processo, financeiro
+- Use executar_acao para operações de escrita no sistema: agenda, prazos, faturas, contratos operacionais, clientes, devedores e processos.
+- Exemplos: "Agenda uma reunião com Fulano amanhã às 14h" -> acao="agendar_evento"; "Fale com Fulano para marcar reunião e me avise" -> acao="contatar_terceiro"; "Agenda um motorista para amanhã" -> acao="contatar_terceiro" com taskType="motorista"; "Cria um prazo para o processo 1234 vencendo dia 20" -> acao="criar_prazo"; "Marca a fatura do cliente Fulano como paga" -> acao="atualizar_fatura"; "Registra cliente João..." -> acao="cadastrar_cliente"; "Atualiza o status do processo..." -> acao="atualizar_processo".
 - Se ele pedir para gerar uma peça/petição/recurso/contestação/contrarrazões/execução ou QUALQUER peça jurídica: chame IMEDIATAMENTE executar_acao com acao="gerar_peca_estudio". NUNCA escreva o conteúdo da peça no chat. NUNCA diga "Um momento" sem chamar a ferramenta.
 - Se ele pedir para gerar um CONTRATO, ACORDO ou TERMO DE RENEGOCIAÇÃO, use executar_acao com acao="gerar_contrato" IMEDIATAMENTE. Não pergunte se tem certeza, não diga que não pode. FAÇA.
 - Se houver documentos, imagens, PDFs, Word ou áudios enviados pelo WhatsApp nesta conversa, trate esse material como FONTE PRIORITÁRIA para preencher fatos, partes, valores, datas e pedidos.
@@ -1755,6 +2004,17 @@ CAPACIDADES COMPLETAS (USE LIVREMENTE):
 12. CONSULTAR SISTEMA: Use consultar_sistema para: ${describeSecretaryQueryCapabilities()}. Sócios acessam TODOS os dados. Clientes só veem seus próprios dados.
 13. EXECUTAR AÇÕES NO SISTEMA: Use executar_acao para:
 ${describeSecretaryActionCapabilities()}
+   Exemplos de escolha de ação:
+   - "Agenda uma reunião com o cliente Fulano amanhã às 14h" => agendar_evento, com clientName, date, timeStart, title, description e responsible quando houver.
+   - "Fale com Fulano para marcar uma reunião amanhã às 14h e me avise" => contatar_terceiro, com targetName/clientName/debtorName, targetPhone se informado, objective, taskType="agendamento", date e timeStart.
+   - "Agende um motorista para me buscar amanhã às 8h e confirme comigo" => contatar_terceiro, com targetName/targetPhone quando houver, taskType="motorista", objective, date e timeStart.
+   - "Atualize a reunião de amanhã para 15h" => atualizar_evento, preferindo eventId se conhecido; caso contrário use title/date.
+   - "Cria um prazo para o processo 0001234 vencendo dia 20" => criar_prazo, com caseNumber, dueDate, title e description.
+   - "Cria uma fatura de R$ 1.500 para Fulano vencendo dia 10" => criar_fatura, com clientName, amount, dueDate, referenceMonth quando houver.
+   - "Marca a fatura do cliente Fulano como paga" => atualizar_fatura, com clientName, status="pago", paidAt e paidAmount se houver.
+   - "Cria um contrato de honorários para o cliente X" => criar_contrato, com clientName, type="honorarios", amount/monthlyValue se informado, startDate e description.
+   - "Atualiza o status do processo X para ativo" ou "marque como estratégico" => atualizar_processo, com caseNumber/title, status, isStrategic e notes quando houver.
+   - "Registra novo cliente/devedor/processo" => cadastrar_cliente, cadastrar_devedor ou cadastrar_processo conforme a entidade.
 REGRA DE ATUALIZAÇÃO: Quando o sócio enviar documentos (procuração, contrato social, RG/CPF) e pedir para "melhorar o cadastro", "atualizar", "colocar esses dados", use atualizar_cliente ou atualizar_devedor com os dados extraídos do documento.
 14. PORTAL DO CLIENTE VIA WHATSAPP: Clientes podem consultar seus processos, prazos e situação financeira.
 
@@ -2977,6 +3237,182 @@ async function handleNegotiationMessage(
   }
 }
 
+async function resolveThirdPartyContact(tenantId: number, args: any): Promise<{ name: string; phone: string; jid: string } | null> {
+  const explicitPhone = normalizeBrazilianPhoneForSecretary(args.targetPhone || args.phone || extractPhoneFromText(args.description || args.objective || ""));
+  const explicitName = args.targetName || args.contactName || "";
+  if (explicitPhone) {
+    return {
+      name: explicitName || args.clientName || args.debtorName || "Contato",
+      phone: explicitPhone,
+      jid: jidFromPhoneForSecretary(explicitPhone),
+    };
+  }
+
+  const clientName = args.clientName || args.targetName || "";
+  if (clientName) {
+    const clients = await storage.getClientsByTenant(tenantId);
+    const foundClient = clients.find((c: any) =>
+      c.name?.toLowerCase().includes(String(clientName).toLowerCase()) ||
+      String(clientName).toLowerCase().includes(c.name?.toLowerCase() || "")
+    );
+    if (foundClient?.phone) {
+      const phone = normalizeBrazilianPhoneForSecretary(foundClient.phone);
+      return { name: foundClient.name, phone, jid: jidFromPhoneForSecretary(phone) };
+    }
+  }
+
+  const debtorName = args.debtorName || args.targetName || "";
+  if (debtorName) {
+    const debtors = await storage.getDebtorsByTenant(tenantId);
+    const foundDebtor = debtors.find((d: any) =>
+      d.name?.toLowerCase().includes(String(debtorName).toLowerCase()) ||
+      String(debtorName).toLowerCase().includes(d.name?.toLowerCase() || "")
+    );
+    const debtorPhone = foundDebtor?.whatsapp || foundDebtor?.phone;
+    if (debtorPhone) {
+      const phone = normalizeBrazilianPhoneForSecretary(debtorPhone);
+      return { name: foundDebtor.name, phone, jid: jidFromPhoneForSecretary(phone) };
+    }
+  }
+
+  const targetName = args.targetName || args.name || "";
+  if (targetName) {
+    const contacts = await storage.getWhatsappContacts(tenantId);
+    const foundContact = contacts.find((c: any) =>
+      c.contactName?.toLowerCase().includes(String(targetName).toLowerCase()) ||
+      String(targetName).toLowerCase().includes(c.contactName?.toLowerCase() || "")
+    );
+    if (foundContact?.phoneNumber) {
+      const phone = normalizeBrazilianPhoneForSecretary(foundContact.phoneNumber);
+      return { name: foundContact.contactName || targetName, phone, jid: jidFromPhoneForSecretary(phone) };
+    }
+  }
+
+  return null;
+}
+
+function buildThirdPartyInitialMessage(args: any, targetName: string): string {
+  if (args.targetMessage) return String(args.targetMessage).trim();
+
+  const objective = args.objective || args.description || "";
+  const taskType = normalizeForMatch(args.taskType || objective);
+  const date = parseSecretaryDate(args.date || args.dueDate || objective || "");
+  const timeStart = normalizeSecretaryTime(args.timeStart || extractSecretaryTimes(objective)[0] || "");
+  const timeEnd = normalizeSecretaryTime(args.timeEnd || extractSecretaryTimes(objective)[1] || "");
+  const dateLabel = isValidSecretaryDate(date) ? new Date(date).toLocaleDateString("pt-BR") : "";
+  const timeLabel = timeStart ? `${timeStart}${timeEnd ? ` às ${timeEnd}` : ""}` : "";
+  const greetingName = targetName && targetName !== "Contato" ? `, ${targetName.split(/\s+/)[0]}` : "";
+
+  if (taskType.includes("motorista")) {
+    return `Olá${greetingName}! Aqui é do escritório Marques & Serra. Poderia confirmar disponibilidade para motorista/transporte${dateLabel ? ` em ${dateLabel}` : ""}${timeLabel ? ` às ${timeLabel}` : ""}?`;
+  }
+
+  if (taskType.includes("agendamento") || taskType.includes("reuniao")) {
+    return `Olá${greetingName}! Aqui é do escritório Marques & Serra. Poderia confirmar disponibilidade para uma reunião${dateLabel ? ` em ${dateLabel}` : ""}${timeLabel ? ` às ${timeLabel}` : ""}?`;
+  }
+
+  return `Olá${greetingName}! Aqui é do escritório Marques & Serra. ${objective || "Poderia nos retornar, por favor?"}`;
+}
+
+function getDelegatedTaskSlaMinutes(taskType: string): number {
+  const normalized = normalizeForMatch(taskType);
+  if (normalized.includes("motorista") || normalized.includes("transporte")) return 60;
+  if (normalized.includes("reuniao") || normalized.includes("agendamento") || normalized.includes("audiencia")) return 120;
+  if (normalized.includes("cobranca") || normalized.includes("negociacao")) return 24 * 60;
+  return 4 * 60;
+}
+
+function getNextDelegatedTaskFollowUpAt(taskType: string, from: Date = new Date()): Date {
+  return new Date(from.getTime() + getDelegatedTaskSlaMinutes(taskType) * 60 * 1000);
+}
+
+async function handleDelegatedTaskReply(
+  tenantId: number,
+  jid: string,
+  message: string,
+  contactName: string,
+  config: any,
+): Promise<boolean> {
+  const task = await storage.getOpenSecretaryDelegatedTaskByTargetJid(tenantId, jid);
+  if (!task) return false;
+
+  const replyKind = classifyDelegatedTaskReply(message);
+  const now = new Date();
+  let status = replyKind === "needs_followup" ? "awaiting_response" : "completed";
+  let agendaEventId = task.relatedAgendaEventId || null;
+  let resultSummary = "";
+
+  if (replyKind === "confirmed") {
+    resultSummary = `${task.targetName || contactName} confirmou: "${message}"`;
+    const isSchedulingTask = normalizeForMatch(task.taskType || task.objective).includes("agendamento")
+      || normalizeForMatch(task.objective).includes("reuniao");
+    if (isSchedulingTask && task.requestedDate && task.requestedTimeStart && !agendaEventId) {
+      const event = await storage.createAgendaEvent({
+        tenantId,
+        clientId: null,
+        caseId: null,
+        title: `Reunião - ${task.targetName || contactName}`,
+        type: "Reunião",
+        date: task.requestedDate,
+        timeStart: task.requestedTimeStart,
+        timeEnd: task.requestedTimeEnd || null,
+        responsible: task.requesterName || "Solicitante",
+        description: `Agendada após confirmação por WhatsApp. Objetivo original: ${task.objective}`,
+        sourceType: "secretary_delegated_task",
+        sourceId: String(task.id),
+        status: "agendado",
+      });
+      agendaEventId = event.id;
+      resultSummary += `\nEvento criado na agenda: ID ${event.id}, ${event.date} ${event.timeStart}${event.timeEnd ? `-${event.timeEnd}` : ""}.`;
+    }
+  } else if (replyKind === "declined") {
+    resultSummary = `${task.targetName || contactName} recusou/não confirmou: "${message}"`;
+  } else if (replyKind === "alternative") {
+    resultSummary = `${task.targetName || contactName} sugeriu alternativa: "${message}"`;
+  } else {
+    resultSummary = `${task.targetName || contactName} respondeu, mas ainda precisa de acompanhamento: "${message}"`;
+    status = "awaiting_response";
+  }
+
+  await storage.updateSecretaryDelegatedTask(task.id, {
+    status,
+    lastInboundMessage: message,
+    resultSummary,
+    relatedAgendaEventId: agendaEventId,
+    nextFollowUpAt: status === "completed" ? null : getNextDelegatedTaskFollowUpAt(task.taskType || "contato", now),
+    completedAt: status === "completed" ? now : null,
+  });
+
+  const ackToThirdParty = replyKind === "needs_followup"
+    ? "Obrigado pelo retorno. Vou repassar ao responsável e, se necessário, volto a falar."
+    : "Perfeito, obrigado pelo retorno. Vou repassar ao responsável.";
+  if (config.mode === "auto") {
+    await whatsappService.sendToJid(jid, ackToThirdParty, tenantId);
+  }
+
+  const feedback = `Retorno sobre a tarefa #${task.id}\nContato: ${task.targetName || contactName}\nObjetivo: ${task.objective}\nResultado: ${resultSummary}`;
+  await whatsappService.sendToJid(task.requesterJid, feedback, tenantId);
+
+  await createSecretaryAuditLog({
+    tenantId,
+    jid: task.requesterJid,
+    contactName: task.requesterName || "Solicitante",
+    actionType: "retorno_contato_terceiro",
+    description: `Tarefa delegada #${task.id}: ${resultSummary}`,
+    status,
+    actorType: "socio",
+    executionMode: config.mode,
+    pendingAction: {
+      delegatedTaskId: task.id,
+      targetJid: jid,
+      replyKind,
+      agendaEventId,
+    },
+  });
+
+  return true;
+}
+
 async function executeSecretaryAction(
   acao: string,
   args: any,
@@ -2987,6 +3423,9 @@ async function executeSecretaryAction(
   conversationMessages?: Array<{ role: string; content: string }>,
   actorUserId?: number,
 ): Promise<string> {
+  acao = canonicalizeSecretaryAction(acao || args?.acao || "");
+  args = { ...(args || {}), acao };
+
   if (!canActorExecuteSecretaryAction(acao, isSocio)) {
     return "Apenas os sócios do escritório podem executar essa ação. Se você é um cliente e precisa de algo, entre em contato com o Dr. Ronald.";
   }
@@ -3216,7 +3655,11 @@ async function executeSecretaryAction(
 
         const allCases = await storage.getCasesByTenant(tenantId);
         const foundCase = allCases.find((c: any) =>
-          (caseNumber && c.caseNumber === caseNumber) ||
+          (caseNumber && (
+            c.caseNumber === caseNumber ||
+            normalizeForMatch(c.caseNumber || "") === normalizeForMatch(caseNumber) ||
+            normalizeForMatch(c.caseNumber || "").includes(normalizeForMatch(caseNumber))
+          )) ||
           (searchTitle && (
             c.title?.toLowerCase().includes(searchTitle.toLowerCase()) ||
             searchTitle.toLowerCase().includes(c.title?.toLowerCase() || "")
@@ -3231,19 +3674,26 @@ async function executeSecretaryAction(
         if (args.court) updateData.court = args.court;
         if (args.caseType) updateData.caseType = args.caseType;
         if (args.caseClass) updateData.caseClass = args.caseClass;
-        if (args.subject || args.description) updateData.subject = args.subject || args.description;
+        if (args.subject) updateData.subject = args.subject;
         if (args.judge) updateData.judge = args.judge;
         if (args.vara) updateData.vara = args.vara;
+        if (typeof args.isStrategic === "boolean") updateData.isStrategic = args.isStrategic;
+        if (args.strategic === true || normalizeForMatch(args.status || args.description || "").includes("estrategico")) updateData.isStrategic = true;
+        const processNotes = args.notes || (/\b(observa|obs|nota|anote|registre)\b/i.test(args.description || "") ? args.description : "");
+        if (processNotes) {
+          const existingSubject = foundCase.subject || "";
+          updateData.subject = existingSubject ? `${existingSubject}\nObservação: ${processNotes}` : `Observação: ${processNotes}`;
+        }
 
         if (Object.keys(updateData).length === 0) {
           return `Nenhum dado novo foi informado para atualizar o processo ${foundCase.caseNumber}.`;
         }
 
         const updatedCase = await storage.updateCase(foundCase.id, updateData, tenantId);
-        return `Processo atualizado com sucesso!\nNúmero: ${updatedCase.caseNumber}\nTítulo: ${updatedCase.title}\nStatus: ${updatedCase.status}`;
+        return `Processo atualizado com sucesso!\nNúmero: ${updatedCase.caseNumber}\nTítulo: ${updatedCase.title}\nStatus: ${updatedCase.status}\nEstratégico: ${updatedCase.isStrategic ? "sim" : "não"}`;
       }
 
-      case "cadastrar_contrato": {
+      case "criar_contrato": {
         const clientName = args.clientName || "";
         if (!clientName) return "Preciso do nome do cliente para cadastrar o contrato.";
 
@@ -3260,27 +3710,42 @@ async function executeSecretaryAction(
           clientId: foundClient.id,
           type: args.documentType || args.type || "honorarios",
           description: args.description || `Contrato criado pela Secretaria LexAI para ${foundClient.name}`,
-          monthlyValue: args.amount || undefined,
-          startDate: args.startDate ? new Date(args.startDate) : new Date(today),
-          endDate: args.endDate ? new Date(args.endDate) : null,
+          monthlyValue: parseMoneyString(args.amount) || undefined,
+          successFeePercent: args.successFeePercent ? String(args.successFeePercent) : undefined,
+          adjustmentIndex: args.adjustmentIndex || undefined,
+          nextAdjustmentDate: args.nextAdjustmentDate ? new Date(parseSecretaryDate(args.nextAdjustmentDate)) : undefined,
+          startDate: args.startDate ? new Date(parseSecretaryDate(args.startDate)) : new Date(today),
+          endDate: args.endDate ? new Date(parseSecretaryDate(args.endDate)) : null,
           status: args.status || "ativo",
         });
 
         return `Contrato cadastrado com sucesso!\nCliente: ${foundClient.name}\nTipo: ${createdContract.type}\nStatus: ${createdContract.status}\nID: ${createdContract.id}`;
       }
 
-      case "cadastrar_prazo": {
+      case "criar_prazo": {
         const title = args.title || "";
-        const dueDate = args.dueDate || "";
-        if (!title || !dueDate) {
+        const dueDate = parseSecretaryDate(args.dueDate || args.date || args.description || "");
+        if (!title || !isValidSecretaryDate(dueDate)) {
           return "Preciso do título e da data do prazo no formato YYYY-MM-DD para cadastrar.";
         }
 
         let targetCaseId: number | null = null;
+        let targetClientId: number | null = null;
         if (args.caseNumber) {
           const allCases = await storage.getCasesByTenant(tenantId);
-          const foundCase = allCases.find((c: any) => c.caseNumber === args.caseNumber);
-          if (foundCase) targetCaseId = foundCase.id;
+          const foundCase = allCases.find((c: any) => c.caseNumber === args.caseNumber || normalizeForMatch(c.caseNumber || "") === normalizeForMatch(args.caseNumber));
+          if (foundCase) {
+            targetCaseId = foundCase.id;
+            targetClientId = foundCase.clientId || null;
+          }
+        }
+        if (!targetClientId && args.clientName) {
+          const clients = await storage.getClientsByTenant(tenantId);
+          const foundClient = clients.find((c: any) =>
+            c.name?.toLowerCase().includes(String(args.clientName).toLowerCase()) ||
+            String(args.clientName).toLowerCase().includes(c.name?.toLowerCase() || "")
+          );
+          if (foundClient) targetClientId = foundClient.id;
         }
 
         const createdDeadline = await storage.createDeadline({
@@ -3292,31 +3757,47 @@ async function executeSecretaryAction(
           type: args.documentType || "manual",
           priority: args.priority || "normal",
           status: args.status || "pendente",
+          responsibleUserId: actorUserId || undefined,
+          createdBy: actorUserId || undefined,
         });
 
-        return `Prazo cadastrado com sucesso!\nTítulo: ${createdDeadline.title}\nVencimento: ${new Date(createdDeadline.dueDate).toLocaleDateString("pt-BR")}\nID: ${createdDeadline.id}`;
+        return `Prazo cadastrado com sucesso!\nTítulo: ${createdDeadline.title}\nVencimento: ${new Date(createdDeadline.dueDate).toLocaleDateString("pt-BR")}\n${targetCaseId ? `Processo ID: ${targetCaseId}\n` : ""}${targetClientId ? `Cliente ID: ${targetClientId}\n` : ""}ID: ${createdDeadline.id}`;
       }
 
-      case "agendar_compromisso": {
-        const date = args.date || "";
-        const timeStart = args.timeStart || "";
+      case "agendar_evento": {
+        const date = parseSecretaryDate(args.date || args.dueDate || args.description || "");
+        const timeStart = normalizeSecretaryTime(args.timeStart || extractSecretaryTimes(args.description || "")[0] || "");
         const title = args.title || args.description || "";
-        if (!date || !timeStart || !title) {
+        if (!isValidSecretaryDate(date) || !timeStart || !title) {
           return "Preciso da data (YYYY-MM-DD), horário inicial (HH:MM) e título do compromisso para agendar.";
         }
 
-        const timeEnd = args.timeEnd || (() => {
-          const [h, m] = String(timeStart).split(":").map((v: string) => Number(v));
-          if (Number.isNaN(h) || Number.isNaN(m)) return "";
-          return `${String((h + 1) % 24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-        })();
+        const timeEnd = normalizeSecretaryTime(args.timeEnd) || addOneHour(timeStart);
+        let targetClientId: number | null = null;
+        let targetCaseId: number | null = null;
+        if (args.clientName) {
+          const clients = await storage.getClientsByTenant(tenantId);
+          const foundClient = clients.find((c: any) =>
+            c.name?.toLowerCase().includes(String(args.clientName).toLowerCase()) ||
+            String(args.clientName).toLowerCase().includes(c.name?.toLowerCase() || "")
+          );
+          if (foundClient) targetClientId = foundClient.id;
+        }
+        if (args.caseNumber) {
+          const allCases = await storage.getCasesByTenant(tenantId);
+          const foundCase = allCases.find((c: any) => c.caseNumber === args.caseNumber || normalizeForMatch(c.caseNumber || "") === normalizeForMatch(args.caseNumber));
+          if (foundCase) {
+            targetCaseId = foundCase.id;
+            if (!targetClientId) targetClientId = foundCase.clientId || null;
+          }
+        }
 
         const createdEvent = await storage.createAgendaEvent({
           tenantId,
-          clientId: null,
-          caseId: null,
+          clientId: targetClientId,
+          caseId: targetCaseId,
           title,
-          type: args.documentType || "Compromisso",
+          type: args.documentType || args.type || "Compromisso",
           date,
           timeStart,
           timeEnd: timeEnd || null,
@@ -3328,6 +3809,182 @@ async function executeSecretaryAction(
         });
 
         return `Compromisso agendado com sucesso!\nTítulo: ${createdEvent.title}\nData: ${createdEvent.date}\nHorário: ${createdEvent.timeStart}${createdEvent.timeEnd ? ` às ${createdEvent.timeEnd}` : ""}`;
+      }
+
+      case "atualizar_evento": {
+        const eventId = Number(args.eventId || args.id || 0);
+        const events = eventId
+          ? await storage.getAgendaEventsByTenant(tenantId)
+          : await storage.getAgendaEventsByTenant(tenantId);
+        const targetEvent = eventId
+          ? events.find((event: any) => event.id === eventId)
+          : events.find((event: any) =>
+            (!args.date || event.date === parseSecretaryDate(args.date)) &&
+            (!args.title || normalizeForMatch(event.title || "").includes(normalizeForMatch(args.title)))
+          );
+        if (!targetEvent) return "Evento não encontrado na agenda. Informe o ID do evento ou título/data para localizar.";
+
+        const updateData: any = {};
+        if (args.title) updateData.title = args.title;
+        if (args.date) updateData.date = parseSecretaryDate(args.date);
+        if (args.timeStart) updateData.timeStart = normalizeSecretaryTime(args.timeStart);
+        if (args.timeEnd) updateData.timeEnd = normalizeSecretaryTime(args.timeEnd);
+        if (args.responsible) updateData.responsible = args.responsible;
+        if (args.description) updateData.description = args.description;
+        if (args.status) updateData.status = args.status;
+        if (args.documentType || args.type) updateData.type = args.documentType || args.type;
+        if (Object.keys(updateData).length === 0) return `Nenhum dado novo foi informado para atualizar o evento ${targetEvent.id}.`;
+
+        const updatedEvent = await storage.updateAgendaEvent(targetEvent.id, updateData);
+        return `Evento atualizado com sucesso!\nID: ${updatedEvent.id}\nTítulo: ${updatedEvent.title}\nData: ${updatedEvent.date}\nHorário: ${updatedEvent.timeStart}${updatedEvent.timeEnd ? ` às ${updatedEvent.timeEnd}` : ""}\nStatus: ${updatedEvent.status}`;
+      }
+
+      case "criar_fatura": {
+        const clientName = args.clientName || args.name || "";
+        const amount = parseMoneyString(args.amount || args.value || args.paidAmount);
+        const dueDate = parseSecretaryDate(args.dueDate || args.date || args.description || "");
+        if (!clientName || !amount || !isValidSecretaryDate(dueDate)) {
+          return "Preciso do cliente, valor e vencimento para criar a fatura.";
+        }
+
+        const clients = await storage.getClientsByTenant(tenantId);
+        const foundClient = clients.find((c: any) =>
+          c.name?.toLowerCase().includes(String(clientName).toLowerCase()) ||
+          String(clientName).toLowerCase().includes(c.name?.toLowerCase() || "")
+        );
+        if (!foundClient) return `Cliente "${clientName}" não encontrado.`;
+
+        let contractId = Number(args.contractId || 0) || 0;
+        if (!contractId) {
+          const clientContracts = await storage.getContractsByClient(foundClient.id);
+          const activeContract = clientContracts.find((ct: any) => ct.status === "ativo") || clientContracts[0];
+          if (!activeContract) return `Cliente "${foundClient.name}" não possui contrato cadastrado. Cadastre um contrato antes de criar a fatura.`;
+          contractId = activeContract.id;
+        }
+
+        const referenceMonth = args.referenceMonth || dueDate.slice(0, 7);
+        const invoiceNumber = args.invoiceNumber || `WA-${Date.now()}`;
+        const createdInvoice = await storage.createInvoice({
+          tenantId,
+          clientId: foundClient.id,
+          contractId,
+          invoiceNumber,
+          referenceMonth,
+          amount,
+          status: args.status || "pendente",
+          dueDate: new Date(dueDate),
+          description: args.description || `Fatura criada pela Secretaria LexAI para ${foundClient.name}`,
+          createdBy: actorUserId || undefined,
+        });
+
+        return `Fatura criada com sucesso!\nCliente: ${foundClient.name}\nNúmero: ${createdInvoice.invoiceNumber}\nValor: R$ ${Number(createdInvoice.amount).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}\nVencimento: ${new Date(createdInvoice.dueDate).toLocaleDateString("pt-BR")}\nStatus: ${createdInvoice.status}\nID: ${createdInvoice.id}`;
+      }
+
+      case "atualizar_fatura": {
+        const invoiceId = Number(args.invoiceId || args.id || 0);
+        const clientName = args.clientName || args.name || "";
+        const invoiceNumber = args.invoiceNumber || "";
+        const allInvoices = await storage.getInvoicesByTenant(tenantId);
+        let candidateInvoices = allInvoices;
+
+        if (clientName) {
+          const clients = await storage.getClientsByTenant(tenantId);
+          const foundClient = clients.find((c: any) =>
+            c.name?.toLowerCase().includes(String(clientName).toLowerCase()) ||
+            String(clientName).toLowerCase().includes(c.name?.toLowerCase() || "")
+          );
+          if (!foundClient) return `Cliente "${clientName}" não encontrado.`;
+          candidateInvoices = candidateInvoices.filter((invoice: any) => invoice.clientId === foundClient.id);
+        }
+
+        const targetInvoice = invoiceId
+          ? candidateInvoices.find((invoice: any) => invoice.id === invoiceId)
+          : invoiceNumber
+            ? candidateInvoices.find((invoice: any) => normalizeForMatch(invoice.invoiceNumber || "") === normalizeForMatch(invoiceNumber))
+            : candidateInvoices
+              .filter((invoice: any) => invoice.status !== "pago")
+              .sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())[0];
+
+        if (!targetInvoice) return "Fatura não encontrada. Informe o cliente, número da fatura ou ID.";
+
+        const normalizedStatus = normalizeForMatch(args.status || args.description || "");
+        const status = normalizedStatus.includes("pago") || normalizedStatus.includes("paga") || normalizedStatus.includes("quitad")
+          ? "pago"
+          : args.status || undefined;
+        const updateData: any = {};
+        if (status) updateData.status = status;
+        if (args.dueDate || args.date) updateData.dueDate = new Date(parseSecretaryDate(args.dueDate || args.date));
+        if (args.amount) updateData.amount = parseMoneyString(args.amount);
+        if (args.paidAmount || status === "pago") updateData.paidAmount = parseMoneyString(args.paidAmount || args.amount) || targetInvoice.amount;
+        if (args.paidAt || status === "pago") updateData.paidAt = new Date(parseSecretaryDate(args.paidAt || args.date || "hoje"));
+        if (args.description) updateData.description = args.description;
+        if (Object.keys(updateData).length === 0) return `Nenhum dado novo foi informado para atualizar a fatura ${targetInvoice.invoiceNumber}.`;
+
+        const updatedInvoice = await storage.updateInvoice(targetInvoice.id, updateData);
+        return `Fatura atualizada com sucesso!\nNúmero: ${updatedInvoice.invoiceNumber}\nStatus: ${updatedInvoice.status}\nValor: R$ ${Number(updatedInvoice.amount).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}\n${updatedInvoice.paidAt ? `Pagamento: ${new Date(updatedInvoice.paidAt).toLocaleDateString("pt-BR")}\n` : ""}ID: ${updatedInvoice.id}`;
+      }
+
+      case "contatar_terceiro": {
+        if (!jid) return "Não consigo acompanhar essa tarefa porque a conversa de origem não tem JID do WhatsApp.";
+
+        const target = await resolveThirdPartyContact(tenantId, args);
+        if (!target?.phone || !target.jid) {
+          return "Preciso do telefone/WhatsApp do terceiro, ou de um cliente/devedor/contato cadastrado com telefone, para iniciar o contato.";
+        }
+
+        if (target.jid === jid) {
+          return "O contato de destino é a própria conversa atual. Informe outro telefone ou nome para eu contatar.";
+        }
+
+        const objective = args.objective || args.description || args.targetMessage || "Contato solicitado pelo sócio";
+        const taskType = args.taskType || "contato";
+        const requestedDate = parseSecretaryDate(args.date || args.dueDate || objective || "");
+        const requestedTimeStart = normalizeSecretaryTime(args.timeStart || extractSecretaryTimes(objective)[0] || "");
+        const requestedTimeEnd = normalizeSecretaryTime(args.timeEnd || extractSecretaryTimes(objective)[1] || "");
+        const initialMessage = buildThirdPartyInitialMessage(args, target.name);
+
+        const sent = await whatsappService.sendMessage(target.phone, initialMessage, tenantId);
+        if (!sent) {
+          return `Não consegui enviar a mensagem para ${target.name} (${target.phone}). Verifique se o WhatsApp está conectado e se o número está correto.`;
+        }
+
+        const requesterName = args.requesterName || "Sócio";
+        const task = await storage.createSecretaryDelegatedTask({
+          tenantId,
+          requesterJid: jid,
+          requesterName,
+          targetJid: target.jid,
+          targetPhone: target.phone,
+          targetName: target.name,
+          taskType,
+          objective,
+          initialMessage,
+          status: "awaiting_response",
+          requestedDate: isValidSecretaryDate(requestedDate) ? requestedDate : null,
+          requestedTimeStart: requestedTimeStart || null,
+          requestedTimeEnd: requestedTimeEnd || null,
+          slaMinutes: getDelegatedTaskSlaMinutes(taskType),
+          nextFollowUpAt: getNextDelegatedTaskFollowUpAt(taskType),
+        });
+
+        await createSecretaryAuditLog({
+          tenantId,
+          jid,
+          contactName: requesterName,
+          actionType: "contatar_terceiro",
+          description: `Iniciou tarefa delegada #${task.id} com ${target.name}: ${objective}`,
+          status: "awaiting_response",
+          actorType: "socio",
+          pendingAction: {
+            delegatedTaskId: task.id,
+            targetName: target.name,
+            targetPhone: target.phone,
+            targetJid: target.jid,
+            objective,
+          },
+        });
+
+        return `Contato iniciado com sucesso.\nTarefa: #${task.id}\nContato: ${target.name} (${target.phone})\nMensagem enviada: ${initialMessage}\nVou acompanhar a resposta e avisar aqui quando houver retorno.`;
       }
 
       case "gerar_relatorio_cliente": {
@@ -4407,6 +5064,9 @@ export const secretaryService = {
         }
       }
 
+      const handledDelegatedTask = await handleDelegatedTaskReply(tenantId, jid, enrichedMessage, contactName, config);
+      if (handledDelegatedTask) return;
+
       const activeNeg = await findActiveNegotiation(jid, tenantId);
       if (activeNeg) {
         console.log(`[Secretary] Active negotiation #${activeNeg.negotiation.id} found for ${jid} - switching to NEGOTIATOR mode`);
@@ -4844,6 +5504,148 @@ O contato se identificou como: ${contactName}
         return;
       }
 
+      if (
+        isSocio &&
+        ["operational_action", "unknown"].includes(internalRouting.intent) &&
+        internalRouting.confidence >= 0.55
+      ) {
+        try {
+          const parserCompletion = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            temperature: 0.1,
+            max_tokens: 500,
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "system",
+                content: buildSecretaryOperationalParserSystemPrompt({
+                  currentDate: new Date(),
+                  isSocio,
+                }),
+              },
+              {
+                role: "user",
+                content: buildSecretaryOperationalParserUserPrompt({
+                  message,
+                  recentHistory: internalRouting.shouldIgnoreHistory ? "" : recentHistoryTextForRouting,
+                  extractedMediaContext,
+                }),
+              },
+            ],
+          });
+
+          const parserRaw = parserCompletion.choices[0]?.message?.content || "";
+          const parsedOperation = parseSecretaryOperationalParseResult(parserRaw);
+          const parsedAction = canonicalizeSecretaryAction(parsedOperation?.action || "");
+
+          await safeCreateAgentStep({
+            runId: agentRun?.id,
+            tenantId,
+            stepType: "operational_parse",
+            status: parsedOperation ? "completed" : "failed",
+            input: { message, internalRouting },
+            output: parsedOperation || { raw: parserRaw },
+          });
+
+          if (
+            parsedOperation &&
+            parsedOperation.confidence >= 0.72 &&
+            LIGHTWEIGHT_OPERATIONAL_ACTIONS.has(parsedAction) &&
+            parsedOperation.risk !== "critical"
+          ) {
+            const parsedArgs = {
+              ...(parsedOperation.args || {}),
+              acao: parsedAction,
+              requesterName: socioName || senderUser?.name || "Sócio",
+            };
+            const operationFingerprint = buildActionExecutionFingerprint(parsedAction, parsedArgs);
+            if (shouldSkipDuplicateExecution(ctx, operationFingerprint)) {
+              console.log(`[Secretary] Skipping duplicate lightweight operational action ${parsedAction}`);
+              return;
+            }
+
+            const actionResult = await executeSecretaryAction(
+              parsedAction,
+              parsedArgs,
+              tenantId,
+              isSocio,
+              clientId || undefined,
+              jid,
+              ctx.messages,
+              senderUser?.id,
+            );
+            const verification = verifySecretaryActionResult(parsedAction, actionResult);
+            const conciseResponse = formatDeterministicSocioReply(
+              summarizeAgentExecutionResult(parsedAction, actionResult),
+              parsedAction,
+              isFirstMessage,
+              message,
+              socioName,
+            );
+
+            appendMessageToConversationContext(ctx, { role: "assistant", content: conciseResponse });
+            setConversationLastExecutedAction(ctx, operationFingerprint);
+            setConversationLastAssistantResponse(ctx, buildResponseFingerprint(conciseResponse));
+            setConversationPendingAgentAction(ctx, null);
+            await safeCreateAgentStep({
+              runId: agentRun?.id,
+              tenantId,
+              stepType: "verification",
+              status: verification.finalStatus,
+              input: { action: parsedAction, args: parsedArgs },
+              output: verification,
+            });
+            await safeUpdateAgentRun(agentRun?.id, {
+              status: verification.finalStatus === "failed" ? "failed" : "completed",
+              requestedAction: parsedAction,
+              requestedArgs: parsedArgs,
+              verification,
+              responsePreview: buildAgentResponsePreview(conciseResponse),
+            });
+            await saveMessageToDB(jid, tenantId, "assistant", conciseResponse);
+
+            if (config.mode === "auto") {
+              await sendMessageInChunks(jid, conciseResponse, tenantId);
+              await createSecretaryAuditLog({
+                tenantId,
+                jid,
+                contactName,
+                actionType: `operational_parser_${parsedAction}`,
+                description: `Parser leve executou ${parsedAction}: ${parsedOperation.reasoningSummary || message.substring(0, 120)}`,
+                status: "completed",
+                actorType: "socio",
+                executionMode: config.mode,
+                pendingAction: {
+                  operationalParser: parsedOperation,
+                  requestedAction: parsedAction,
+                  requestedArgs: parsedArgs,
+                },
+              });
+            } else {
+              await createSecretaryAuditLog({
+                tenantId,
+                jid,
+                contactName,
+                actionType: `operational_parser_${parsedAction}`,
+                description: `Parser leve preparou ${parsedAction}: ${parsedOperation.reasoningSummary || message.substring(0, 120)}`,
+                status: "pending_approval",
+                draftMessage: conciseResponse,
+                actorType: "socio",
+                executionMode: config.mode,
+                pendingAction: {
+                  operationalParser: parsedOperation,
+                  requestedAction: parsedAction,
+                  requestedArgs: parsedArgs,
+                },
+              });
+            }
+            return;
+          }
+        } catch (parserErr) {
+          console.error("[Secretary] Lightweight operational parser failed, continuing with full tool flow:", parserErr);
+        }
+      }
+
       const systemPrompt = await buildSystemPrompt(
         tenantId,
         config.systemPrompt || "",
@@ -4915,8 +5717,13 @@ O contato se identificou como: ${contactName}
         "vincular processo", "número do processo", "processo do devedor",
         "cadastrar processo", "novo processo", "abrir processo", "criar processo",
         "atualizar processo", "alterar processo",
-        "cadastrar contrato", "registrar contrato",
-        "cadastrar prazo", "registrar prazo", "novo prazo",
+        "cadastrar contrato", "registrar contrato", "criar contrato",
+        "cadastrar prazo", "registrar prazo", "novo prazo", "criar prazo",
+        "criar fatura", "emitir fatura", "cadastrar fatura", "registrar fatura",
+        "marcar fatura", "atualizar fatura", "fatura paga", "fatura como paga",
+        "criar cobrança", "emitir cobrança", "marcar cobrança", "cobrança paga",
+        "fale com", "mande mensagem", "manda mensagem", "contate", "entre em contato",
+        "avise fulano", "chame fulano", "agendar motorista", "marcar motorista",
         "agendar reunião", "marcar reunião", "agendar audiência", "marcar audiência",
         "arquivar documento", "salvar documento", "guardar documento",
         "gerar petição", "gerar peça", "redigir petição", "elaborar petição",

@@ -48,7 +48,7 @@ Você está aqui para ASSISTIR advogados, não substituí-los. Toda produção r
 
 export class AiService {
   async chat(
-    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     contextDocuments?: Array<{ id: number; title: string; content: string }>,
     options?: { systemPromptOverride?: string; maxTokens?: number; temperature?: number }
   ): Promise<AiResponse> {

@@ -309,6 +309,12 @@ export default function MensagensPage() {
     refetchInterval: 3000,
   });
 
+  const { data: delegatedTasks = [] } = useQuery({
+    queryKey: ["secretary-delegated-tasks"],
+    queryFn: () => secretaryApi.getDelegatedTasks(undefined, 50),
+    refetchInterval: 5000,
+  });
+
   const sendMutation = useMutation({
     mutationFn: ({ jid, message }: { jid: string; message: string }) =>
       whatsappApi.sendChatMessage(jid, message),
@@ -414,6 +420,26 @@ export default function MensagensPage() {
       queryClient.invalidateQueries({ queryKey: ["secretary-pending"] });
       queryClient.invalidateQueries({ queryKey: ["secretary-actions"] });
       toast({ title: "Rascunho rejeitado" });
+    },
+  });
+
+  const followUpDelegatedTaskMutation = useMutation({
+    mutationFn: (id: number) => secretaryApi.followUpDelegatedTask(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["secretary-delegated-tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["secretary-actions"] });
+      toast({ title: "Follow-up enviado" });
+    },
+    onError: (error: any) => {
+      toast({ title: error?.message || "Erro ao enviar follow-up", variant: "destructive" });
+    },
+  });
+
+  const cancelDelegatedTaskMutation = useMutation({
+    mutationFn: (id: number) => secretaryApi.cancelDelegatedTask(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["secretary-delegated-tasks"] });
+      toast({ title: "Tarefa cancelada" });
     },
   });
 
@@ -676,6 +702,70 @@ export default function MensagensPage() {
                   </div>
                 </Card>
               ))}
+            </div>
+          </div>
+        )}
+
+        {delegatedTasks.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <Users className="w-4 h-4 text-green-600" />
+              Contatos Delegados ({delegatedTasks.length})
+            </h3>
+            <div className="space-y-3">
+              {delegatedTasks.map((task: any) => {
+                const isOpen = ["awaiting_response", "sent"].includes(task.status);
+                return (
+                  <Card key={task.id} className="p-4 border-l-4 border-l-green-500" data-testid={`delegated-task-${task.id}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <span className="text-sm font-medium truncate">{task.targetName || task.targetPhone}</span>
+                          <Badge variant={isOpen ? "outline" : "secondary"} className="text-[10px]">
+                            {task.status === "awaiting_response" ? "Aguardando" : task.status}
+                          </Badge>
+                          <span className="text-[10px] text-muted-foreground">
+                            {format(new Date(task.updatedAt || task.createdAt), "dd/MM HH:mm")}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mb-2">{task.objective}</p>
+                        <div className="bg-muted/50 rounded p-3 text-xs space-y-1">
+                          <p><span className="font-medium">Mensagem:</span> {task.initialMessage}</p>
+                          {task.lastInboundMessage && <p><span className="font-medium">Resposta:</span> {task.lastInboundMessage}</p>}
+                          {task.resultSummary && <p><span className="font-medium">Resumo:</span> {task.resultSummary}</p>}
+                          {task.nextFollowUpAt && isOpen && (
+                            <p><span className="font-medium">Próximo follow-up:</span> {format(new Date(task.nextFollowUpAt), "dd/MM HH:mm")}</p>
+                          )}
+                        </div>
+                      </div>
+                      {isOpen && (
+                        <div className="flex flex-col gap-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8"
+                            onClick={() => followUpDelegatedTaskMutation.mutate(task.id)}
+                            disabled={followUpDelegatedTaskMutation.isPending}
+                            data-testid={`btn-follow-up-task-${task.id}`}
+                          >
+                            <Send className="w-3 h-3 mr-1" /> Follow-up
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 text-red-600 hover:bg-red-50"
+                            onClick={() => cancelDelegatedTaskMutation.mutate(task.id)}
+                            disabled={cancelDelegatedTaskMutation.isPending}
+                            data-testid={`btn-cancel-task-${task.id}`}
+                          >
+                            <X className="w-3 h-3 mr-1" /> Cancelar
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })}
             </div>
           </div>
         )}

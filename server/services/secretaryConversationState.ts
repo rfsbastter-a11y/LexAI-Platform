@@ -16,7 +16,7 @@ export interface ConversationContext {
 }
 
 type LoadConversationDeps = {
-  getWhatsAppConversation: (tenantId: number, jid: string) => Promise<{ id: number } | null>;
+  getWhatsAppConversation: (tenantId: number, jid: string) => Promise<{ id: number } | null | undefined>;
   getMessagesByConversation: (conversationId: number) => Promise<Array<{ role: string; content: string; createdAt: Date }>>;
 };
 

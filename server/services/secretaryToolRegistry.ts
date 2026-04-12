@@ -1,4 +1,4 @@
-import { describeSecretaryQueryCapabilities, getSecretaryActionNames, getSecretaryQueryNames } from "./secretaryCapabilities";
+import { describeSecretaryActionCapabilities, describeSecretaryQueryCapabilities, getSecretaryQueryNames } from "./secretaryCapabilities";
 
 export function createSecretaryWebSearchTool() {
   return {
@@ -58,17 +58,21 @@ export function createSecretaryActionTool() {
     type: "function" as const,
     function: {
       name: "executar_acao",
-      description: "Executa ações no sistema LexAI como agente autônomo. Para sócios: cadastrar devedores/clientes, gerar peças jurídicas, gerar contratos/acordos, gerar relatório executivo do escritório e enviar documentos já arquivados. Para clientes: gerar relatório dos seus dados.",
+      description: `Executa ações no sistema LexAI como agente autônomo. Sócios podem executar todas as operações de escrita e leitura: clientes, devedores, processos, prazos, agenda, contratos, faturas/cobranças, documentos, relatórios, peças jurídicas e contratos/acordos via Studio. Clientes só podem gerar relatório/consulta dos próprios dados. Ações disponíveis:\n${describeSecretaryActionCapabilities()}`,
       parameters: {
         type: "object",
         properties: {
           acao: {
             type: "string",
-            enum: getSecretaryActionNames(),
-            description: "Tipo de ação disponível no catálogo oficial da secretária. Inclui cadastros, atualizações, geração de peça, geração de contrato e relatórios.",
+            description: "Nome natural da operação a executar. Exemplos: contatar_terceiro, agendar_evento, atualizar_evento, criar_prazo, criar_fatura, atualizar_fatura, criar_contrato, atualizar_processo, cadastrar_cliente, atualizar_cliente, cadastrar_devedor, atualizar_devedor, cadastrar_processo, gerar_peca_estudio, gerar_contrato, gerar_relatorio_executivo.",
           },
           clientName: { type: "string", description: "Nome do cliente" },
           debtorName: { type: "string", description: "Nome do devedor ou da parte contrária" },
+          targetName: { type: "string", description: "Nome da pessoa que deve ser contatada por WhatsApp." },
+          targetPhone: { type: "string", description: "Telefone/WhatsApp da pessoa que deve ser contatada." },
+          targetMessage: { type: "string", description: "Mensagem exata ou sugerida para enviar ao terceiro." },
+          objective: { type: "string", description: "Objetivo da tarefa delegada: marcar reunião, confirmar disponibilidade, agendar motorista, cobrar retorno, etc." },
+          taskType: { type: "string", description: "Tipo da tarefa delegada: agendamento, motorista, recado, cobranca, outro." },
           name: { type: "string", description: "Nome (para cadastro de cliente)" },
           document: { type: "string", description: "CPF ou CNPJ" },
           phone: { type: "string", description: "Telefone" },
@@ -83,9 +87,17 @@ export function createSecretaryActionTool() {
           date: { type: "string", description: "Data do compromisso no formato YYYY-MM-DD" },
           timeStart: { type: "string", description: "Horário inicial no formato HH:MM" },
           timeEnd: { type: "string", description: "Horário final no formato HH:MM" },
+          eventId: { type: "number", description: "ID do evento de agenda quando for atualizar_evento." },
+          invoiceId: { type: "number", description: "ID da fatura quando for atualizar_fatura." },
+          invoiceNumber: { type: "string", description: "Número da fatura/cobrança." },
+          referenceMonth: { type: "string", description: "Mês de referência da fatura no formato YYYY-MM." },
+          paidAt: { type: "string", description: "Data de pagamento no formato YYYY-MM-DD." },
+          paidAmount: { type: "string", description: "Valor efetivamente pago." },
+          contractId: { type: "number", description: "ID do contrato quando conhecido." },
           responsible: { type: "string", description: "Responsável pelo compromisso/agendamento" },
           amount: { type: "string", description: "Valor monetário relacionado ao contrato/prazo/fatura quando aplicável" },
           status: { type: "string", description: "Status para processo, contrato ou prazo" },
+          isStrategic: { type: "boolean", description: "Use para marcar/desmarcar processo estratégico." },
           startDate: { type: "string", description: "Data inicial no formato YYYY-MM-DD" },
           endDate: { type: "string", description: "Data final no formato YYYY-MM-DD" },
           reportType: { type: "string", description: "Tipo de relatório: geral, processos, financeiro" },
