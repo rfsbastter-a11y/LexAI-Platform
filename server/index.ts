@@ -127,37 +127,47 @@ app.use((req, res, next) => {
   startDailyCron(1);
   startSyncSchedule();
 
-  setTimeout(async () => {
-    try {
-      const { whatsappService } = await import("./services/whatsapp");
-      const hasCreds = await whatsappService.hasCredentials(1);
-      if (hasCreds) {
-        console.log("[WhatsApp] PostgreSQL credentials found. Auto-connecting...");
-        await whatsappService.initialize(1, false);
-        console.log("[WhatsApp] Auto-connect initiated successfully.");
-      } else {
-        console.log("[WhatsApp] No saved credentials. Connect manually via Settings.");
-      }
-    } catch (err: any) {
-      console.error("[WhatsApp] Auto-connect failed (non-fatal):", err?.message || err);
-    }
-  }, 5000);
+  const waEnabled = process.env.WHATSAPP_ENABLED !== "false" && (
+    process.env.NODE_ENV === "production" || process.env.WHATSAPP_ENABLED === "true"
+  );
 
-  setInterval(async () => {
-    try {
-      const { whatsappService } = await import("./services/whatsapp");
-      const status = whatsappService.getStatus();
-      if (status.status === "disconnected") {
+  if (!waEnabled) {
+    console.log("[WhatsApp] Auto-connect disabled in dev (set WHATSAPP_ENABLED=true to enable).");
+  }
+
+  if (waEnabled) {
+    setTimeout(async () => {
+      try {
+        const { whatsappService } = await import("./services/whatsapp");
         const hasCreds = await whatsappService.hasCredentials(1);
         if (hasCreds) {
-          console.log("[WhatsApp] Health check: disconnected with credentials. Reconnecting...");
+          console.log("[WhatsApp] PostgreSQL credentials found. Auto-connecting...");
           await whatsappService.initialize(1, false);
+          console.log("[WhatsApp] Auto-connect initiated successfully.");
+        } else {
+          console.log("[WhatsApp] No saved credentials. Connect manually via Settings.");
         }
+      } catch (err: any) {
+        console.error("[WhatsApp] Auto-connect failed (non-fatal):", err?.message || err);
       }
-    } catch (err: any) {
-      console.error("[WhatsApp] Health check error (non-fatal):", err?.message || err);
-    }
-  }, 5 * 60 * 1000);
+    }, 5000);
+
+    setInterval(async () => {
+      try {
+        const { whatsappService } = await import("./services/whatsapp");
+        const status = whatsappService.getStatus();
+        if (status.status === "disconnected") {
+          const hasCreds = await whatsappService.hasCredentials(1);
+          if (hasCreds) {
+            console.log("[WhatsApp] Health check: disconnected with credentials. Reconnecting...");
+            await whatsappService.initialize(1, false);
+          }
+        }
+      } catch (err: any) {
+        console.error("[WhatsApp] Health check error (non-fatal):", err?.message || err);
+      }
+    }, 5 * 60 * 1000);
+  }
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
