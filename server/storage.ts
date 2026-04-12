@@ -58,6 +58,8 @@ import {
   type InsertProspectionChatMessage, type ProspectionChatMessage,
   debtorAgreements,
   type InsertDebtorAgreement, type DebtorAgreement,
+  agreementMonthlyStatuses,
+  type InsertAgreementMonthlyStatus, type AgreementMonthlyStatus,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -250,6 +252,11 @@ export interface IStorage {
   createDebtorAgreement(data: InsertDebtorAgreement): Promise<DebtorAgreement>;
   updateDebtorAgreement(id: number, tenantId: number, data: Partial<InsertDebtorAgreement>): Promise<DebtorAgreement | undefined>;
   deleteDebtorAgreement(id: number, tenantId: number): Promise<void>;
+
+  // Agreement Monthly Statuses
+  getMonthlyStatusesByClient(clientId: number, tenantId: number, month: string): Promise<AgreementMonthlyStatus[]>;
+  getMonthlyStatusesByAgreement(agreementId: number): Promise<AgreementMonthlyStatus[]>;
+  upsertMonthlyStatus(agreementId: number, month: string, status: string): Promise<AgreementMonthlyStatus>;
 
   // Negotiations
   getNegotiation(id: number): Promise<Negotiation | undefined>;
@@ -1462,6 +1469,41 @@ class DatabaseStorage implements IStorage {
 
   async deleteDebtorAgreement(id: number, tenantId: number): Promise<void> {
     await db.delete(debtorAgreements).where(and(eq(debtorAgreements.id, id), eq(debtorAgreements.tenantId, tenantId)));
+  }
+
+  // Agreement Monthly Statuses
+  async getMonthlyStatusesByClient(clientId: number, tenantId: number, month: string): Promise<AgreementMonthlyStatus[]> {
+    // Busca os statuses mensais para todos os acordos de um cliente
+    const agreements = await db.select({ id: debtorAgreements.id })
+      .from(debtorAgreements)
+      .where(and(eq(debtorAgreements.clientId, clientId), eq(debtorAgreements.tenantId, tenantId)));
+    if (agreements.length === 0) return [];
+    const ids = agreements.map(a => a.id);
+    return db.select().from(agreementMonthlyStatuses)
+      .where(and(inArray(agreementMonthlyStatuses.agreementId, ids), eq(agreementMonthlyStatuses.month, month)));
+  }
+
+  async getMonthlyStatusesByAgreement(agreementId: number): Promise<AgreementMonthlyStatus[]> {
+    return db.select().from(agreementMonthlyStatuses)
+      .where(eq(agreementMonthlyStatuses.agreementId, agreementId))
+      .orderBy(desc(agreementMonthlyStatuses.month));
+  }
+
+  async upsertMonthlyStatus(agreementId: number, month: string, status: string): Promise<AgreementMonthlyStatus> {
+    const existing = await db.select().from(agreementMonthlyStatuses)
+      .where(and(eq(agreementMonthlyStatuses.agreementId, agreementId), eq(agreementMonthlyStatuses.month, month)))
+      .limit(1);
+    if (existing.length > 0) {
+      const [updated] = await db.update(agreementMonthlyStatuses)
+        .set({ status, updatedAt: new Date() })
+        .where(eq(agreementMonthlyStatuses.id, existing[0].id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(agreementMonthlyStatuses)
+      .values({ agreementId, month, status })
+      .returning();
+    return created;
   }
 
   // Negotiations

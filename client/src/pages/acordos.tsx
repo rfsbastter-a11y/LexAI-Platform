@@ -49,6 +49,8 @@ import {
   FileText,
   ClipboardPaste,
   X,
+  TriangleAlert,
+  CircleDot,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
@@ -70,10 +72,26 @@ const formatDate = (date: string | null | undefined) => {
 };
 
 const statusConfig: Record<string, { label: string; color: string; icon: any }> = {
-  ativo: { label: "Ativo", color: "bg-emerald-100 text-emerald-700 border-emerald-200", icon: CheckCircle2 },
-  quitado: { label: "Quitado", color: "bg-blue-100 text-blue-700 border-blue-200", icon: CheckCircle2 },
-  inadimplente: { label: "Inadimplente", color: "bg-red-100 text-red-700 border-red-200", icon: AlertCircle },
+  ativo:        { label: "Ativo",        color: "bg-emerald-100 text-emerald-700 border-emerald-200", icon: CheckCircle2 },
+  quitado:      { label: "Quitado",      color: "bg-blue-100 text-blue-700 border-blue-200",         icon: CheckCircle2 },
+  inadimplente: { label: "Inadimplente", color: "bg-red-100 text-red-700 border-red-200",             icon: AlertCircle  },
+  encerrado:    { label: "Encerrado",    color: "bg-slate-100 text-slate-600 border-slate-200",       icon: CircleDot    },
 };
+
+// Conta meses consecutivos de inadimplência a partir do mês atual (para alerta)
+function countConsecutiveInad(agreementId: number, currentMonthKey: string, monthlyStatusMap: Record<number, Record<string, string>>): number {
+  const map = monthlyStatusMap[agreementId] || {};
+  let count = 0;
+  const [cy, cm] = currentMonthKey.split("-").map(Number);
+  for (let i = 0; i < 12; i++) {
+    let m = cm - i; let y = cy;
+    if (m <= 0) { m += 12; y -= 1; }
+    const key = `${y}-${String(m).padStart(2, "0")}`;
+    if (map[key] === "inadimplente") count++;
+    else break;
+  }
+  return count;
+}
 
 type AgreementForm = {
   debtorId: number | null;
@@ -283,6 +301,69 @@ export default function AcordosPage() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/debtor-agreements"] }),
     onError: () => toast({ title: "Erro ao atualizar status", variant: "destructive" }),
+  });
+
+  // Toggle status geral inline (ativo → inadimplente → encerrado → ativo)
+  const toggleStatusMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/debtor-agreements/${id}/status`, { method: "PATCH", headers: { ...getAuthHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      if (!res.ok) throw new Error();
+      return res.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/debtor-agreements"] }),
+    onError: () => toast({ title: "Erro ao atualizar status", variant: "destructive" }),
+  });
+
+  // Status mensais — mapa: agreementId → { "YYYY-MM": status }
+  const [allMonthlyStatuses, setAllMonthlyStatuses] = useState<Record<number, Record<string, string>>>({});
+
+  // Carrega statuses mensais quando muda mês/ano do relatório ou lista de acordos
+  useEffect(() => {
+    if (!reportMonth || !reportYear || agreements.length === 0) return;
+    const clientIds = [...new Set(agreements.map((a: any) => a.clientId))];
+    // Carrega para cada clientId selecionado
+    const monthKey = `${reportYear}-${String(reportMonth).padStart(2, "0")}`;
+    Promise.all(
+      clientIds.map((cid: any) =>
+        fetch(`/api/debtor-agreements/monthly-statuses?clientId=${cid}&month=${reportMonth}&year=${reportYear}`, { headers: getAuthHeaders() })
+          .then(r => r.ok ? r.json() : {})
+          .catch(() => ({}))
+      )
+    ).then(results => {
+      // Cada resultado é { agreementId: status } — mescla todos
+      const merged: Record<number, Record<string, string>> = { ...allMonthlyStatuses };
+      results.forEach((map: Record<string, string>) => {
+        Object.entries(map).forEach(([id, status]) => {
+          const aid = parseInt(id);
+          if (!merged[aid]) merged[aid] = {};
+          merged[aid][monthKey] = status;
+        });
+      });
+      setAllMonthlyStatuses(merged);
+    });
+  }, [reportMonth, reportYear, agreements.length]);
+
+  // Toggle de inadimplência mensal por mês específico
+  const toggleMonthlyStatusMutation = useMutation({
+    mutationFn: async ({ id, monthKey }: { id: number; monthKey: string }) => {
+      const current = allMonthlyStatuses[id]?.[monthKey] || "pendente";
+      const cycle: Record<string, string> = { pendente: "inadimplente", inadimplente: "pago", pago: "pendente" };
+      const newStatus = cycle[current] || "inadimplente";
+      const res = await fetch(`/api/debtor-agreements/${id}/monthly-status`, {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ month: monthKey, status: newStatus }),
+      });
+      if (!res.ok) throw new Error();
+      return { id, monthKey, newStatus };
+    },
+    onSuccess: ({ id, monthKey, newStatus }) => {
+      setAllMonthlyStatuses(prev => ({
+        ...prev,
+        [id]: { ...(prev[id] || {}), [monthKey]: newStatus },
+      }));
+    },
+    onError: () => toast({ title: "Erro ao atualizar status mensal", variant: "destructive" }),
   });
 
   // Computed
@@ -599,30 +680,59 @@ export default function AcordosPage() {
                     <TableHead>Data Acordo</TableHead>
                     <TableHead>Parcelas</TableHead>
                     <TableHead>Valor Entrada</TableHead>
+                    <TableHead>Data Entrada</TableHead>
                     <TableHead>Valor Prestação</TableHead>
                     <TableHead>Vencimento</TableHead>
                     <TableHead>Honorários/Mês</TableHead>
                     <TableHead>Hon. Status</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Mês Atual</TableHead>
                     <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.map((a: any) => {
-                    const instVal = parseFloat(a.installmentValue || "0");
+                    const currentMonthKey = `${reportYear}-${String(reportMonth).padStart(2, "0")}`;
+                    const downDate = a.downPaymentDate ? new Date(a.downPaymentDate) : null;
+                    const isEntryMonth = downDate
+                      && downDate.getMonth() + 1 === parseInt(reportMonth)
+                      && downDate.getFullYear() === parseInt(reportYear);
+                    const feeBase = isEntryMonth
+                      ? parseFloat(a.downPaymentValue || "0")
+                      : parseFloat(a.installmentValue || "0");
                     const feePct = parseFloat(a.feePercent || "10");
-                    const monthlyFeeVal = Math.round(instVal * feePct / 100 * 100) / 100;
+                    const monthStatus = allMonthlyStatuses[a.id]?.[currentMonthKey] || "pendente";
+                    const isInad = a.status === "inadimplente" || monthStatus === "inadimplente";
+                    const monthlyFeeVal = isInad ? 0 : Math.round(feeBase * feePct / 100 * 100) / 100;
+                    const consecutiveInad = countConsecutiveInad(a.id, currentMonthKey, allMonthlyStatuses);
                     const cfg = statusConfig[a.status] || statusConfig.ativo;
                     const StatusIcon = cfg.icon;
+                    const monthStatusCfg = {
+                      pago:        { label: "Pago",        cls: "bg-green-100 text-green-700 border-green-300 hover:bg-green-200" },
+                      inadimplente:{ label: "Inadimplente",cls: "bg-red-100 text-red-700 border-red-300 hover:bg-red-200" },
+                      pendente:    { label: "Pendente",    cls: "bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100" },
+                    }[monthStatus] || { label: "Pendente", cls: "bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100" };
                     return (
-                      <TableRow key={a.id} data-testid={`row-acordo-${a.id}`}>
-                        <TableCell className="font-medium">{a.debtorName || "—"}</TableCell>
+                      <TableRow
+                        key={a.id}
+                        data-testid={`row-acordo-${a.id}`}
+                        className={consecutiveInad >= 3 ? "bg-red-50 border-l-4 border-red-500" : ""}
+                      >
+                        <TableCell className="font-medium">
+                          <div className="flex items-center gap-1">
+                            {consecutiveInad >= 3 && <TriangleAlert className="w-4 h-4 text-red-500 flex-shrink-0" title={`${consecutiveInad} meses consecutivos inadimplente`} />}
+                            {a.debtorName || "—"}
+                          </div>
+                        </TableCell>
                         <TableCell>{formatDate(a.agreementDate)}</TableCell>
                         <TableCell>{a.isSinglePayment ? "ÚNICA" : (a.installmentsCount || "—")}</TableCell>
                         <TableCell>{a.downPaymentValue ? formatCurrency(a.downPaymentValue) : "—"}</TableCell>
+                        <TableCell>{a.downPaymentDate ? formatDate(a.downPaymentDate) : "—"}</TableCell>
                         <TableCell>{a.installmentValue ? formatCurrency(a.installmentValue) : "—"}</TableCell>
-                        <TableCell>{a.dueDay ? `Dia ${a.dueDay}` : (a.isSinglePayment ? "—" : "—")}</TableCell>
-                        <TableCell className="font-semibold text-blue-700">{formatCurrency(monthlyFeeVal)}</TableCell>
+                        <TableCell>{a.dueDay ? `Dia ${a.dueDay}` : "—"}</TableCell>
+                        <TableCell className={`font-semibold ${isInad ? "text-red-400 line-through" : "text-blue-700"}`}>
+                          {formatCurrency(monthlyFeeVal)}
+                        </TableCell>
                         <TableCell>
                           <button
                             onClick={() => toggleFeeStatusMutation.mutate(a.id)}
@@ -635,10 +745,25 @@ export default function AcordosPage() {
                           </button>
                         </TableCell>
                         <TableCell>
-                          <Badge className={`${cfg.color} border text-xs gap-1`}>
+                          <button
+                            onClick={() => toggleStatusMutation.mutate(a.id)}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border transition-colors ${cfg.color} hover:opacity-80`}
+                            data-testid={`button-status-${a.id}`}
+                            title="Clique para alternar status"
+                          >
                             <StatusIcon className="w-3 h-3" />
                             {cfg.label}
-                          </Badge>
+                          </button>
+                        </TableCell>
+                        <TableCell>
+                          <button
+                            onClick={() => toggleMonthlyStatusMutation.mutate({ id: a.id, monthKey: currentMonthKey })}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border transition-colors ${monthStatusCfg.cls}`}
+                            data-testid={`button-monthly-status-${a.id}`}
+                            title="Clique para alternar status deste mês"
+                          >
+                            {monthStatusCfg.label}
+                          </button>
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
@@ -743,32 +868,38 @@ export default function AcordosPage() {
               <Label htmlFor="single-payment">Pagamento único (parcela única)</Label>
             </div>
 
-            {/* Entrada */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1">
-                <Label>Valor da Entrada (R$)</Label>
-                <Input placeholder="0,00" value={form.downPaymentValue} onChange={e => setForm(f => ({ ...f, downPaymentValue: e.target.value }))} data-testid="input-down-payment-value" />
-              </div>
-              <div className="space-y-1">
-                <Label>Data da Entrada</Label>
-                <Input type="date" value={form.downPaymentDate} onChange={e => setForm(f => ({ ...f, downPaymentDate: e.target.value }))} data-testid="input-down-payment-date" />
+            {/* Entrada — independente das parcelas */}
+            <div className="p-3 bg-amber-50 rounded-lg border border-amber-100 space-y-3">
+              <p className="text-xs font-medium text-amber-800">Entrada (pagamento inicial — independente das parcelas mensais)</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <Label>Valor da Entrada (R$)</Label>
+                  <Input placeholder="Ex: 7.000,00" value={form.downPaymentValue} onChange={e => setForm(f => ({ ...f, downPaymentValue: e.target.value }))} data-testid="input-down-payment-value" />
+                </div>
+                <div className="space-y-1">
+                  <Label>Data da Entrada</Label>
+                  <Input type="date" value={form.downPaymentDate} onChange={e => setForm(f => ({ ...f, downPaymentDate: e.target.value }))} data-testid="input-down-payment-date" />
+                </div>
               </div>
             </div>
 
-            {/* Parcelas */}
+            {/* Parcelas mensais — independentes da entrada */}
             {!form.isSinglePayment && (
-              <div className="grid grid-cols-3 gap-4">
-                <div className="space-y-1">
-                  <Label>Nº de Parcelas</Label>
-                  <Input type="number" placeholder="Ex: 24" value={form.installmentsCount} onChange={e => setForm(f => ({ ...f, installmentsCount: e.target.value }))} data-testid="input-installments-count" />
-                </div>
-                <div className="space-y-1">
-                  <Label>Valor da Parcela (R$)</Label>
-                  <Input placeholder="0,00" value={form.installmentValue} onChange={e => setForm(f => ({ ...f, installmentValue: e.target.value }))} data-testid="input-installment-value" />
-                </div>
-                <div className="space-y-1">
-                  <Label>Dia do Vencimento</Label>
-                  <Input type="number" min="1" max="31" placeholder="Ex: 10" value={form.dueDay} onChange={e => setForm(f => ({ ...f, dueDay: e.target.value }))} data-testid="input-due-day" />
+              <div className="p-3 bg-slate-50 rounded-lg border border-slate-100 space-y-3">
+                <p className="text-xs font-medium text-slate-600">Parcelas mensais (independentes da entrada)</p>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <Label>Nº de Parcelas</Label>
+                    <Input type="number" placeholder="Ex: 24" value={form.installmentsCount} onChange={e => setForm(f => ({ ...f, installmentsCount: e.target.value }))} data-testid="input-installments-count" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Valor da Prestação (R$)</Label>
+                    <Input placeholder="Ex: 400,00" value={form.installmentValue} onChange={e => setForm(f => ({ ...f, installmentValue: e.target.value }))} data-testid="input-installment-value" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Dia do Vencimento</Label>
+                    <Input type="number" min="1" max="31" placeholder="Ex: 10" value={form.dueDay} onChange={e => setForm(f => ({ ...f, dueDay: e.target.value }))} data-testid="input-due-day" />
+                  </div>
                 </div>
               </div>
             )}

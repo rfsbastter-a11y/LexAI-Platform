@@ -8944,6 +8944,54 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
     }
   });
 
+  // Toggle status geral inline (ativo → inadimplente → encerrado → ativo)
+  app.patch("/api/debtor-agreements/:id/status", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const existing = await storage.getDebtorAgreement(parseInt(req.params.id), tenantId);
+      if (!existing) return res.status(404).json({ error: "Agreement not found" });
+      const cycle = ["ativo", "inadimplente", "encerrado"];
+      const newStatus = req.body.status ?? cycle[(cycle.indexOf(existing.status) + 1) % cycle.length];
+      const updated = await storage.updateDebtorAgreement(parseInt(req.params.id), tenantId, { status: newStatus });
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to toggle status" });
+    }
+  });
+
+  // Status mensal de inadimplência (por mês específico)
+  app.get("/api/debtor-agreements/monthly-statuses", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const { clientId, month, year } = req.query;
+      if (!clientId || !month || !year) return res.status(400).json({ error: "clientId, month e year são obrigatórios" });
+      const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+      const statuses = await storage.getMonthlyStatusesByClient(parseInt(clientId as string), tenantId, monthKey);
+      // Retorna como mapa agreementId → status
+      const map: Record<number, string> = {};
+      statuses.forEach(s => { map[s.agreementId] = s.status; });
+      res.json(map);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch monthly statuses" });
+    }
+  });
+
+  app.post("/api/debtor-agreements/:id/monthly-status", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = getTenantId(req);
+      const agreementId = parseInt(req.params.id);
+      const { month, status } = req.body; // month: "2026-03", status: "pago"|"inadimplente"|"pendente"
+      if (!month || !status) return res.status(400).json({ error: "month e status são obrigatórios" });
+      // Verifica que o acordo pertence ao tenant
+      const existing = await storage.getDebtorAgreement(agreementId, tenantId);
+      if (!existing) return res.status(404).json({ error: "Agreement not found" });
+      const result = await storage.upsertMonthlyStatus(agreementId, month, status);
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update monthly status" });
+    }
+  });
+
   // Generate Excel report for a client+month
   app.get("/api/debtor-agreements/report", requireAuth, async (req: Request, res: Response) => {
     try {
@@ -8979,15 +9027,31 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const targetMonth = month ? parseInt(month as string) : null;
       const targetYear = year ? parseInt(year as string) : null;
 
+      // Carrega statuses mensais para verificar inadimplência por mês
+      const monthKey = targetMonth && targetYear ? `${targetYear}-${String(targetMonth).padStart(2, "0")}` : null;
+      let monthlyPaymentMap: Record<number, string> = {};
+      if (monthKey) {
+        const statuses = await storage.getMonthlyStatusesByClient(parseInt(clientId as string), tenantId, monthKey);
+        statuses.forEach((s: any) => { monthlyPaymentMap[s.agreementId] = s.status; });
+      }
+
       for (const a of agreements) {
         const debtor = debtorMap[a.debtorId];
         const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "");
         const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
         const feePercent = parseFloat(a.feePercent || "10");
-        const installmentValue = parseFloat(a.installmentValue || "0");
+        // Lógica Harvey: mês da entrada usa downPaymentValue; meses seguintes usam installmentValue
+        const downDate = a.downPaymentDate ? new Date(a.downPaymentDate) : null;
+        const isEntryMonth = downDate && targetMonth && targetYear
+          && downDate.getMonth() + 1 === targetMonth && downDate.getFullYear() === targetYear;
+        const feeBase = isEntryMonth
+          ? parseFloat(a.downPaymentValue || "0")
+          : parseFloat(a.installmentValue || "0");
+        // Inadimplente global OU inadimplente neste mês específico → honorários = 0
+        const isInad = a.status === "inadimplente" || monthlyPaymentMap[a.id] === "inadimplente";
         const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
-          : Math.round(installmentValue * feePercent / 100 * 100) / 100;
+          ? (isActiveInMonth(a, targetMonth, targetYear) && !isInad ? Math.round(feeBase * feePercent / 100 * 100) / 100 : 0)
+          : Math.round(feeBase * feePercent / 100 * 100) / 100;
 
         rows.push([
           debtor?.name || "",
@@ -9084,6 +9148,14 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
       const targetMonth = month ? parseInt(month) : null;
       const targetYear = year ? parseInt(year) : null;
 
+      // Carrega statuses mensais para verificar inadimplência por mês
+      const sendMonthKey = targetMonth && targetYear ? `${targetYear}-${String(targetMonth).padStart(2, "0")}` : null;
+      let sendMonthlyMap: Record<number, string> = {};
+      if (sendMonthKey) {
+        const statuses = await storage.getMonthlyStatusesByClient(parseInt(clientId), tenantId, sendMonthKey);
+        statuses.forEach((s: any) => { sendMonthlyMap[s.agreementId] = s.status; });
+      }
+
       const wsRows: any[][] = [
         [`${clientName.toUpperCase()} – PLANILHA MENSAL DOS HONORÁRIOS – ${monthYear.toUpperCase()}`],
         [],
@@ -9095,11 +9167,17 @@ Retorne APENAS um JSON array: [{"name": "Nome", "position": "Cargo", "company": 
         const installmentsDisplay = a.isSinglePayment ? "ÚNICA" : (a.installmentsCount?.toString() || "");
         const dueDayDisplay = a.dueDay ? `DIA ${a.dueDay}` : (a.isSinglePayment ? "XXXXXX" : "");
         const feePercent = parseFloat(a.feePercent || "10");
-        const installmentValue = parseFloat(a.installmentValue || "0");
+        const downDate = a.downPaymentDate ? new Date(a.downPaymentDate) : null;
+        const isEntryMonth = downDate && targetMonth && targetYear
+          && downDate.getMonth() + 1 === targetMonth && downDate.getFullYear() === targetYear;
+        const feeBase = isEntryMonth
+          ? parseFloat(a.downPaymentValue || "0")
+          : parseFloat(a.installmentValue || "0");
+        const isInad = a.status === "inadimplente" || sendMonthlyMap[a.id] === "inadimplente";
         const monthlyFee = targetMonth && targetYear
-          ? (isActiveInMonth(a, targetMonth, targetYear) ? Math.round(installmentValue * feePercent / 100 * 100) / 100 : 0)
-          : Math.round(installmentValue * feePercent / 100 * 100) / 100;
-        wsRows.push([debtor?.name || "", a.agreementDate || "", parseFloat(a.originalDebtValue || "0") || "", parseFloat(a.agreedValue || "0") || "", installmentsDisplay, parseFloat(a.downPaymentValue || "0") || "", a.downPaymentDate || "", installmentValue || "", dueDayDisplay, `${feePercent}%`, parseFloat(a.feeAmount || "0") || "", a.feeStatus || "pendente", monthlyFee, a.status || "ativo", a.notes || ""]);
+          ? (isActiveInMonth(a, targetMonth, targetYear) && !isInad ? Math.round(feeBase * feePercent / 100 * 100) / 100 : 0)
+          : Math.round(feeBase * feePercent / 100 * 100) / 100;
+        wsRows.push([debtor?.name || "", a.agreementDate || "", parseFloat(a.originalDebtValue || "0") || "", parseFloat(a.agreedValue || "0") || "", installmentsDisplay, parseFloat(a.downPaymentValue || "0") || "", a.downPaymentDate || "", parseFloat(a.installmentValue || "0") || "", dueDayDisplay, `${feePercent}%`, parseFloat(a.feeAmount || "0") || "", a.feeStatus || "pendente", monthlyFee, a.status || "ativo", a.notes || ""]);
       }
 
       const ws = XLSX.utils.aoa_to_sheet(wsRows);

@@ -166,6 +166,26 @@ pool.query("SELECT current_database(), inet_server_port()").then(async res => {
     console.error("[DB Migration] ai_generation_logs Harvey columns failed:", migErr.message);
   }
 
+  // 6. agreement_monthly_statuses — inadimplência mensal por acordo
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS agreement_monthly_statuses (
+        id           SERIAL PRIMARY KEY,
+        agreement_id INTEGER NOT NULL REFERENCES debtor_agreements(id) ON DELETE CASCADE,
+        month        TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'pendente',
+        created_at   TIMESTAMP DEFAULT NOW() NOT NULL,
+        updated_at   TIMESTAMP DEFAULT NOW() NOT NULL,
+        UNIQUE (agreement_id, month)
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS ams_agreement_idx ON agreement_monthly_statuses (agreement_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS ams_month_idx ON agreement_monthly_statuses (month)`);
+    console.log("[DB Migration] agreement_monthly_statuses table ready.");
+  } catch (migErr: any) {
+    console.error("[DB Migration] agreement_monthly_statuses migration failed:", migErr.message);
+  }
+
 }).catch(err => {
   console.error("[DB] Failed to verify database connection:", err.message);
 });

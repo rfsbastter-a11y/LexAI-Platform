@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, serial, integer, bigint, boolean, timestamp, decimal, jsonb, date } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, integer, bigint, boolean, timestamp, decimal, jsonb, date, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -798,10 +798,34 @@ export const insertDebtorAgreementSchema = createInsertSchema(debtorAgreements).
 export type InsertDebtorAgreement = z.infer<typeof insertDebtorAgreementSchema>;
 export type DebtorAgreement = typeof debtorAgreements.$inferSelect;
 
-export const debtorAgreementsRelations = relations(debtorAgreements, ({ one }) => ({
+export const debtorAgreementsRelations = relations(debtorAgreements, ({ one, many }) => ({
   tenant: one(tenants, { fields: [debtorAgreements.tenantId], references: [tenants.id] }),
   debtor: one(debtors, { fields: [debtorAgreements.debtorId], references: [debtors.id] }),
   client: one(clients, { fields: [debtorAgreements.clientId], references: [clients.id] }),
+  monthlyStatuses: many(agreementMonthlyStatuses),
+}));
+
+// ==================== AGREEMENT MONTHLY STATUSES ====================
+// Rastreia inadimplência por mês específico — ex: março inadimplente, abril pago
+export const agreementMonthlyStatuses = pgTable(
+  "agreement_monthly_statuses",
+  {
+    id: serial("id").primaryKey(),
+    agreementId: integer("agreement_id").notNull().references(() => debtorAgreements.id, { onDelete: "cascade" }),
+    month: text("month").notNull(), // formato "YYYY-MM", ex: "2026-03"
+    status: text("status").notNull().default("pendente"), // "pago" | "inadimplente" | "pendente"
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => ({ uniq: uniqueIndex("agreement_monthly_statuses_uniq").on(t.agreementId, t.month) })
+);
+
+export const insertAgreementMonthlyStatusSchema = createInsertSchema(agreementMonthlyStatuses).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAgreementMonthlyStatus = z.infer<typeof insertAgreementMonthlyStatusSchema>;
+export type AgreementMonthlyStatus = typeof agreementMonthlyStatuses.$inferSelect;
+
+export const agreementMonthlyStatusesRelations = relations(agreementMonthlyStatuses, ({ one }) => ({
+  agreement: one(debtorAgreements, { fields: [agreementMonthlyStatuses.agreementId], references: [debtorAgreements.id] }),
 }));
 
 // ==================== NEGOTIATIONS ====================
